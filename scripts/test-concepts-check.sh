@@ -5,7 +5,7 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 fixture=$(mktemp -d)
 trap 'rm -rf "$fixture"' EXIT
-mkdir -p "$fixture/scripts" "$fixture/crates/edifact-rs/src" "$fixture/site/content"
+mkdir -p "$fixture/scripts" "$fixture/crates/edifact/src" "$fixture/site/content"
 cp "$root/scripts/concepts-check.sh" "$fixture/scripts/"
 touch "$fixture/README.md" "$fixture/CHANGELOG.md"
 
@@ -27,9 +27,9 @@ expect_pass
 printf '%s\n' '[Unavailable](concepts/ROADMAP.md)' > "$fixture/README.md"
 expect_fail 'public leak without local planning'
 printf '' > "$fixture/README.md"
-printf '%s\n' '// see specs/001-example/spec.md' > "$fixture/crates/edifact-rs/src/lib.rs"
+printf '%s\n' '// see specs/001-example/spec.md' > "$fixture/crates/edifact/src/lib.rs"
 expect_fail 'leak from crate source'
-printf '%s\n' '[Core concepts](/docs/core-concepts/)' > "$fixture/crates/edifact-rs/src/lib.rs"
+printf '%s\n' '[Core concepts](/docs/core-concepts/)' > "$fixture/crates/edifact/src/lib.rs"
 expect_pass
 printf '%s\n' '[x](../.specify/memory/constitution.md)' > "$fixture/site/content/_index.md"
 expect_fail 'leak from site content'
@@ -51,6 +51,17 @@ printf '%s\n' '# Specification' > "$fixture/specs/001-example/spec.md"
 mkdir -p "$fixture/specs/002-orphan"
 expect_fail 'orphan specification'
 rmdir "$fixture/specs/002-orphan"
+mkdir -p "$fixture/specs/archive"
+mv "$fixture/specs/001-example" "$fixture/specs/archive/"
+expect_pass
+mkdir -p "$fixture/specs/archive/002-orphan"
+expect_fail 'orphan archived specification'
+rmdir "$fixture/specs/archive/002-orphan"
+mkdir -p "$fixture/specs/001-example"
+printf '%s\n' '# Specification' > "$fixture/specs/001-example/spec.md"
+expect_fail 'specification both active and archived'
+rm -r "$fixture/specs/001-example"
+mv "$fixture/specs/archive/001-example" "$fixture/specs/"
 printf '%s\n' '# Roadmap' '## Active' '### `#example` Example' \
     '**Specified as:** `001-example`' > "$fixture/concepts/ROADMAP.md"
 expect_fail 'missing discharge'

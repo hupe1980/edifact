@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Published files must not cite the gitignored planning paths; with a local
-# planning tree, every roadmap item must own exactly one spec.
+# planning tree, every roadmap item must own exactly one spec, active in
+# specs/ or finished in specs/archive/.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -78,12 +79,15 @@ if [[ -n "$duplicates" ]]; then
 fi
 while IFS= read -r feature; do
     [[ -n "$feature" ]] || continue
-    if [[ ! -s "specs/$feature/spec.md" ]]; then
+    if [[ -e "specs/$feature" && -e "specs/archive/$feature" ]]; then
+        printf 'Specification both active and archived: %s\n' "$feature" >&2
+        failed=1
+    elif [[ ! -s "specs/$feature/spec.md" && ! -s "specs/archive/$feature/spec.md" ]]; then
         printf 'Missing specification: %s\n' "$feature" >&2
         failed=1
     fi
 done <<< "$named"
-for directory in specs/[0-9][0-9][0-9]-*/; do
+for directory in specs/[0-9][0-9][0-9]-*/ specs/archive/[0-9][0-9][0-9]-*/; do
     [[ -d "$directory" ]] || continue
     feature=$(basename "$directory")
     if ! grep -Fxq "$feature" <<< "$named"; then
