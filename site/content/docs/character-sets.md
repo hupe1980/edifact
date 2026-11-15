@@ -19,7 +19,7 @@ single byte `0xFC`. That byte is not valid UTF-8. A German `ORDERS` carrying
 rejects outright:
 
 ```rust
-use edifact_rs::from_bytes;
+use edifact::from_bytes;
 
 let mut raw = b"UNB+UNOC:3+S+R+260101:0900+IC1'NAD+BY+M".to_vec();
 raw.push(0xFC);                              // `ü` in ISO 8859-1
@@ -29,7 +29,7 @@ raw.extend_from_slice(b"ller'UNZ+0+IC1'");
 assert!(from_bytes(&raw).collect::<Result<Vec<_>, _>>().is_err());
 ```
 
-The same holds for every `UNOD`…`UNOK` interchange. The rest of `edifact-rs` is
+The same holds for every `UNOD`…`UNOK` interchange. The rest of `edifact` is
 UTF-8 throughout, so the fix is to decode at the boundary.
 
 ## Decoding a whole interchange
@@ -38,7 +38,7 @@ UTF-8 throughout, so the fix is to decode at the boundary.
 and converts the payload to UTF-8:
 
 ```rust
-use edifact_rs::{decode_interchange, from_bytes};
+use edifact::{decode_interchange, from_bytes};
 
 let mut raw = b"UNB+UNOC:3+S+R+260101:0900+IC1'NAD+BY+M".to_vec();
 raw.push(0xFC);
@@ -48,7 +48,7 @@ let utf8 = decode_interchange(&raw)?;
 let segments: Vec<_> = from_bytes(&utf8).collect::<Result<Vec<_>, _>>()?;
 
 assert_eq!(segments[1].element_str(1), Some("Müller"));
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 It is safe to call unconditionally. An ASCII payload, a `UNOY` (UTF-8) payload,
@@ -56,12 +56,12 @@ and an input with no `UNB` at all are returned **borrowed** — nothing is copie
 and the zero-copy path through `from_bytes` is preserved:
 
 ```rust
-use edifact_rs::decode_interchange;
+use edifact::decode_interchange;
 use std::borrow::Cow;
 
 let ascii = b"UNB+UNOC:3+S+R+260101:0900+IC1'BGM+220'UNZ+0+IC1'";
 assert!(matches!(decode_interchange(ascii)?, Cow::Borrowed(_)));
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 > **Spans index the decoded buffer.** When transcoding actually happens, one
@@ -75,7 +75,7 @@ assert!(matches!(decode_interchange(ascii)?, Cow::Borrowed(_)));
 from it, and streams the rest through one 8 KiB decoding buffer:
 
 ```rust
-use edifact_rs::{decode_reader, from_reader};
+use edifact::{decode_reader, from_reader};
 
 let mut raw = b"UNB+UNOC:3+S+R+260101:0900+IC1'NAD+BY+M".to_vec();
 raw.push(0xFC);
@@ -85,7 +85,7 @@ let segments: Vec<_> = from_reader(decode_reader(std::io::Cursor::new(raw))?)
     .collect::<Result<_, _>>()?;
 
 assert_eq!(segments[1].element_str(1), Some("Müller"));
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 Like `decode_interchange`, it is safe to wrap around any stream: a UTF-8
@@ -95,7 +95,7 @@ When the repertoire is already known — from the trading-partner agreement, say
 `Charset::decoding_reader` skips the probe:
 
 ```rust
-use edifact_rs::{Charset, from_reader};
+use edifact::{Charset, from_reader};
 
 # let mut raw = b"UNB+UNOC:3+S+R+260101:0900+IC1'NAD+BY+M".to_vec();
 # raw.push(0xFC);
@@ -103,7 +103,7 @@ use edifact_rs::{Charset, from_reader};
 let reader = Charset::UnoC.decoding_reader(std::io::Cursor::new(raw));
 let segments: Vec<_> = from_reader(reader).collect::<Result<_, _>>()?;
 # assert_eq!(segments[1].element_str(1), Some("Müller"));
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ## Writing
@@ -113,14 +113,14 @@ to diagnose: a `UNOC` header with a UTF-8 body arrives as mojibake with nothing
 in the interchange to explain why. Bind the writer to the repertoire:
 
 ```rust
-use edifact_rs::{Charset, Writer};
+use edifact::{Charset, Writer};
 
 let mut writer = Writer::new(Vec::new()).with_charset(Charset::UnoC);
 writer.write_composites("NAD", &[&["BY"], &["Müller"]])?;
 
 // `ü` goes out as the single Latin-1 byte 0xFC.
 assert_eq!(writer.finish()?, b"NAD+BY+M\xFCller'".to_vec());
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 A character the repertoire cannot carry is refused
@@ -128,7 +128,7 @@ A character the repertoire cannot carry is refused
 written as something the receiver reads differently:
 
 ```rust
-use edifact_rs::{Charset, EdifactError, Writer};
+use edifact::{Charset, EdifactError, Writer};
 
 let mut writer = Writer::new(Vec::new()).with_charset(Charset::UnoA);
 // Level A is upper-case only.
@@ -147,7 +147,7 @@ Partners enforce the repertoire, and they do it *after* you have sent the file. 
 still be rejected. `CharsetValidator` checks it locally:
 
 ```rust
-use edifact_rs::{ValidationContext, from_bytes};
+use edifact::{ValidationContext, from_bytes};
 
 // UNOA is upper-case only, but the party name is mixed case.
 let segments: Vec<_> =
@@ -161,7 +161,7 @@ let report = ValidationContext::builder()
 
 let issue = report.errors().iter().find(|i| i.error_code() == Some("E038")).unwrap();
 assert_eq!(issue.segment_tag.as_deref(), Some("NAD"));
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 Use `with_charset_validation_for(Charset::UnoA)` to pin a repertoire instead —
@@ -203,7 +203,7 @@ Bytes that a repertoire leaves undefined (ISO 8859-6 has 45 such slots) are an
 error, not a substituted replacement character:
 
 ```rust
-use edifact_rs::{Charset, EdifactError};
+use edifact::{Charset, EdifactError};
 
 // 0xA1 is undefined in ISO 8859-6.
 let err = Charset::UnoI.decode(b"AB\xA1CD").unwrap_err();
@@ -217,7 +217,7 @@ writing anything, which is what you want when the fix is to transliterate rather
 than to fail:
 
 ```rust
-use edifact_rs::Charset;
+use edifact::Charset;
 
 assert!(Charset::UnoA.permits('A'));
 assert!(!Charset::UnoA.permits('a'));

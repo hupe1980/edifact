@@ -9,7 +9,7 @@
 //! A space at UNA position 7 is the "not used" sentinel, which is why every
 //! interchange without an explicit separator keeps the flat behaviour.
 
-use edifact_rs::{
+use edifact::{
     EdifactError, Element, Segment, ServiceStringAdvice, Writer, from_bytes, segments_to_bytes,
 };
 
@@ -103,7 +103,7 @@ fn a_separator_before_any_element_is_rejected() {
 fn the_reader_path_agrees_with_the_slice_path() {
     let input = format!("{REP_UNA}RFF+ON:1*ON:2'");
 
-    let owned = edifact_rs::from_reader(std::io::Cursor::new(input.as_bytes()))
+    let owned = edifact::from_reader(std::io::Cursor::new(input.as_bytes()))
         .collect::<Result<Vec<_>, _>>()
         .expect("reader path must parse");
     let borrowed = parse(input.as_bytes());
@@ -223,13 +223,12 @@ fn writing_a_repetition_without_a_declared_separator_is_refused() {
 fn reader_rebases_repetition_spans_onto_the_stream() {
     let input = b"UNA:+.?*'RFF+ON:1*ON:2'RFF+AAA:9*AAA:8'";
 
-    let borrowed: Vec<_> = edifact_rs::from_bytes(input)
+    let borrowed: Vec<_> = edifact::from_bytes(input)
         .collect::<Result<Vec<_>, _>>()
         .expect("slice parse");
-    let owned: Vec<edifact_rs::OwnedSegment> =
-        edifact_rs::from_reader(std::io::Cursor::new(&input[..]))
-            .collect::<Result<Vec<_>, _>>()
-            .expect("reader parse");
+    let owned: Vec<edifact::OwnedSegment> = edifact::from_reader(std::io::Cursor::new(&input[..]))
+        .collect::<Result<Vec<_>, _>>()
+        .expect("reader parse");
 
     assert_eq!(borrowed.len(), owned.len());
     for (b, o) in borrowed.iter().zip(&owned) {
@@ -258,7 +257,7 @@ fn reader_rebases_repetition_spans_onto_the_stream() {
 /// that logged the error and carried on emitted a corrupt interchange.
 #[test]
 fn a_rejected_repetition_writes_no_bytes_at_all() {
-    use edifact_rs::Writer;
+    use edifact::Writer;
 
     let seg = Segment::new(
         "RFF",
@@ -286,14 +285,14 @@ fn a_rejected_repetition_writes_no_bytes_at_all() {
 // of this file must still build without it.
 #[cfg(feature = "derive")]
 mod typed {
-    use edifact_rs::{EdifactDeserialize, EdifactSerialize};
+    use edifact::{EdifactDeserialize, EdifactSerialize};
 
     /// `RFF+ON:1*ON:2*ON:3'` — one data element, three occurrences.
     ///
     /// Without `repeat`, a `Vec<T>` on a segment struct means *repeated segments*.
     /// The two shapes are indistinguishable in Rust, so the attribute is what says
     /// which one the wire carries.
-    #[derive(Debug, PartialEq, edifact_rs::EdifactDeserialize, edifact_rs::EdifactSerialize)]
+    #[derive(Debug, PartialEq, edifact::EdifactDeserialize, edifact::EdifactSerialize)]
     #[edifact(segment = "RFF")]
     struct OrderReferences {
         #[edifact(element = 0, component = 0)]
@@ -302,13 +301,13 @@ mod typed {
         numbers: Vec<String>,
     }
 
-    fn v4_advice() -> edifact_rs::ServiceStringAdvice {
-        edifact_rs::ServiceStringAdvice::from_bytes(b"UNA:+.?*'").expect("UNA")
+    fn v4_advice() -> edifact::ServiceStringAdvice {
+        edifact::ServiceStringAdvice::from_bytes(b"UNA:+.?*'").expect("UNA")
     }
 
     #[test]
     fn a_repeating_element_deserializes_into_a_vec() {
-        let segments: Vec<_> = edifact_rs::from_bytes(b"UNA:+.?*'RFF+ON:1*ON:2*ON:3'")
+        let segments: Vec<_> = edifact::from_bytes(b"UNA:+.?*'RFF+ON:1*ON:2*ON:3'")
             .collect::<Result<Vec<_>, _>>()
             .expect("parse");
         let rff = OrderReferences::edifact_deserialize(&segments).expect("deserialize");
@@ -319,13 +318,13 @@ mod typed {
 
     #[test]
     fn the_owned_path_agrees_with_the_borrowed_one() {
-        let owned: Vec<_> = edifact_rs::from_bytes(b"UNA:+.?*'RFF+ON:1*ON:2*ON:3'")
+        let owned: Vec<_> = edifact::from_bytes(b"UNA:+.?*'RFF+ON:1*ON:2*ON:3'")
             .map(|r| r.map(|s| s.into_owned()))
             .collect::<Result<Vec<_>, _>>()
             .expect("parse");
         let from_owned = OrderReferences::edifact_deserialize(&owned).expect("deserialize");
 
-        let borrowed: Vec<_> = edifact_rs::from_bytes(b"UNA:+.?*'RFF+ON:1*ON:2*ON:3'")
+        let borrowed: Vec<_> = edifact::from_bytes(b"UNA:+.?*'RFF+ON:1*ON:2*ON:3'")
             .collect::<Result<Vec<_>, _>>()
             .expect("parse");
         let from_borrowed = OrderReferences::edifact_deserialize(&borrowed).expect("deserialize");
@@ -337,15 +336,14 @@ mod typed {
     fn a_repeating_element_round_trips_through_the_typed_layer() {
         // The point of the attribute: what the parser split, the serializer rejoins.
         let input = b"UNA:+.?*'RFF+ON:1*ON:2*ON:3'";
-        let segments: Vec<_> = edifact_rs::from_bytes(input)
+        let segments: Vec<_> = edifact::from_bytes(input)
             .collect::<Result<Vec<_>, _>>()
             .expect("parse");
         let rff = OrderReferences::edifact_deserialize(&segments).expect("deserialize");
 
         let mut buf = Vec::new();
         {
-            let mut emitter =
-                edifact_rs::WriterEmitter::with_una(&mut buf, v4_advice()).expect("UNA");
+            let mut emitter = edifact::WriterEmitter::with_una(&mut buf, v4_advice()).expect("UNA");
             rff.edifact_serialize(&mut emitter).expect("serialize");
             emitter.finish().expect("finish");
         }
@@ -356,7 +354,7 @@ mod typed {
     fn an_omitted_occurrence_keeps_its_position() {
         // ISO 9735-1 §8.7.3: the position of an occurrence is significant, so an
         // omitted one keeps its separator and must not shift the others left.
-        let segments: Vec<_> = edifact_rs::from_bytes(b"UNA:+.?*'RFF+ON:1*ON:*ON:3'")
+        let segments: Vec<_> = edifact::from_bytes(b"UNA:+.?*'RFF+ON:1*ON:*ON:3'")
             .collect::<Result<Vec<_>, _>>()
             .expect("parse");
         let rff = OrderReferences::edifact_deserialize(&segments).expect("deserialize");
@@ -371,8 +369,7 @@ mod typed {
         };
         let mut buf = Vec::new();
         {
-            let mut emitter =
-                edifact_rs::WriterEmitter::with_una(&mut buf, v4_advice()).expect("UNA");
+            let mut emitter = edifact::WriterEmitter::with_una(&mut buf, v4_advice()).expect("UNA");
             rff.edifact_serialize(&mut emitter).expect("serialize");
             emitter.finish().expect("finish");
         }
@@ -387,12 +384,9 @@ mod typed {
             qualifier: "ON".to_owned(),
             numbers: vec!["1".to_owned(), "2".to_owned()],
         };
-        let err = edifact_rs::to_bytes(&rff).expect_err("must refuse");
+        let err = edifact::to_bytes(&rff).expect_err("must refuse");
         assert!(
-            matches!(
-                err,
-                edifact_rs::EdifactError::RepetitionSeparatorNotDeclared
-            ),
+            matches!(err, edifact::EdifactError::RepetitionSeparatorNotDeclared),
             "expected RepetitionSeparatorNotDeclared, got {err:?}"
         );
     }

@@ -10,10 +10,10 @@
 //!
 //! Run:
 //! ```text
-//! cargo run -p edifact-rs --example cookbook_typed_derive
+//! cargo run -p edifact --example cookbook_typed_derive
 //! ```
 
-use edifact_rs::{EdifactDeserialize, EdifactSerialize, from_bytes, ser};
+use edifact::{EdifactDeserialize, EdifactSerialize, from_bytes, ser};
 
 // ── Segment structs ────────────────────────────────────────────────────────────
 
@@ -60,7 +60,7 @@ struct MinimalOrderMessage {
     supplier: Option<Nad>,
 }
 
-fn main() -> Result<(), edifact_rs::EdifactError> {
+fn main() -> Result<(), edifact::EdifactError> {
     let input = b"UNH+1+ORDERS:D:11A:UN'BGM+220+PO-4711+9'NAD+BY+4000001000002::9'NAD+SU+4000001000001::9'UNT+5+1'";
     // Zero-copy parse: each `Segment<'_>` borrows from `input`.
     let segments: Vec<_> = from_bytes(input).collect::<Result<Vec<_>, _>>()?;

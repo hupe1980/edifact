@@ -10,14 +10,14 @@
 //!
 //! Run:
 //! ```text
-//! cargo run -p edifact-rs --example cookbook_profile_packs
+//! cargo run -p edifact --example cookbook_profile_packs
 //! ```
 
-use edifact_rs::{
+use edifact::{
     ProfileRulePack, ValidationContext, ValidationIssue, ValidationSeverity, from_bytes,
 };
 
-fn main() -> Result<(), edifact_rs::EdifactError> {
+fn main() -> Result<(), edifact::EdifactError> {
     // Parse a minimal ORDERS interchange.
     let segments: Vec<_> =
         from_bytes(b"UNH+1+ORDERS:D:96A:UN'BGM+220+PO123+9'UNT+3+1'").collect::<Result<_, _>>()?;

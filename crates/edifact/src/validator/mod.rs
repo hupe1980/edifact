@@ -335,7 +335,7 @@ impl Validator for EnvelopeValidator {
 /// # Example
 ///
 /// ```
-/// use edifact_rs::{from_bytes, ValidationContext};
+/// use edifact::{from_bytes, ValidationContext};
 ///
 /// // `FTX+` carries a value of nothing but spaces; `DTM` carries no data at all.
 /// let segments: Vec<_> = from_bytes(b"FTX+   'DTM'")
@@ -348,7 +348,7 @@ impl Validator for EnvelopeValidator {
 ///
 /// assert_eq!(report.errors()[0].error_code(), Some("E046")); // DTM has no data element
 /// assert_eq!(report.warnings()[0].error_code(), Some("E045")); // FTX value is only spaces
-/// # Ok::<(), edifact_rs::EdifactError>(())
+/// # Ok::<(), edifact::EdifactError>(())
 /// ```
 pub struct SyntaxValidator;
 
@@ -462,7 +462,7 @@ impl Validator for SyntaxValidator {
 /// # Example
 ///
 /// ```
-/// use edifact_rs::{from_bytes, ValidationContext};
+/// use edifact::{from_bytes, ValidationContext};
 ///
 /// // UNOA is upper-case only, but the party name is mixed case.
 /// let segments: Vec<_> = from_bytes(
@@ -477,7 +477,7 @@ impl Validator for SyntaxValidator {
 ///
 /// let issue = report.errors().iter().find(|i| i.error_code() == Some("E038")).unwrap();
 /// assert_eq!(issue.segment_tag.as_deref(), Some("NAD"));
-/// # Ok::<(), edifact_rs::EdifactError>(())
+/// # Ok::<(), edifact::EdifactError>(())
 /// ```
 pub struct CharsetValidator {
     /// Repertoire to check against; `None` reads it from the interchange's `UNB`.
@@ -600,8 +600,8 @@ impl Validator for CharsetValidator {
 ///
 /// ```
 /// use std::sync::Arc;
-/// use edifact_rs::group::{Entry, GroupSchema, SegmentPlace};
-/// use edifact_rs::{FindingKind, PlacementValidator, ValidationContext, ValidationLayer};
+/// use edifact::group::{Entry, GroupSchema, SegmentPlace};
+/// use edifact::{FindingKind, PlacementValidator, ValidationContext, ValidationLayer};
 ///
 /// let schema = GroupSchema::ordered(
 ///     "MSG",
@@ -611,13 +611,13 @@ impl Validator for CharsetValidator {
 ///     .with_validator(ValidationLayer::Structure, PlacementValidator::new(Arc::new(schema)))
 ///     .build();
 ///
-/// let segments: Vec<_> = edifact_rs::from_bytes(b"UNH+1+X:D:11A:UN'DTM+137:1:102'BGM+220'UNT+4+1'")
+/// let segments: Vec<_> = edifact::from_bytes(b"UNH+1+X:D:11A:UN'DTM+137:1:102'BGM+220'UNT+4+1'")
 ///     .collect::<Result<_, _>>()?;
 /// let report = ctx.validate(&segments);
 /// let issue = &report.errors()[0];
 /// assert_eq!(issue.kind(), Some(FindingKind::Placement));
 /// assert_eq!(issue.segment_position(), Some(2));
-/// # Ok::<(), edifact_rs::EdifactError>(())
+/// # Ok::<(), edifact::EdifactError>(())
 /// ```
 #[derive(Debug, Clone)]
 pub struct PlacementValidator {

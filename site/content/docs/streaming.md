@@ -4,7 +4,7 @@ description = "Process large interchanges one segment or one message at a time w
 weight = 60
 +++
 
-`edifact-rs` provides multiple streaming APIs for processing large EDIFACT
+`edifact` provides multiple streaming APIs for processing large EDIFACT
 interchanges without loading the entire file into memory. All reader-based APIs are
 synchronous (`std::io::Read`) and can be bridged to async runtimes — see
 [Async Integration](@/docs/async-integration.md).
@@ -41,10 +41,10 @@ stream runs. Measured figures are in [Performance](@/docs/performance.md#memory-
 Process one `OwnedSegment` at a time without loading the interchange into memory:
 
 ```rust,no_run
-use edifact_rs::from_reader;
+use edifact::from_reader;
 use std::fs::File;
 
-fn main() -> Result<(), edifact_rs::EdifactError> {
+fn main() -> Result<(), edifact::EdifactError> {
     let f = File::open("interchange.edi")?;
 
     for result in from_reader(f) {
@@ -69,7 +69,7 @@ automatically.
 ### `message_windows` — byte-slice source
 
 ```rust
-use edifact_rs::message_windows;
+use edifact::message_windows;
 
 let interchange = b"\
     UNB+UNOA:1+S+R+200101:0900+1'\
@@ -85,16 +85,16 @@ for result in message_windows(interchange) {
     // window.segments     — [UNH, BGM, UNT]
     println!("{:?}: {} segments", window.message_type, window.segments.len());
 }
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ### `message_windows_from_reader` — reader source
 
 ```rust,no_run
-use edifact_rs::message_windows_from_reader;
+use edifact::message_windows_from_reader;
 use std::fs::File;
 
-fn main() -> Result<(), edifact_rs::EdifactError> {
+fn main() -> Result<(), edifact::EdifactError> {
     let f = File::open("multi_message.edi")?;
     for result in message_windows_from_reader(f) {
         let window = result?;
@@ -119,7 +119,7 @@ fn main() -> Result<(), edifact_rs::EdifactError> {
 `T` maps to, skipping everything else without buffering it.
 
 ```rust
-use edifact_rs::{EdifactDeserialize, deserialize_each};
+use edifact::{EdifactDeserialize, deserialize_each};
 
 #[derive(Debug, EdifactDeserialize)]
 #[edifact(segment = "BGM")]
@@ -140,7 +140,7 @@ assert_eq!(first.doc_id, "PO-001");
 let all: Vec<Bgm> = deserialize_each(input).collect::<Result<_, _>>()?;
 assert_eq!(all.len(), 2);
 assert_eq!(all[1].doc_id, "PO-002");
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ### Reader variant
@@ -148,10 +148,10 @@ assert_eq!(all[1].doc_id, "PO-002");
 Identical semantics, for any `impl Read`:
 
 ```rust
-use edifact_rs::deserialize_each_from_reader;
+use edifact::deserialize_each_from_reader;
 use std::io::Cursor;
 
-# use edifact_rs::EdifactDeserialize;
+# use edifact::EdifactDeserialize;
 # #[derive(Debug, EdifactDeserialize)]
 # #[edifact(segment = "BGM")]
 # struct Bgm { #[edifact(element = 0)] doc_code: String, #[edifact(element = 1)] doc_id: String }
@@ -159,7 +159,7 @@ let input = Cursor::new(b"BGM+220+PO-001+9'BGM+231+PO-002+9'".to_vec());
 
 let all: Vec<Bgm> = deserialize_each_from_reader(input).collect::<Result<_, _>>()?;
 assert_eq!(all.len(), 2);
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ---
@@ -170,7 +170,7 @@ assert_eq!(all.len(), 2);
 deserialization. Each `UNH..UNT` window is deserialized into a message struct:
 
 ```rust
-use edifact_rs::{EdifactDeserialize, deserialize_messages_from_reader};
+use edifact::{EdifactDeserialize, deserialize_messages_from_reader};
 use std::io::Cursor;
 
 #[derive(Debug, EdifactDeserialize)]
@@ -200,7 +200,7 @@ let messages: Vec<OrderMessage> =
 assert_eq!(messages.len(), 2);
 assert_eq!(messages[0].bgm.as_ref().unwrap().doc_id, "PO-001");
 assert_eq!(messages[1].bgm.as_ref().unwrap().doc_id, "PO-002");
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ### No conversion step on the reader path
@@ -221,7 +221,7 @@ Combine `message_windows_from_reader` with `ValidationContext` to validate each
 message as it arrives, without buffering the whole interchange:
 
 ```rust
-use edifact_rs::{
+use edifact::{
     ProfileRulePack, ValidationContext, ValidationIssue, ValidationSeverity,
     message_windows_from_reader,
 };
@@ -259,10 +259,10 @@ for result in message_windows_from_reader(input) {
         }
     }
 }
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
-See the full example in [`cookbook_streamed_progressive_validation.rs`](https://github.com/hupe1980/edifact-rs/tree/main/crates/edifact-rs/examples/cookbook_streamed_progressive_validation.rs).
+See the full example in [`cookbook_streamed_progressive_validation.rs`](https://github.com/hupe1980/edifact/tree/main/crates/edifact/examples/cookbook_streamed_progressive_validation.rs).
 
 ---
 
@@ -272,7 +272,7 @@ For full control over window boundaries (e.g. custom grouping logic), use the ra
 segment iterator:
 
 ```rust
-use edifact_rs::{from_reader, OwnedSegment};
+use edifact::{from_reader, OwnedSegment};
 use std::io::Cursor;
 
 let input = Cursor::new(b"\
@@ -304,7 +304,7 @@ for result in from_reader(input) {
         current.push(seg);
     }
 }
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ---
@@ -325,7 +325,7 @@ decode error in a one-item chain.
 sniff to the first `next()`:
 
 ```rust
-use edifact_rs::from_reader_decoded;
+use edifact::from_reader_decoded;
 
 let mut raw = b"UNB+UNOC:3+S+R+260101:0900+IC1'NAD+BY+M".to_vec();
 raw.push(0xFC); // `ü` in ISO 8859-1
@@ -335,7 +335,7 @@ raw.extend_from_slice(b"ller'UNZ+0+IC1'");
 let segments: Vec<_> = from_reader_decoded(std::io::Cursor::new(raw))
     .collect::<Result<Vec<_>, _>>()?;
 assert_eq!(segments[1].element_str(1), Some("Müller"));
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 A repertoire this crate refuses — `UNOX`, `KECA` — arrives as the first
@@ -343,7 +343,7 @@ item of the iterator, in the same shape as a parse error, and the iterator then
 ends:
 
 ```rust
-# use edifact_rs::{EdifactError, from_reader_decoded};
+# use edifact::{EdifactError, from_reader_decoded};
 let raw = b"UNB+UNOX:3+S+R+260101:0900+IC1'UNZ+0+IC1'";
 let mut stream = from_reader_decoded(std::io::Cursor::new(&raw[..]));
 
@@ -352,7 +352,7 @@ assert!(matches!(
     Err(EdifactError::UnsupportedCharset { .. })
 ));
 assert!(stream.next().is_none());
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 `from_bytes_decoded` is the slice counterpart. It returns owned segments and a

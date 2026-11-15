@@ -1,4 +1,4 @@
-use edifact_rs::{
+use edifact::{
     EdifactError, Segment, ValidationContext, ValidationLayer, ValidationReport,
     ValidationRuleContext, Validator, validate_each,
 };
@@ -42,7 +42,7 @@ impl Validator for SimpleStructureValidator {
 #[test]
 fn validator_trait_passes_for_valid_segments() {
     let input = b"UNH+1+ORDERS:D:11A:UN'BGM+E03+11042+9'UNT+3+1'";
-    let segments: Vec<_> = edifact_rs::from_bytes(input)
+    let segments: Vec<_> = edifact::from_bytes(input)
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
 
@@ -56,7 +56,7 @@ fn validator_trait_passes_for_valid_segments() {
 #[test]
 fn validator_trait_fails_for_segments_with_errors() {
     let input = b"UNH+INCOMPLETE'ZZZ+X'";
-    let segments: Vec<_> = edifact_rs::from_bytes(input)
+    let segments: Vec<_> = edifact::from_bytes(input)
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
 
@@ -71,7 +71,7 @@ fn validator_trait_fails_for_segments_with_errors() {
 #[test]
 fn validator_rejects_unknown_segments() {
     let input = b"ZZZ+X'";
-    let segments: Vec<_> = edifact_rs::from_bytes(input)
+    let segments: Vec<_> = edifact::from_bytes(input)
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
 
@@ -117,7 +117,7 @@ fn context_can_disable_code_list_layer() {
     }
 
     let input = b"BGM+E3+11042+9'";
-    let segments: Vec<_> = edifact_rs::from_bytes(input)
+    let segments: Vec<_> = edifact::from_bytes(input)
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
 
@@ -171,7 +171,7 @@ fn validation_context_supports_multiple_validators() {
     }
 
     let input = b"BGM+E03+11042+9'ZZZ+X'";
-    let segments: Vec<_> = edifact_rs::from_bytes(input)
+    let segments: Vec<_> = edifact::from_bytes(input)
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
 
@@ -207,7 +207,7 @@ fn validation_context_propagates_message_type() {
 
     let captured_message_type = Arc::new(Mutex::new(None));
     let input = b"UNH+1+ORDERS:D:11A:UN'UNT+2+1'";
-    let segments: Vec<_> = edifact_rs::from_bytes(input)
+    let segments: Vec<_> = edifact::from_bytes(input)
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
 
@@ -233,11 +233,11 @@ fn validation_context_propagates_message_type() {
 // application segment appears between UNB and the first UNH.
 #[test]
 fn envelope_rejects_segment_between_unb_and_unh() {
-    use edifact_rs::{EdifactError, validate_envelope};
+    use edifact::{EdifactError, validate_envelope};
 
     // Insert a BGM between UNB and UNH (not inside a message envelope).
     let input = b"UNB+UNOB:1+SENDER+RECEIVER+200101:0000+1'BGM+220+1+9'UNH+1+ORDERS:D:96A:UN'UNT+2+1'UNZ+1+1'";
-    let segments: Vec<_> = edifact_rs::from_bytes(input)
+    let segments: Vec<_> = edifact::from_bytes(input)
         .collect::<Result<Vec<_>, _>>()
         .expect("should tokenise");
 
@@ -251,7 +251,7 @@ fn envelope_rejects_segment_between_unb_and_unh() {
 // ── ISO 9735-1 §8.7 trailing separators and §9.1 insignificant characters ─────
 
 mod suppression_rules {
-    use edifact_rs::{
+    use edifact::{
         ComponentRef, DirectoryValidator, ElementRef, Insignificant, Repr, SegmentDefinition,
         Status, ValidationContext, ValidationLayer, from_bytes,
     };
@@ -480,12 +480,12 @@ mod suppression_rules {
 // ── 019: exact positions, layer and kind on every built-in issue ─────────────
 
 mod issue_model {
-    use edifact_rs::{
+    use edifact::{
         DirectoryValidator, ElementRef, FindingKind, ProfileRulePack, SegmentDefinition, Status,
         ValidationContext, ValidationIssue, ValidationLayer, ValidationReport, from_bytes, service,
     };
 
-    fn parse(input: &[u8]) -> Vec<edifact_rs::Segment<'_>> {
+    fn parse(input: &[u8]) -> Vec<edifact::Segment<'_>> {
         from_bytes(input)
             .collect::<Result<Vec<_>, _>>()
             .expect("fixture should parse")
@@ -744,12 +744,12 @@ mod issue_model {
     #[test]
     fn fork_exclusion_notice_has_kind_other_and_no_layer() {
         struct NotForkable;
-        impl edifact_rs::Validator for NotForkable {
+        impl edifact::Validator for NotForkable {
             fn validate_batch(
                 &self,
-                _segments: &[edifact_rs::Segment<'_>],
+                _segments: &[edifact::Segment<'_>],
                 _report: &mut ValidationReport,
-                _context: &edifact_rs::ValidationRuleContext<'_>,
+                _context: &edifact::ValidationRuleContext<'_>,
             ) {
             }
         }
@@ -759,10 +759,7 @@ mod issue_model {
             .fork_with_message_ref("1")
             .validate(&parse(b"UNH+1+ORDERS:D:96A:UN'UNT+2+1'"));
         let notice = &report.infos()[0];
-        assert_eq!(
-            notice.rule_id(),
-            Some("edifact-rs::fork::excluded-validator")
-        );
+        assert_eq!(notice.rule_id(), Some("edifact::fork::excluded-validator"));
         assert_eq!(notice.kind(), Some(FindingKind::Other));
         assert_eq!(notice.layer(), None, "static issues are not stamped");
     }

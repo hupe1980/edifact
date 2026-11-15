@@ -6,7 +6,7 @@
 //! interchange whose `ü` is the single byte `0xFC` — not valid UTF-8, and
 //! therefore unparseable by a UTF-8-only reader.
 
-use edifact_rs::{
+use edifact::{
     Charset, EdifactError, ValidationContext, Writer, decode_interchange, from_bytes, sniff_charset,
 };
 
@@ -239,10 +239,9 @@ fn the_decoding_reader_matches_whole_slice_decoding() {
 #[test]
 fn the_decoding_reader_feeds_the_streaming_parser() {
     let raw = unoc_interchange();
-    let segments =
-        edifact_rs::from_reader(Charset::UnoC.decoding_reader(std::io::Cursor::new(raw)))
-            .collect::<Result<Vec<_>, _>>()
-            .expect("parse");
+    let segments = edifact::from_reader(Charset::UnoC.decoding_reader(std::io::Cursor::new(raw)))
+        .collect::<Result<Vec<_>, _>>()
+        .expect("parse");
     assert_eq!(segments[1].element_str(1), Some("Müller"));
 }
 
@@ -439,7 +438,7 @@ fn repetitions_are_checked_too() {
 
 #[test]
 fn non_finite_floats_are_refused() {
-    use edifact_rs::{EdifactSerialize, VecEmitter, ser::DecimalFloat};
+    use edifact::{EdifactSerialize, VecEmitter, ser::DecimalFloat};
 
     for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
         let mut emitter = VecEmitter::default();
@@ -476,7 +475,7 @@ fn a_utf8_payload_survives_the_decoding_reader() {
     // ones that need no decoding at all.
     let raw = "UNB+UNOY:4+S+R+260101:0900+IC1'NAD+BY+Müller'UNZ+0+IC1'".as_bytes();
     for charset in [Charset::UnoY, Charset::UnoA, Charset::UnoB] {
-        let segments = edifact_rs::from_reader(charset.decoding_reader(std::io::Cursor::new(raw)))
+        let segments = edifact::from_reader(charset.decoding_reader(std::io::Cursor::new(raw)))
             .collect::<Result<Vec<_>, _>>()
             .expect("parse");
         assert_eq!(segments[1].element_str(1), Some("Müller"), "{charset}");
@@ -485,27 +484,25 @@ fn a_utf8_payload_survives_the_decoding_reader() {
 
 #[test]
 fn decode_reader_discovers_the_repertoire_from_the_stream() {
-    use edifact_rs::decode_reader;
+    use edifact::decode_reader;
 
     let raw = unoc_interchange();
-    let segments =
-        edifact_rs::from_reader(decode_reader(std::io::Cursor::new(raw)).expect("sniff"))
-            .collect::<Result<Vec<_>, _>>()
-            .expect("parse");
+    let segments = edifact::from_reader(decode_reader(std::io::Cursor::new(raw)).expect("sniff"))
+        .collect::<Result<Vec<_>, _>>()
+        .expect("parse");
     assert_eq!(segments[1].element_str(1), Some("Müller"));
 
     // A UTF-8 interchange goes through untouched …
     let utf8 = "UNB+UNOY:4+S+R+260101:0900+IC1'NAD+BY+Müller'UNZ+0+IC1'".as_bytes();
-    let segments =
-        edifact_rs::from_reader(decode_reader(std::io::Cursor::new(utf8)).expect("sniff"))
-            .collect::<Result<Vec<_>, _>>()
-            .expect("parse");
+    let segments = edifact::from_reader(decode_reader(std::io::Cursor::new(utf8)).expect("sniff"))
+        .collect::<Result<Vec<_>, _>>()
+        .expect("parse");
     assert_eq!(segments[1].element_str(1), Some("Müller"));
 
     // … and so does a bare message with no UNB to sniff.
     let bare = b"UNH+1+ORDERS:D:96A:UN'BGM+220'UNT+3+1'";
     let segments =
-        edifact_rs::from_reader(decode_reader(std::io::Cursor::new(&bare[..])).expect("sniff"))
+        edifact::from_reader(decode_reader(std::io::Cursor::new(&bare[..])).expect("sniff"))
             .collect::<Result<Vec<_>, _>>()
             .expect("parse");
     assert_eq!(segments.len(), 3);
@@ -513,7 +510,7 @@ fn decode_reader_discovers_the_repertoire_from_the_stream() {
 
 #[test]
 fn decode_reader_handles_a_stream_that_returns_one_byte_at_a_time() {
-    use edifact_rs::decode_reader;
+    use edifact::decode_reader;
 
     /// A reader that never returns more than one byte per call, which is what
     /// the probe loop has to tolerate — a short read must not truncate the UNB.
@@ -527,7 +524,7 @@ fn decode_reader_handles_a_stream_that_returns_one_byte_at_a_time() {
         }
     }
 
-    let segments = edifact_rs::from_reader(
+    let segments = edifact::from_reader(
         decode_reader(Trickle(std::io::Cursor::new(unoc_interchange()))).expect("sniff"),
     )
     .collect::<Result<Vec<_>, _>>()
@@ -542,12 +539,12 @@ fn from_bytes_decoded_reads_a_conformant_unoc_interchange() {
     let raw = unoc_interchange();
     // The undecoded bytes are not UTF-8 and never claimed to be.
     assert!(
-        edifact_rs::from_bytes(&raw)
+        edifact::from_bytes(&raw)
             .collect::<Result<Vec<_>, _>>()
             .is_err()
     );
 
-    let segments = edifact_rs::from_bytes_decoded(&raw).expect("decoded parse");
+    let segments = edifact::from_bytes_decoded(&raw).expect("decoded parse");
     assert_eq!(segments[1].element_str(1), Some("Müller"));
 }
 
@@ -555,10 +552,9 @@ fn from_bytes_decoded_reads_a_conformant_unoc_interchange() {
 fn from_reader_decoded_is_lazy_and_needs_no_question_mark() {
     // The whole point: a plain `Iterator`, so a streaming pipeline does not have
     // to be boxed or made eager just to sniff the repertoire.
-    let segments: Vec<_> =
-        edifact_rs::from_reader_decoded(std::io::Cursor::new(unoc_interchange()))
-            .collect::<Result<Vec<_>, _>>()
-            .expect("decoded stream");
+    let segments: Vec<_> = edifact::from_reader_decoded(std::io::Cursor::new(unoc_interchange()))
+        .collect::<Result<Vec<_>, _>>()
+        .expect("decoded stream");
     assert_eq!(segments[1].element_str(1), Some("Müller"));
 }
 
@@ -567,14 +563,11 @@ fn a_decode_failure_arrives_as_the_first_item_not_at_construction() {
     // `UNOX` is a real syntax identifier this crate cannot decode.  Constructing
     // the iterator must still succeed; the error surfaces where parse errors do.
     let raw = b"UNB+UNOX:3+S+R+260101:0900+IC1'UNZ+0+IC1'";
-    let mut stream = edifact_rs::from_reader_decoded(std::io::Cursor::new(&raw[..]));
+    let mut stream = edifact::from_reader_decoded(std::io::Cursor::new(&raw[..]));
 
     let first = stream.next().expect("one item");
     assert!(
-        matches!(
-            first,
-            Err(edifact_rs::EdifactError::UnsupportedCharset { .. })
-        ),
+        matches!(first, Err(edifact::EdifactError::UnsupportedCharset { .. })),
         "got {first:?}"
     );
     // And it terminates rather than repeating the error forever.
@@ -583,23 +576,17 @@ fn a_decode_failure_arrives_as_the_first_item_not_at_construction() {
 
 #[test]
 fn decoding_entry_points_pass_reader_config_through() {
-    let config = edifact_rs::ReaderConfig::default().max_segments(1);
+    let config = edifact::ReaderConfig::default().max_segments(1);
     let raw = unoc_interchange();
 
-    let err = edifact_rs::from_bytes_decoded_with_config(&raw, config)
-        .expect_err("budget must be reported");
-    assert!(matches!(
-        err,
-        edifact_rs::EdifactError::LimitExceeded { .. }
-    ));
+    let err =
+        edifact::from_bytes_decoded_with_config(&raw, config).expect_err("budget must be reported");
+    assert!(matches!(err, edifact::EdifactError::LimitExceeded { .. }));
 
-    let err = edifact_rs::from_reader_decoded_with_config(std::io::Cursor::new(raw), config)
+    let err = edifact::from_reader_decoded_with_config(std::io::Cursor::new(raw), config)
         .collect::<Result<Vec<_>, _>>()
         .expect_err("budget must be reported");
-    assert!(matches!(
-        err,
-        edifact_rs::EdifactError::LimitExceeded { .. }
-    ));
+    assert!(matches!(err, edifact::EdifactError::LimitExceeded { .. }));
 }
 
 #[test]
@@ -609,6 +596,6 @@ fn an_ascii_interchange_decodes_to_the_same_segments() {
         .map(|r| r.map(|s| s.into_owned()))
         .collect::<Result<Vec<_>, _>>()
         .expect("plain");
-    let decoded = edifact_rs::from_bytes_decoded(raw).expect("decoded");
+    let decoded = edifact::from_bytes_decoded(raw).expect("decoded");
     assert_eq!(plain, decoded);
 }

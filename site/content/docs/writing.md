@@ -42,7 +42,7 @@ A tag is written verbatim — EDIFACT has no way to escape one — so `bgm`,
 came from:
 
 ```rust
-use edifact_rs::{EdifactError, Writer};
+use edifact::{EdifactError, Writer};
 
 let mut writer = Writer::new(Vec::new());
 let err = writer.write_simple("bgm", &["220"]).unwrap_err();
@@ -56,9 +56,9 @@ Delimiters *inside a value* are not a problem — those are release-escaped.
 ## Serialize a typed struct
 
 ```rust
-use edifact_rs::{EdifactSerialize, ser, to_edifact_string};
+use edifact::{EdifactSerialize, ser, to_edifact_string};
 
-#[derive(edifact_rs::EdifactSerialize)]
+#[derive(edifact::EdifactSerialize)]
 #[edifact(segment = "BGM")]
 struct Bgm {
     #[edifact(element = 0)]
@@ -80,14 +80,14 @@ assert_eq!(output, "BGM+220+PO-4711+9'");
 
 // or as bytes:
 let bytes = ser::to_bytes(&bgm)?;
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 `None` fields produce empty elements in their positional slot:
 
 ```rust
-# use edifact_rs::to_edifact_string;
-# #[derive(edifact_rs::EdifactSerialize)]
+# use edifact::to_edifact_string;
+# #[derive(edifact::EdifactSerialize)]
 # #[edifact(segment = "BGM")]
 # struct Bgm {
 #     #[edifact(element = 0)]
@@ -110,7 +110,7 @@ let bgm_no_func = Bgm {
 };
 let out = to_edifact_string(&bgm_no_func)?;
 assert_eq!(out, "BGM+220+PO-4711+'");
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ---
@@ -118,14 +118,14 @@ assert_eq!(out, "BGM+220+PO-4711+'");
 ## Round-trip: parse then write
 
 ```rust
-use edifact_rs::{from_bytes, segments_to_bytes};
+use edifact::{from_bytes, segments_to_bytes};
 
 let input = b"UNA:+.? 'BGM+220+PO-4711+9'NAD+BY+4000001::9'";
 let segs: Vec<_> = from_bytes(input).collect::<Result<_, _>>()?;
 
 let output = segments_to_bytes(&segs)?;
 assert_eq!(output, b"BGM+220+PO-4711+9'NAD+BY+4000001::9'");
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 `segments_to_bytes` is the entry point for a slice of parsed `Segment`s;
@@ -142,7 +142,7 @@ assert_eq!(output, b"BGM+220+PO-4711+9'NAD+BY+4000001::9'");
 `Writer<W>` writes one segment at a time to any `Write` implementation:
 
 ```rust
-use edifact_rs::{Writer, Segment, Element};
+use edifact::{Writer, Segment, Element};
 
 let mut buf: Vec<u8> = Vec::new();
 let mut writer = Writer::new(&mut buf);
@@ -162,7 +162,7 @@ writer.finish()?;
 
 let text = String::from_utf8(buf).unwrap();
 assert_eq!(text, "BGM+220+PO-4711+9'NAD+BY+4000001::9'");
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 `Writer::finish()` flushes the underlying writer and returns it.
@@ -174,14 +174,14 @@ assert_eq!(text, "BGM+220+PO-4711+9'NAD+BY+4000001::9'");
 segment's count field:
 
 ```rust
-# use edifact_rs::{Writer, Segment, Element};
+# use edifact::{Writer, Segment, Element};
 # let mut buf: Vec<u8> = Vec::new();
 # let mut writer = Writer::new(&mut buf);
 // ... write body segments ...
 
 let count = writer.segment_count() + 2; // +2 for UNH and UNT themselves
 writer.write_simple("UNT", &[count.to_string().as_str(), "1"])?;
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ---
@@ -194,7 +194,7 @@ followed by a composite party identification, `DTM` takes a single composite.
 explicitly rather than inferred:
 
 ```rust
-use edifact_rs::{DataElement, Writer};
+use edifact::{DataElement, Writer};
 
 let mut buf: Vec<u8> = Vec::new();
 let mut writer = Writer::new(&mut buf);
@@ -212,7 +212,7 @@ assert_eq!(
     String::from_utf8(buf).unwrap(),
     "NAD+MS+9900112233445::293'DTM+137:20260101:102'",
 );
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 The `elements!` macro is shorthand for the same thing. Each entry is an ordinary
@@ -221,7 +221,7 @@ data element, an array/slice/`Vec` of strings becomes a composite. Runtime value
 work exactly like literals, which is the point — builders rarely have literals:
 
 ```rust
-use edifact_rs::{Writer, elements};
+use edifact::{Writer, elements};
 
 let qualifier = String::from("MS");
 let gln = "9900112233445";
@@ -237,7 +237,7 @@ assert_eq!(
     String::from_utf8(buf).unwrap(),
     "NAD+MS+9900112233445::293'DTM+137:20260101:102'",
 );
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 > Composite components must be string *slices*: a `[String; N]` cannot borrow as
@@ -248,14 +248,14 @@ separator is **escaped** rather than silently promoted to a boundary — which i
 the failure mode of pre-joining components into one string:
 
 ```rust
-# use edifact_rs::{Writer, elements};
+# use edifact::{Writer, elements};
 # let mut buf: Vec<u8> = Vec::new();
 # let mut writer = Writer::new(&mut buf);
 writer.write_elements("NAD", elements!["MS", "ACME:INC"])?;
 writer.finish()?;
 // The `:` stays inside the value:
 assert_eq!(String::from_utf8(buf).unwrap(), "NAD+MS+ACME?:INC'");
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 `MessageWriter` — the `UNH`/`UNT` guard from `Writer::begin_message` — carries
@@ -274,7 +274,7 @@ these two avoid constructing `Segment` / `Element` values at all.
 component separator inside a value stays part of the value.
 
 ```rust
-use edifact_rs::Writer;
+use edifact::Writer;
 
 let mut buf: Vec<u8> = Vec::new();
 let mut writer = Writer::new(&mut buf);
@@ -284,7 +284,7 @@ writer.write_simple("FTX", &["AAA", "ACME:INC"])?;   // the `:` is escaped, not 
 
 writer.finish()?;
 assert_eq!(buf, b"BGM+220+PO-4711+9'FTX+AAA+ACME?:INC'".to_vec());
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 `write_composites` takes the components explicitly, and its bounds accept
@@ -292,7 +292,7 @@ borrowed and owned data through the same call — `&[&[&str]]`, `&[Vec<String>]`
 `&[[String; 3]]`:
 
 ```rust
-use edifact_rs::Writer;
+use edifact::Writer;
 
 let mut buf: Vec<u8> = Vec::new();
 let mut writer = Writer::new(&mut buf);
@@ -305,7 +305,7 @@ writer.write_composites("RFF", &rff)?;
 
 writer.finish()?;
 assert_eq!(buf, b"DTM+137:20240101:102'RFF+ON:PO-4711'".to_vec());
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ---
@@ -315,7 +315,7 @@ assert_eq!(buf, b"DTM+137:20240101:102'RFF+ON:PO-4711'".to_vec());
 `Writer::with_una` writes a `UNA` header and then uses those delimiters:
 
 ```rust
-use edifact_rs::{Writer, ServiceStringAdvice};
+use edifact::{Writer, ServiceStringAdvice};
 
 let ssa = ServiceStringAdvice {
     component_sep: b';',
@@ -337,7 +337,7 @@ let text = String::from_utf8(buf).unwrap();
 // UNA header first (9 bytes, including the space "not used" repetition slot),
 // then the segment with the custom delimiters.
 assert_eq!(text, "UNA;|.? !BGM|220|PO-4711|9!");
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ### Delimiters without a `UNA`
@@ -348,7 +348,7 @@ one back through `with_una` would invent a header the original never had, so
 declare the delimiters to the writer directly instead:
 
 ```rust
-use edifact_rs::{ServiceStringAdvice, Writer, from_bytes};
+use edifact::{ServiceStringAdvice, Writer, from_bytes};
 
 let input = b"UNB+UNOC:4+S+R+260101:0900+I'RFF+ON:1*ON:2'UNZ+0+I'";
 let segments: Vec<_> = from_bytes(input).collect::<Result<Vec<_>, _>>()?;
@@ -360,7 +360,7 @@ for segment in &segments {
 }
 // Byte-for-byte the input, with no UNA invented along the way.
 assert_eq!(writer.finish()?, input.to_vec());
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ---
@@ -374,7 +374,7 @@ Writing a repeating element through a writer that has none is
 emitted so a rejected segment leaves nothing half-written behind it:
 
 ```rust
-use edifact_rs::{Element, Segment, ServiceStringAdvice, Writer};
+use edifact::{Element, Segment, ServiceStringAdvice, Writer};
 
 let ssa = ServiceStringAdvice { repetition_sep: b'*', ..Default::default() };
 let mut buf: Vec<u8> = Vec::new();
@@ -387,7 +387,7 @@ let mut buf: Vec<u8> = Vec::new();
     writer.write_segment(&rff)?;
 }
 assert!(String::from_utf8(buf).unwrap().ends_with("RFF+ON:1*ON:2'"));
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 Writing a repeating element through a writer that has **no** declared separator
@@ -407,7 +407,7 @@ repetition split, so a value that arrives as several occurrences can leave as
 several occurrences:
 
 ```rust
-use edifact_rs::{EdifactEvent, EventEmitter, ServiceStringAdvice, WriterEmitter};
+use edifact::{EdifactEvent, EventEmitter, ServiceStringAdvice, WriterEmitter};
 
 let ssa = ServiceStringAdvice::from_bytes(b"UNA:+.?*'")?;
 let mut emitter = WriterEmitter::with_una(Vec::new(), ssa)?;
@@ -419,7 +419,7 @@ emitter.emit(EdifactEvent::component("2"))?;
 emitter.emit(EdifactEvent::EndSegment)?;
 
 assert_eq!(emitter.finish()?, b"UNA:+.?*'RFF+ON:1*ON:2'".to_vec());
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 The same `E037` refusal applies: a `RepeatElement` under a writer with no
@@ -438,7 +438,7 @@ The typed path reaches it through `WriterEmitter::with_charset`, so a
 `#[derive(EdifactSerialize)]` struct is bound the same way:
 
 ```rust
-use edifact_rs::{Charset, EdifactEvent, EventEmitter, WriterEmitter};
+use edifact::{Charset, EdifactEvent, EventEmitter, WriterEmitter};
 
 let mut emitter = WriterEmitter::new(Vec::new()).with_charset(Charset::UnoC);
 emitter.emit(EdifactEvent::start("NAD"))?;
@@ -447,7 +447,7 @@ emitter.emit(EdifactEvent::EndSegment)?;
 
 // `ü` goes out as the single Latin-1 byte 0xFC, not as two UTF-8 bytes.
 assert_eq!(emitter.finish()?, b"NAD+M\xFCller'".to_vec());
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 See [Character Sets](@/docs/character-sets.md) for the full repertoire table.
@@ -461,13 +461,13 @@ UTF-8 into a `UNOC` interchange produces mojibake at the far end with nothing in
 the file to explain it, so bind the writer to the repertoire and let it encode:
 
 ```rust
-use edifact_rs::{Charset, Writer};
+use edifact::{Charset, Writer};
 
 let mut writer = Writer::new(Vec::new()).with_charset(Charset::UnoC);
 writer.write_composites("NAD", &[&["BY"], &["Müller"]])?;
 // `ü` goes out as the single ISO 8859-1 byte 0xFC.
 assert_eq!(writer.finish()?, b"NAD+BY+M\xFCller'".to_vec());
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 A character the repertoire cannot carry is refused with
@@ -486,7 +486,7 @@ repertoire validation.
 with the current delimiter set. You never need to pre-escape data:
 
 ```rust
-use edifact_rs::{Writer, Segment, Element};
+use edifact::{Writer, Segment, Element};
 
 let mut buf: Vec<u8> = Vec::new();
 let mut writer = Writer::new(&mut buf);
@@ -500,7 +500,7 @@ writer.finish()?;
 
 let text = String::from_utf8(buf).unwrap();
 assert_eq!(text, "FTX+AAI+Price?: 100?+VAT'");
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 Characters escaped by default:
@@ -520,7 +520,7 @@ For advanced use cases — such as writing segments produced by `EdifactSerializ
 derived types to a `Write` sink without buffering — use `WriterEmitter`:
 
 ```rust
-use edifact_rs::{ser, WriterEmitter, EdifactSerialize, Writer};
+use edifact::{ser, WriterEmitter, EdifactSerialize, Writer};
 
 # #[derive(EdifactSerialize)]
 # #[edifact(segment = "BGM")]
@@ -536,7 +536,7 @@ bgm.edifact_serialize(&mut emitter)?;
 
 // `finish` flushes and hands back the sink that was passed in.
 let _sink = emitter.finish()?;
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 `WriterEmitter` allocates nothing per event and keeps no buffer: each
@@ -548,7 +548,7 @@ in `BufWriter`.
 ## Writing a full interchange
 
 ```rust
-use edifact_rs::{Writer, Segment, Element};
+use edifact::{Writer, Segment, Element};
 use std::io::Cursor;
 
 let mut buf: Vec<u8> = Vec::new();
@@ -569,7 +569,7 @@ w.write_simple("UNT", &[unt_count.to_string().as_str(), "1"])?;
 w.write_simple("UNZ", &["1", "1"])?;
 
 w.finish()?;
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ---

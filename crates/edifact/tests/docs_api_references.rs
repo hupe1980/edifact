@@ -1,9 +1,9 @@
-//! Verifies that every `edifact_rs::` item named in the guides actually exists.
+//! Verifies that every `edifact::` item named in the guides actually exists.
 //!
 //! Guides carry a mix of runnable examples (compiled as doctests) and
 //! illustrative fragments marked `rust,ignore`.  Only the former are checked by
 //! the compiler, so this covers the ignored snippets too: it extracts every
-//! item imported from `edifact_rs` across the guides and asserts each is public.
+//! item imported from `edifact` across the guides and asserts each is public.
 //!
 //! The public API is read out of `src/lib.rs` rather than mirrored in a list
 //! here, so it cannot go stale in either direction.
@@ -12,14 +12,14 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 fn docs_dir() -> PathBuf {
-    // CARGO_MANIFEST_DIR is crates/edifact-rs; the guides live at the repo root.
+    // CARGO_MANIFEST_DIR is crates/edifact; the guides live at the repo root.
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../site/content/docs")
         .canonicalize()
         .expect("site/content/docs must exist under the workspace root")
 }
 
-/// Every name reachable as `edifact_rs::<name>`, parsed out of `src/lib.rs`.
+/// Every name reachable as `edifact::<name>`, parsed out of `src/lib.rs`.
 ///
 /// Covers the three ways an item reaches the crate root: a `pub use` re-export
 /// (braced or single), a `pub mod` declaration, and an item defined at the root
@@ -124,13 +124,13 @@ fn walk(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// Extract every item named in a `use edifact_rs::...;` statement.
+/// Extract every item named in a `use edifact::...;` statement.
 ///
 /// Handles both single-line and brace-wrapped multi-line imports, and strips the
 /// rustdoc hidden-line marker so `# use ...` setup lines are covered too.
 fn imported_names(source: &str) -> BTreeSet<String> {
     // Normalise: drop hidden-line markers, then join into one buffer so a
-    // multi-line `use edifact_rs::{ ... };` is a single match.
+    // multi-line `use edifact::{ ... };` is a single match.
     let normalised: String = source
         .lines()
         .map(|raw| {
@@ -143,8 +143,8 @@ fn imported_names(source: &str) -> BTreeSet<String> {
 
     let mut found = BTreeSet::new();
     let mut rest = normalised.as_str();
-    while let Some(pos) = rest.find("use edifact_rs::") {
-        rest = &rest[pos + "use edifact_rs::".len()..];
+    while let Some(pos) = rest.find("use edifact::") {
+        rest = &rest[pos + "use edifact::".len()..];
         // The statement runs to the terminating `;`.
         let Some(end) = rest.find(';') else { break };
         let stmt = rest[..end].trim();
@@ -195,7 +195,7 @@ fn guides_only_reference_public_api_items() {
     for (name, text) in &sources {
         for item in imported_names(text) {
             if !api.contains(item.as_str()) {
-                problems.push(format!("{name}: `edifact_rs::{item}` is not a public item"));
+                problems.push(format!("{name}: `edifact::{item}` is not a public item"));
             }
         }
     }

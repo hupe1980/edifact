@@ -1,12 +1,12 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(unsafe_code)]
 
-//! `edifact-rs` — zero-copy EDIFACT (ISO 9735) tokenizer, parser, writer, typed
+//! `edifact` — zero-copy EDIFACT (ISO 9735) tokenizer, parser, writer, typed
 //! (de)serialization, validation engine, and extensible directory support.
 //!
 //! # Quick start
 //! ```
-//! use edifact_rs::from_bytes;
+//! use edifact::from_bytes;
 //! let input = b"UNB+UNOA:1+SENDER+RECEIVER+200101:0900+1'UNZ+0+1'";
 //! let segments: Vec<_> = from_bytes(input).collect::<Result<_, _>>().unwrap();
 //! assert_eq!(segments[0].tag, "UNB");
@@ -28,26 +28,26 @@
 //! and serves both paths — there are no `_owned` twins, and no conversion step.
 //!
 //! ```
-//! use edifact_rs::{OwnedSegment, Segment};
+//! use edifact::{OwnedSegment, Segment};
 //!
 //! fn count_bgm(segments: &[Segment<'_>]) -> usize {
 //!     segments.iter().filter(|s| s.tag == "BGM").count()
 //! }
 //!
 //! let borrowed: Vec<Segment<'_>> =
-//!     edifact_rs::from_bytes(b"BGM+220'").collect::<Result<_, _>>()?;
+//!     edifact::from_bytes(b"BGM+220'").collect::<Result<_, _>>()?;
 //! let owned: Vec<OwnedSegment> =
-//!     edifact_rs::from_reader(std::io::Cursor::new(b"BGM+220'")).collect::<Result<_, _>>()?;
+//!     edifact::from_reader(std::io::Cursor::new(b"BGM+220'")).collect::<Result<_, _>>()?;
 //!
 //! assert_eq!(count_bgm(&borrowed), 1);
 //! assert_eq!(count_bgm(&owned), 1);
-//! # Ok::<(), edifact_rs::EdifactError>(())
+//! # Ok::<(), edifact::EdifactError>(())
 //! ```
 //!
 //! # Crate features
 //!
 //! - `derive` (enabled by default): re-exports the derive macros from
-//!   `edifact-rs-derive` — [`EdifactDeserialize`][macro@EdifactDeserialize] /
+//!   `edifact-derive` — [`EdifactDeserialize`][macro@EdifactDeserialize] /
 //!   [`EdifactSerialize`][macro@EdifactSerialize] for segment and message
 //!   structs, and
 //!   [`EdifactCompositeDeserialize`][macro@EdifactCompositeDeserialize] /
@@ -63,7 +63,7 @@
 //!
 //! # Parse and text contracts
 //!
-//! Parsing in `edifact-rs` is strict and deterministic:
+//! Parsing in `edifact` is strict and deterministic:
 //!
 //! - A byte order mark and any whitespace before the first service segment are
 //!   skipped — ISO 9735 authorises neither, but both arrive constantly.
@@ -92,7 +92,7 @@
 //! to byte-for-byte agreement by a test that runs the same inputs through both.
 //!
 //! ```
-//! use edifact_rs::from_reader;
+//! use edifact::from_reader;
 //! use std::io::Cursor;
 //!
 //! let input = b"UNA:;.? 'BGM;220;test?;value'";
@@ -113,7 +113,7 @@
 //! is ([`FindingKind`]):
 //!
 //! ```
-//! use edifact_rs::{ProfileRulePack, ValidationContext, ValidationIssue, ValidationSeverity, from_bytes};
+//! use edifact::{ProfileRulePack, ValidationContext, ValidationIssue, ValidationSeverity, from_bytes};
 //!
 //! let pack = ProfileRulePack::new("ORDERS-DEMO")
 //!     .for_message_type("ORDERS")
@@ -132,13 +132,13 @@
 //!
 //! assert_eq!(report.filter_by_rule_prefix("DEMO-").total_issues(), 1);
 //! let issue = &report.errors()[0];
-//! assert_eq!(issue.layer(), Some(edifact_rs::ValidationLayer::Profile));
+//! assert_eq!(issue.layer(), Some(edifact::ValidationLayer::Profile));
 //! assert_eq!(issue.pack(), Some("ORDERS-DEMO"));
-//! # Ok::<(), edifact_rs::EdifactError>(())
+//! # Ok::<(), edifact::EdifactError>(())
 //! ```
 //!
-//! See the [validation](https://hupe1980.github.io/edifact-rs/docs/validation/)
-//! and [profile pack](https://hupe1980.github.io/edifact-rs/docs/profile-packs/)
+//! See the [validation](https://hupe1980.github.io/edifact/docs/validation/)
+//! and [profile pack](https://hupe1980.github.io/edifact/docs/profile-packs/)
 //! guides for the layers, group-scoped rules, and directory validation.
 //!
 //! # Async usage
@@ -147,7 +147,7 @@
 //! buffer, not I/O, so an async parser would add a runtime dependency and a
 //! second copy of every code path to wrap work that never awaits. Read with your
 //! runtime, parse synchronously — see the
-//! [async integration guide](https://hupe1980.github.io/edifact-rs/docs/async-integration/)
+//! [async integration guide](https://hupe1980.github.io/edifact/docs/async-integration/)
 //! for the three patterns, including `spawn_blocking` for multi-gigabyte files.
 //!
 //! ```rust,no_run
@@ -155,7 +155,7 @@
 //! # -> Result<(), Box<dyn std::error::Error>> {
 //! let mut buf = Vec::new();
 //! reader.read_to_end(&mut buf).await?;
-//! let segments: Vec<_> = edifact_rs::from_bytes(&buf).collect::<Result<Vec<_>, _>>()?;
+//! let segments: Vec<_> = edifact::from_bytes(&buf).collect::<Result<Vec<_>, _>>()?;
 //! # let _ = segments;
 //! # Ok(())
 //! # }
@@ -247,7 +247,7 @@ pub use directory_validator::{
 };
 #[cfg(feature = "derive")]
 #[cfg_attr(docsrs, doc(cfg(feature = "derive")))]
-pub use edifact_rs_derive::{
+pub use edifact_derive::{
     EdifactCompositeDeserialize, EdifactCompositeSerialize, EdifactDeserialize, EdifactSerialize,
 };
 pub use event::{EdifactEvent, EventEmitter, VecEmitter, WriterEmitter};
@@ -436,7 +436,7 @@ pub fn from_bytes(input: &[u8]) -> FromBytesIter<'_> {
 /// # Example
 ///
 /// ```
-/// use edifact_rs::{EdifactError, ReaderConfig, from_bytes_with_config};
+/// use edifact::{EdifactError, ReaderConfig, from_bytes_with_config};
 ///
 /// // Exactly at the limit: fine.
 /// let cfg = ReaderConfig::default().max_segments(1);
@@ -529,8 +529,8 @@ pub fn from_bytes_with_config(input: &[u8], config: parser::ReaderConfig) -> Fro
 /// # Example
 ///
 /// ```
-/// use edifact_rs::recover::Scanned;
-/// use edifact_rs::{RecoveryConfig, scan_recovering};
+/// use edifact::recover::Scanned;
+/// use edifact::{RecoveryConfig, scan_recovering};
 ///
 /// let input = b"UNH+1+ORDERS:D:96A:UN'BGM+220'\xFF'UNT+4+1'";
 /// let items: Vec<Scanned<'_>> = scan_recovering(input, &RecoveryConfig::default()).collect();
@@ -598,11 +598,11 @@ pub fn from_reader<R: Read>(reader: R) -> FromReaderIter<R> {
 /// raw.extend_from_slice(b"ller'UNZ+0+IC1'");
 ///
 /// // Parsing it directly fails — it is not UTF-8, and it never claimed to be.
-/// assert!(edifact_rs::from_bytes(&raw).collect::<Result<Vec<_>, _>>().is_err());
+/// assert!(edifact::from_bytes(&raw).collect::<Result<Vec<_>, _>>().is_err());
 ///
-/// let segments = edifact_rs::from_bytes_decoded(&raw)?;
+/// let segments = edifact::from_bytes_decoded(&raw)?;
 /// assert_eq!(segments[1].element_str(1), Some("Müller"));
-/// # Ok::<(), edifact_rs::EdifactError>(())
+/// # Ok::<(), edifact::EdifactError>(())
 /// ```
 pub fn from_bytes_decoded(input: &[u8]) -> Result<Vec<OwnedSegment>, EdifactError> {
     from_bytes_decoded_with_config(input, ReaderConfig::default())
@@ -648,10 +648,10 @@ pub fn from_bytes_decoded_with_config(
 /// raw.extend_from_slice(b"ller'UNZ+0+IC1'");
 ///
 /// // No `?` before the loop: the pipeline stays lazy.
-/// let segments: Vec<_> = edifact_rs::from_reader_decoded(std::io::Cursor::new(raw))
+/// let segments: Vec<_> = edifact::from_reader_decoded(std::io::Cursor::new(raw))
 ///     .collect::<Result<Vec<_>, _>>()?;
 /// assert_eq!(segments[1].element_str(1), Some("Müller"));
-/// # Ok::<(), edifact_rs::EdifactError>(())
+/// # Ok::<(), edifact::EdifactError>(())
 /// ```
 pub fn from_reader_decoded<R: Read>(reader: R) -> DecodingSegmentStream<R> {
     from_reader_decoded_with_config(reader, ReaderConfig::default())
@@ -760,10 +760,10 @@ where
 /// # Example
 ///
 /// ```
-/// let segments: Vec<_> = edifact_rs::from_bytes(b"BGM+220+PO-1'")
+/// let segments: Vec<_> = edifact::from_bytes(b"BGM+220+PO-1'")
 ///     .collect::<Result<Vec<_>, _>>()?;
-/// assert_eq!(edifact_rs::segments_to_bytes(&segments)?, b"BGM+220+PO-1'".to_vec());
-/// # Ok::<(), edifact_rs::EdifactError>(())
+/// assert_eq!(edifact::segments_to_bytes(&segments)?, b"BGM+220+PO-1'".to_vec());
+/// # Ok::<(), edifact::EdifactError>(())
 /// ```
 pub fn segments_to_bytes<'a, 'b, I>(segments: I) -> Result<Vec<u8>, EdifactError>
 where

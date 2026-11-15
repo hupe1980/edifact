@@ -4,7 +4,7 @@ description = "Map EDIFACT segments and messages onto Rust structs with #[derive
 weight = 50
 +++
 
-`edifact-rs` ships first-class derive macros that map EDIFACT segments and messages
+`edifact` ships first-class derive macros that map EDIFACT segments and messages
 to plain Rust structs. Add `#[derive(EdifactDeserialize, EdifactSerialize)]` and the
 macros generate efficient, span-accurate code — no hand-written parsing loops.
 
@@ -13,7 +13,7 @@ macros generate efficient, span-accurate code — no hand-written parsing loops.
 ## Quick example
 
 ```rust
-use edifact_rs::{EdifactDeserialize, EdifactSerialize, from_bytes};
+use edifact::{EdifactDeserialize, EdifactSerialize, from_bytes};
 
 #[derive(Debug, EdifactDeserialize, EdifactSerialize)]
 #[edifact(segment = "BGM")]
@@ -32,7 +32,7 @@ let bgm = Bgm::edifact_deserialize(&segs)?;
 assert_eq!(bgm.document_name_code, "220");
 assert_eq!(bgm.document_number, "PO-4711");
 assert_eq!(bgm.function_code.as_deref(), Some("9"));
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ---
@@ -42,7 +42,7 @@ assert_eq!(bgm.function_code.as_deref(), Some("9"));
 ### `segment = "TAG"` — declare a segment struct
 
 ```rust
-# use edifact_rs::{EdifactDeserialize, EdifactSerialize};
+# use edifact::{EdifactDeserialize, EdifactSerialize};
 #[derive(EdifactDeserialize, EdifactSerialize)]
 #[edifact(segment = "DTM")]
 struct Dtm {
@@ -65,7 +65,7 @@ If `segment` is **absent**, the struct is treated as a **message struct** (see b
 ### `qualifier = "VALUE"` — fixed qualifier matching
 
 ```rust
-# use edifact_rs::{EdifactDeserialize, EdifactSerialize};
+# use edifact::{EdifactDeserialize, EdifactSerialize};
 #[derive(EdifactDeserialize, EdifactSerialize)]
 #[edifact(segment = "NAD", qualifier = "MS")]
 struct NadMs {
@@ -84,7 +84,7 @@ Use wildcard suffix with `*` for prefix matching:
 ### `qualifier_from = N` — dynamic qualifier at runtime
 
 ```rust
-# use edifact_rs::{EdifactDeserialize, EdifactSerialize};
+# use edifact::{EdifactDeserialize, EdifactSerialize};
 #[derive(EdifactDeserialize, EdifactSerialize)]
 #[edifact(segment = "NAD", qualifier_from = 0)]
 struct Nad {
@@ -100,7 +100,7 @@ struct can represent any `NAD` qualifier. This is the pattern for message-level
 structs that hold multiple qualifier variants in separate fields:
 
 ```rust
-# use edifact_rs::{EdifactDeserialize, EdifactSerialize};
+# use edifact::{EdifactDeserialize, EdifactSerialize};
 # #[derive(Debug, EdifactDeserialize, EdifactSerialize)]
 # #[edifact(segment = "BGM")]
 # struct Bgm { #[edifact(element = 0)] code: String }
@@ -125,7 +125,7 @@ The path must name a **`const`** item (a `const` initialiser cannot read a
 `static`), because identifiers are resolved during const evaluation:
 
 ```rust
-use edifact_rs::{
+use edifact::{
     ComponentRef, EdifactDeserialize, EdifactSerialize, ElementRef, SegmentDefinition, Status,
 };
 
@@ -156,12 +156,12 @@ struct SenderParty {
 #### Where layouts come from
 
 The crate ships every **ISO 9735-1 batch service segment** — `UNB`, `UNG`, `UNH`,
-`UNT`, `UNE`, `UNZ`, `UNS`, `UNO`, `UNP`, `UGH`, `UGT` — in `edifact_rs::service`,
+`UNT`, `UNE`, `UNZ`, `UNS`, `UNO`, `UNP`, `UGH`, `UGT` — in `edifact::service`,
 ready to point `layout` at. They are fixed by the syntax standard, so there is one
 correct answer and no directory version to choose:
 
 ```rust
-use edifact_rs::{EdifactDeserialize, service};
+use edifact::{EdifactDeserialize, service};
 
 #[derive(EdifactDeserialize)]
 #[edifact(segment = "UNB", layout = service::UNB)]
@@ -206,7 +206,7 @@ five times — must be declared with `ComponentRef::repeated`, not with five
 then resolves as ambiguous and cannot be addressed at all:
 
 ```rust
-use edifact_rs::{ComponentRef, Status};
+use edifact::{ComponentRef, Status};
 
 const C080: &[ComponentRef] = &[
     ComponentRef::repeated(1, "3036", Status::Mandatory, 5),
@@ -281,7 +281,7 @@ For runtime lookups against the same metadata, see
 ### `composite` — full composite element
 
 ```rust
-# use edifact_rs::{
+# use edifact::{
 #     EdifactCompositeDeserialize, EdifactCompositeSerialize, EdifactDeserialize, EdifactSerialize,
 # };
 #[derive(EdifactCompositeDeserialize, EdifactCompositeSerialize)]
@@ -314,7 +314,7 @@ an absent or empty value raises `MissingRequiredComponent` (`E021`) — while
 ### `group` — repeated segment group
 
 ```rust
-# use edifact_rs::{EdifactDeserialize, EdifactSerialize};
+# use edifact::{EdifactDeserialize, EdifactSerialize};
 # #[derive(EdifactDeserialize, EdifactSerialize)]
 # #[edifact(segment = "BGM")]
 # #[derive(Debug)] struct Bgm { #[edifact(element = 0)] code: String }
@@ -355,7 +355,7 @@ twice above. The derive handles that: a non-repeating field in the same element
 is emitted once per occurrence, and a repeating one contributes its *k*-th item.
 
 ```rust
-use edifact_rs::{EdifactDeserialize, EdifactSerialize, from_bytes};
+use edifact::{EdifactDeserialize, EdifactSerialize, from_bytes};
 
 #[derive(Debug, EdifactDeserialize, EdifactSerialize)]
 #[edifact(segment = "RFF")]
@@ -373,7 +373,7 @@ let rff = OrderReferences::edifact_deserialize(&segments)?;
 
 assert_eq!(rff.qualifier, "ON");
 assert_eq!(rff.numbers, ["1", "2", "3"]);
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 An occurrence that omits the component yields `""` rather than disappearing:
@@ -391,7 +391,7 @@ than emitting output that reads back as a single occurrence.
 ### `qualifier = "VALUE"` — message-field qualifier filter
 
 ```rust
-# use edifact_rs::{EdifactDeserialize, EdifactSerialize};
+# use edifact::{EdifactDeserialize, EdifactSerialize};
 # #[derive(EdifactDeserialize, EdifactSerialize)]
 # #[edifact(segment = "BGM")]
 # #[derive(Debug)] struct Bgm { #[edifact(element = 0)] code: String }
@@ -424,7 +424,7 @@ A struct **without** `#[edifact(segment = "TAG")]` is a **message struct**.
 Each field maps to a segment type:
 
 ```rust
-# use edifact_rs::{EdifactDeserialize, EdifactSerialize};
+# use edifact::{EdifactDeserialize, EdifactSerialize};
 # #[derive(EdifactDeserialize, EdifactSerialize)]
 # #[edifact(segment = "BGM")]
 # #[derive(Debug)] struct Bgm { #[edifact(element = 0)] code: String }
@@ -437,7 +437,7 @@ Each field maps to a segment type:
 # #[derive(EdifactDeserialize, EdifactSerialize)]
 # #[edifact(segment = "LIN")]
 # #[derive(Debug)] struct Lin { #[edifact(element = 0)] line_no: String }
-# use edifact_rs::from_bytes;
+# use edifact::from_bytes;
 # let input = b"BGM+220'DTM+137'NAD+BY'NAD+SU'LIN+1'";
 #[derive(Debug, EdifactDeserialize)]
 struct OrderMessage {
@@ -453,7 +453,7 @@ struct OrderMessage {
 
 let segs: Vec<_> = from_bytes(input).collect::<Result<_, _>>()?;
 let msg = OrderMessage::edifact_deserialize(&segs)?;
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 Field rules:

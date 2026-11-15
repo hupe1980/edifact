@@ -54,8 +54,8 @@ use crate::{EdifactError, ServiceStringAdvice};
 /// # Example
 ///
 /// ```
-/// use edifact_rs::contrl::{ReportingLevel, SyntaxError};
-/// use edifact_rs::{RecoveredInterchange, RecoveryConfig};
+/// use edifact::contrl::{ReportingLevel, SyntaxError};
+/// use edifact::{RecoveredInterchange, RecoveryConfig};
 ///
 /// // The second segment of the message has a broken tag (`BGME03`).
 /// let input = b"UNB+UNOC:3+S+R+260101:0900+IC1'\

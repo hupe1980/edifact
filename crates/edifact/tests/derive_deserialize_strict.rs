@@ -1,6 +1,6 @@
 #![cfg(feature = "derive")]
 
-use edifact_rs::{EdifactDeserialize, EdifactError, from_bytes};
+use edifact::{EdifactDeserialize, EdifactError, from_bytes};
 
 #[allow(dead_code)]
 #[derive(Debug, EdifactDeserialize)]
@@ -233,10 +233,9 @@ struct ParityMessage {
 fn qualified_group_deserializes_identically_borrowed_and_owned() {
     let raw = b"UNH+1+ORDERS:D:96A:UN'NAD+MS+SUP1'NAD+BY+BUY1'NAD+MS+SUP2'UNT+5+1'";
 
-    let borrowed_segs: Vec<edifact_rs::Segment<'_>> = edifact_rs::from_bytes(raw)
-        .collect::<Result<_, _>>()
-        .unwrap();
-    let owned_segs: Vec<edifact_rs::OwnedSegment> = from_bytes(raw)
+    let borrowed_segs: Vec<edifact::Segment<'_>> =
+        edifact::from_bytes(raw).collect::<Result<_, _>>().unwrap();
+    let owned_segs: Vec<edifact::OwnedSegment> = from_bytes(raw)
         .map(|r| r.map(|s| s.into_owned()))
         .collect::<Result<_, _>>()
         .unwrap();
@@ -264,7 +263,7 @@ fn qualified_group_deserializes_identically_borrowed_and_owned() {
 /// so every field sharing an element collapsed into one entry and all but the
 /// last were dropped on write.  `#[edifact(component = N)]` was honoured on read
 /// and silently ignored on write, which made the derive round-trip lossy.
-#[derive(Debug, PartialEq, edifact_rs::EdifactDeserialize, edifact_rs::EdifactSerialize)]
+#[derive(Debug, PartialEq, edifact::EdifactDeserialize, edifact::EdifactSerialize)]
 #[edifact(segment = "DTM")]
 struct Dtm {
     #[edifact(element = 0, component = 0)]
@@ -278,7 +277,7 @@ struct Dtm {
 #[test]
 fn a_multi_component_element_round_trips_through_the_derive() {
     let input = b"DTM+137:20260101:102'";
-    let segments: Vec<_> = edifact_rs::from_bytes(input)
+    let segments: Vec<_> = edifact::from_bytes(input)
         .collect::<Result<Vec<_>, _>>()
         .expect("parse");
 
@@ -288,16 +287,16 @@ fn a_multi_component_element_round_trips_through_the_derive() {
     assert_eq!(dtm.format, "102");
 
     // The whole composite must survive the write, not just its last component.
-    let wire = edifact_rs::to_edifact_string(&dtm).expect("serialize");
+    let wire = edifact::to_edifact_string(&dtm).expect("serialize");
     assert_eq!(wire, "DTM+137:20260101:102'");
 
-    let round_tripped: Vec<_> = edifact_rs::from_bytes(wire.as_bytes())
+    let round_tripped: Vec<_> = edifact::from_bytes(wire.as_bytes())
         .collect::<Result<Vec<_>, _>>()
         .expect("reparse");
     assert_eq!(Dtm::edifact_deserialize(&round_tripped).unwrap(), dtm);
 }
 
-#[derive(Debug, edifact_rs::EdifactSerialize)]
+#[derive(Debug, edifact::EdifactSerialize)]
 #[edifact(segment = "NAD")]
 struct NadSparse {
     #[edifact(element = 0)]
@@ -311,7 +310,7 @@ struct NadSparse {
 
 #[test]
 fn a_gap_between_components_is_emitted_as_an_empty_component() {
-    let wire = edifact_rs::to_edifact_string(&NadSparse {
+    let wire = edifact::to_edifact_string(&NadSparse {
         qualifier: "BY".into(),
         party_id: "4000001000002".into(),
         agency: "9".into(),
@@ -320,7 +319,7 @@ fn a_gap_between_components_is_emitted_as_an_empty_component() {
     assert_eq!(wire, "NAD+BY+4000001000002::9'");
 }
 
-#[derive(Debug, edifact_rs::EdifactSerialize)]
+#[derive(Debug, edifact::EdifactSerialize)]
 #[edifact(segment = "RFF", qualifier = "ON")]
 struct RffOn {
     #[edifact(element = 0, component = 1)]
@@ -329,7 +328,7 @@ struct RffOn {
 
 #[test]
 fn a_struct_level_qualifier_still_owns_component_zero() {
-    let wire = edifact_rs::to_edifact_string(&RffOn {
+    let wire = edifact::to_edifact_string(&RffOn {
         number: "PO-4711".into(),
     })
     .expect("serialize");

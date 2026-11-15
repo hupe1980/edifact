@@ -180,10 +180,10 @@ impl InterchangeEnvelope {
     ///               BGM+220+PO-001+9'\
     ///               UNT+3+1'\
     ///               UNZ+1+CTRL'";
-    /// let segs: Vec<_> = edifact_rs::from_bytes(input)
+    /// let segs: Vec<_> = edifact::from_bytes(input)
     ///     .collect::<Result<Vec<_>, _>>()
     ///     .unwrap();
-    /// let result = edifact_rs::validate_envelope(&segs).unwrap();
+    /// let result = edifact::validate_envelope(&segs).unwrap();
     /// assert!(result.interchange.is_test());
     /// ```
     #[inline]

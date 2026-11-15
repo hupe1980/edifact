@@ -268,7 +268,7 @@ impl ProfileRulePack {
     /// # Example
     ///
     /// ```
-    /// use edifact_rs::{ProfileRulePack, ValidationIssue, ValidationSeverity, from_bytes};
+    /// use edifact::{ProfileRulePack, ValidationIssue, ValidationSeverity, from_bytes};
     ///
     /// let pack = ProfileRulePack::new("NOISY")
     ///     .with_max_issues_per_rule(2)
@@ -283,13 +283,13 @@ impl ProfileRulePack {
     ///
     /// let segments: Vec<_> = from_bytes(b"BGM+1'DTM+2'RFF+3'NAD+4'")
     ///     .collect::<Result<Vec<_>, _>>()?;
-    /// let report = edifact_rs::ValidationContext::builder()
+    /// let report = edifact::ValidationContext::builder()
     ///     .with_profile_pack(pack)
     ///     .build()
     ///     .validate(&segments);
     ///
     /// assert_eq!(report.total_issues(), 2); // four segments, capped at two
-    /// # Ok::<(), edifact_rs::EdifactError>(())
+    /// # Ok::<(), edifact::EdifactError>(())
     /// ```
     pub fn with_max_issues_per_rule(mut self, limit: impl Into<Option<usize>>) -> Self {
         self.max_issues_per_rule = limit.into();
@@ -310,7 +310,7 @@ impl ProfileRulePack {
     /// # Example
     ///
     /// ```
-    /// use edifact_rs::{ProfileRulePack, ValidationIssue, ValidationSeverity};
+    /// use edifact::{ProfileRulePack, ValidationIssue, ValidationSeverity};
     ///
     /// let pack = ProfileRulePack::new("ORDERS").with_rule_fn(|segments, issues| {
     ///     if !segments.iter().any(|segment| segment.tag == "BGM") {
@@ -1139,7 +1139,7 @@ impl std::fmt::Debug for ProfileRulePack {
 ///
 /// ```rust,ignore
 /// use std::sync::{Arc, LazyLock};
-/// use edifact_rs::{ProfileRulePack, ValidationContext};
+/// use edifact::{ProfileRulePack, ValidationContext};
 ///
 /// static ORDERS_PACK: LazyLock<Arc<ProfileRulePack>> = LazyLock::new(|| {
 ///     Arc::new(

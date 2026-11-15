@@ -9,10 +9,10 @@
 //! configuration and appear only in tests and documentation, never in the
 //! library. The interchanges are synthetic.
 
-use edifact_rs::contrl::{
+use edifact::contrl::{
     Action, ActionPolicy, Contrl, ContrlIdentifier, ContrlOptions, RejectionScope, ReportingLevel,
 };
-use edifact_rs::{
+use edifact::{
     EdifactError, OwnedSegment, RecoveredInterchange, RecoveryConfig, ValidatedInterchange,
     ValidationContext, ValidationReport, from_bytes, validate_envelope, validate_envelope_lenient,
 };

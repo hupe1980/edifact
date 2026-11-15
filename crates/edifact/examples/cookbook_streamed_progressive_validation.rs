@@ -1,8 +1,8 @@
-use edifact_rs::{
+use edifact::{
     ProfileRulePack, ValidationContext, ValidationIssue, ValidationSeverity, from_reader,
 };
 
-fn main() -> Result<(), edifact_rs::EdifactError> {
+fn main() -> Result<(), edifact::EdifactError> {
     let input = b"\
 UNH+1+ORDERS:D:11A:UN'\
 BGM+220+PO-4711+9'\
@@ -60,7 +60,7 @@ UNT+4+2'";
 
         if segment.tag == "UNH" {
             if in_message {
-                return Err(edifact_rs::EdifactError::InvalidEventSequence {
+                return Err(edifact::EdifactError::InvalidEventSequence {
                     message: "UNH seen while already inside a message window (missing UNT before next UNH)",
                 });
             }
@@ -95,7 +95,7 @@ UNT+4+2'";
     }
 
     if in_message {
-        return Err(edifact_rs::EdifactError::InvalidEventSequence {
+        return Err(edifact::EdifactError::InvalidEventSequence {
             message: "unterminated streamed message window: missing UNT",
         });
     }

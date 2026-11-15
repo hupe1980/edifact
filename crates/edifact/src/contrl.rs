@@ -58,7 +58,7 @@
 //! # Example
 //!
 //! ```
-//! use edifact_rs::{Contrl, from_bytes, validate_envelope};
+//! use edifact::{Contrl, from_bytes, validate_envelope};
 //!
 //! let raw = b"UNB+UNOC:3+SENDER+RECEIVER+260101:0900+IC4711'\
 //!             UNH+MSG1+ORDERS:D:96A:UN'BGM+220+PO-1+9'UNT+3+MSG1'\
@@ -72,7 +72,7 @@
 //! // A syntax 3 subject is answered with `CONTRL:D:3:UN`; syntax 4 with `4:1:UN`.
 //! assert!(wire.starts_with("UNH+ACK1+CONTRL:D:3:UN'"));
 //! assert!(wire.contains("UCI+IC4711+SENDER+RECEIVER+7'"));
-//! # Ok::<(), edifact_rs::EdifactError>(())
+//! # Ok::<(), edifact::EdifactError>(())
 //! ```
 
 pub(crate) mod location;
@@ -315,7 +315,7 @@ impl SyntaxError {
     /// # Example
     ///
     /// ```
-    /// use edifact_rs::contrl::{ReportingLevel, SyntaxError};
+    /// use edifact::contrl::{ReportingLevel, SyntaxError};
     ///
     /// // "Too many segment group repetitions" is a segment-level finding only.
     /// assert!(SyntaxError::TooManyGroupRepetitions.permitted_at(ReportingLevel::Segment));
@@ -388,8 +388,8 @@ impl SyntaxError {
     /// # Example
     ///
     /// ```
-    /// use edifact_rs::contrl::SyntaxError;
-    /// use edifact_rs::EdifactError;
+    /// use edifact::contrl::SyntaxError;
+    /// use edifact::EdifactError;
     ///
     /// let err = EdifactError::MessageCountMismatch { expected: 2, actual: 1 };
     /// assert_eq!(SyntaxError::for_error(&err), SyntaxError::ControlCountMismatch);
@@ -515,7 +515,7 @@ impl std::fmt::Display for SyntaxError {
 /// # Example
 ///
 /// ```
-/// use edifact_rs::contrl::ContrlIdentifier;
+/// use edifact::contrl::ContrlIdentifier;
 ///
 /// assert_eq!(ContrlIdentifier::for_syntax_version("4"), ContrlIdentifier::syntax_4());
 /// assert_eq!(ContrlIdentifier::for_syntax_version("3"), ContrlIdentifier::syntax_3());
@@ -526,7 +526,7 @@ impl std::fmt::Display for SyntaxError {
 ///
 /// // DE 0057 is an..6.
 /// assert!(ContrlIdentifier::syntax_3().with_association("SEVENCH").is_err());
-/// # Ok::<(), edifact_rs::EdifactError>(())
+/// # Ok::<(), edifact::EdifactError>(())
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -673,7 +673,7 @@ fn identifier_component(
 /// # Example
 ///
 /// ```
-/// use edifact_rs::contrl::{Action, ActionPolicy, ReportingLevel};
+/// use edifact::contrl::{Action, ActionPolicy, ReportingLevel};
 ///
 /// let policy = ActionPolicy::new()
 ///     .permit(ReportingLevel::Interchange, &[Action::Acknowledged, Action::Rejected])
@@ -785,7 +785,7 @@ pub enum RejectionScope {
 /// when anything is wrong:
 ///
 /// ```
-/// use edifact_rs::contrl::{
+/// use edifact::contrl::{
 ///     Action, ActionPolicy, ContrlIdentifier, ContrlOptions, RejectionScope, ReportingLevel,
 /// };
 ///
@@ -799,7 +799,7 @@ pub enum RejectionScope {
 ///     .rejection(RejectionScope::Interchange)
 ///     .report_warnings(false);
 /// # let _ = options;
-/// # Ok::<(), edifact_rs::EdifactError>(())
+/// # Ok::<(), edifact::EdifactError>(())
 /// ```
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -1307,8 +1307,8 @@ impl Contrl {
     /// # Example
     ///
     /// ```
-    /// use edifact_rs::contrl::{Contrl, ContrlOptions};
-    /// use edifact_rs::{RecoveredInterchange, RecoveryConfig};
+    /// use edifact::contrl::{Contrl, ContrlOptions};
+    /// use edifact::{RecoveredInterchange, RecoveryConfig};
     ///
     /// // The second segment of the message has a broken tag (`BGME03`).
     /// let raw = b"UNB+UNOC:3+S+R+260101:0900+IC1'\
@@ -1323,7 +1323,7 @@ impl Contrl {
     ///     "UNH+ACK1+CONTRL:D:3:UN'UCI+IC1+S+R+7'\
     ///      UCM+1+ORDERS:D:96A:UN+4'UCS+2'UCD+12+1'UNT+6+ACK1'"
     /// );
-    /// # Ok::<(), edifact_rs::EdifactError>(())
+    /// # Ok::<(), edifact::EdifactError>(())
     /// ```
     pub fn from_recovered(
         recovered: &RecoveredInterchange<'_>,
@@ -1842,7 +1842,7 @@ impl Contrl {
     /// # Example
     ///
     /// ```
-    /// # use edifact_rs::{Contrl, from_bytes, validate_envelope};
+    /// # use edifact::{Contrl, from_bytes, validate_envelope};
     /// # let raw = b"UNB+UNOC:3+SENDER+RECEIVER+260101:0900+IC4711'UNH+M1+ORDERS:D:96A:UN'BGM+220'UNT+3+M1'UNZ+1+IC4711'";
     /// # let segments: Vec<_> = from_bytes(raw).collect::<Result<Vec<_>, _>>()?;
     /// # let validated = validate_envelope(&segments)?;
@@ -1852,7 +1852,7 @@ impl Contrl {
     /// // The reply is addressed back to the original sender.
     /// assert!(wire.starts_with("UNB+UNOC:3+RECEIVER+SENDER+260101:0930+ACK-1'"));
     /// assert!(wire.ends_with("UNZ+1+ACK-1'"));
-    /// # Ok::<(), edifact_rs::EdifactError>(())
+    /// # Ok::<(), edifact::EdifactError>(())
     /// ```
     ///
     /// # Errors

@@ -17,10 +17,10 @@
 //!
 //! Run:
 //! ```text
-//! cargo run -p edifact-rs --example cookbook_typed_streaming
+//! cargo run -p edifact --example cookbook_typed_streaming
 //! ```
 
-use edifact_rs::{EdifactDeserialize, deserialize_each, deserialize_each_from_reader};
+use edifact::{EdifactDeserialize, deserialize_each, deserialize_each_from_reader};
 
 /// BGM — Beginning of Message.
 /// The derive macro scans for segments with tag "BGM" and maps element 0/1/2.
@@ -35,7 +35,7 @@ struct Bgm {
     function: Option<String>,
 }
 
-fn main() -> Result<(), edifact_rs::EdifactError> {
+fn main() -> Result<(), edifact::EdifactError> {
     // The input holds two BGM segments separated by a non-BGM segment.
     let input =
         b"UNH+1+ORDERS:D:11A:UN'BGM+220+PO-4711+9'RFF+ON:PO-4711'BGM+231+PO-4712+9'UNT+5+1'";

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use crate::model::Span;
 use crate::validator::ValidationLayer;
 
-/// The severity `edifact-rs` assigns to an [`EdifactError`][crate::EdifactError].
+/// The severity `edifact` assigns to an [`EdifactError`][crate::EdifactError].
 ///
 /// This is the **single** definition of that mapping. It backs
 /// [`ValidationReport`] entries and, with the `diagnostics` feature, the
@@ -254,7 +254,7 @@ impl FindingKind {
     /// # Example
     ///
     /// ```
-    /// use edifact_rs::{EdifactError, FindingKind};
+    /// use edifact::{EdifactError, FindingKind};
     ///
     /// let err = EdifactError::MissingRequiredElement { tag: "BGM".into(), element_index: 1 };
     /// assert_eq!(FindingKind::for_error(&err), FindingKind::Missing);
@@ -397,7 +397,7 @@ impl std::fmt::Display for GroupStep {
 /// # Example
 ///
 /// ```
-/// use edifact_rs::{GroupPath, GroupStep};
+/// use edifact::{GroupPath, GroupStep};
 ///
 /// let sg4 = GroupPath::new(GroupStep::new("SG4", 0)).unwrap();
 /// let sg8 = sg4.child("SG8", 1).unwrap();
@@ -505,7 +505,7 @@ impl<'de> serde::Deserialize<'de> for GroupPath {
 /// clamped index is a plausible *wrong* location.
 ///
 /// ```rust
-/// # use edifact_rs::{FindingKind, ValidationIssue, ValidationLayer, ValidationSeverity};
+/// # use edifact::{FindingKind, ValidationIssue, ValidationLayer, ValidationSeverity};
 /// let segment_index = 70_002_usize; // zero-based index into the message slice
 /// let issue = ValidationIssue::new(ValidationSeverity::Error, "QTY qualifier must be 220")
 ///     .with_segment("QTY")
@@ -704,7 +704,7 @@ pub struct ValidationIssue {
     /// trading-partner identifier, or a document UUID:
     ///
     /// ```rust
-    /// # use edifact_rs::{ValidationIssue, ValidationSeverity};
+    /// # use edifact::{ValidationIssue, ValidationSeverity};
     /// let issue = ValidationIssue::new(ValidationSeverity::Error, "BGM code invalid")
     ///     .with_rule_id("PROFILE-4711-BGM-M")
     ///     .with_context_entry("pid", "4711")
@@ -759,7 +759,7 @@ impl ValidationIssue {
     /// # Example
     ///
     /// ```rust
-    /// # use edifact_rs::{ValidationIssue, ValidationSeverity};
+    /// # use edifact::{ValidationIssue, ValidationSeverity};
     /// let from_const = ValidationIssue::new(ValidationSeverity::Error, "bad code")
     ///     .with_error_code("E014");
     /// let from_owned = ValidationIssue::new(ValidationSeverity::Error, "bad code")
@@ -783,7 +783,7 @@ impl ValidationIssue {
     /// # Example
     ///
     /// ```rust
-    /// # use edifact_rs::{ValidationIssue, ValidationSeverity, Span};
+    /// # use edifact::{ValidationIssue, ValidationSeverity, Span};
     /// let span = Span::new(42, 57);
     /// let issue = ValidationIssue::new(ValidationSeverity::Error, "BGM code missing")
     ///     .with_span(span);
@@ -911,7 +911,7 @@ impl ValidationIssue {
     /// # Example
     ///
     /// ```rust
-    /// # use edifact_rs::{ValidationIssue, ValidationSeverity};
+    /// # use edifact::{ValidationIssue, ValidationSeverity};
     /// let issue = ValidationIssue::new(ValidationSeverity::Error, "BGM code invalid")
     ///     .with_rule_id("PROFILE-4711-BGM-M")
     ///     .with_context_entry("pid", "4711")
@@ -937,7 +937,7 @@ impl ValidationIssue {
     /// # Example
     ///
     /// ```rust
-    /// # use edifact_rs::{ValidationIssue, ValidationSeverity};
+    /// # use edifact::{ValidationIssue, ValidationSeverity};
     /// let meta = [("pid", "4711"), ("partner", "9900123456789")];
     /// let issue = ValidationIssue::new(ValidationSeverity::Error, "test")
     ///     .with_context_entries(meta);
@@ -1125,7 +1125,7 @@ impl std::error::Error for ValidationIssue {}
 /// vectors, or the `add_*` methods to push individual issues:
 ///
 /// ```rust
-/// use edifact_rs::{ValidationReport, ValidationIssue, ValidationSeverity};
+/// use edifact::{ValidationReport, ValidationIssue, ValidationSeverity};
 ///
 /// let mut report = ValidationReport::default();
 /// report.add_warning(
@@ -1293,7 +1293,7 @@ impl ValidationReport {
     /// # Example
     ///
     /// ```rust
-    /// use edifact_rs::{ValidationReport, ValidationIssue, ValidationSeverity};
+    /// use edifact::{ValidationReport, ValidationIssue, ValidationSeverity};
     ///
     /// let mut combined = ValidationReport::default();
     /// let report = ValidationReport::from_issues(
@@ -1371,7 +1371,7 @@ impl ValidationReport {
     /// # Example
     ///
     /// ```rust
-    /// use edifact_rs::{ValidationReport, ValidationIssue, ValidationSeverity};
+    /// use edifact::{ValidationReport, ValidationIssue, ValidationSeverity};
     ///
     /// let mut report = ValidationReport::default();
     /// report.add_error(
@@ -1662,7 +1662,7 @@ impl Extend<ValidationIssue> for ValidationReport {
     /// This enables ergonomic batch collection:
     ///
     /// ```rust
-    /// use edifact_rs::{ValidationReport, ValidationIssue, ValidationSeverity};
+    /// use edifact::{ValidationReport, ValidationIssue, ValidationSeverity};
     ///
     /// let issues = vec![
     ///     ValidationIssue::new(ValidationSeverity::Error, "bad segment"),

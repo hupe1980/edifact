@@ -1,9 +1,9 @@
-use edifact_rs::{
+use edifact::{
     EdifactError, ProfileRulePack, ValidationContext, ValidationIssue, ValidationSeverity,
 };
 
-fn parse_segments(input: &[u8]) -> Vec<edifact_rs::Segment<'_>> {
-    edifact_rs::from_bytes(input)
+fn parse_segments(input: &[u8]) -> Vec<edifact::Segment<'_>> {
+    edifact::from_bytes(input)
         .collect::<Result<Vec<_>, _>>()
         .expect("expected parse success")
 }
@@ -273,7 +273,7 @@ fn incompatible_release_scopes_return_err_not_panic() {
 
 #[test]
 fn pack_name_is_stamped() {
-    use edifact_rs::{
+    use edifact::{
         FindingKind, Segment, ValidationLayer, ValidationReport, ValidationRuleContext, Validator,
     };
 

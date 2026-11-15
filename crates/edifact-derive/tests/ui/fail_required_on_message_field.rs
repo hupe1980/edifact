@@ -6,15 +6,15 @@
 #[path = "support.rs"]
 mod support;
 
-pub use support::edifact_rs::{
+pub use support::edifact::{
     EdifactDeserialize, EdifactError, EdifactEvent, EdifactSegmentTag, EdifactSerialize,
     EventEmitter, Segment, find_qualified_segment,
     find_segment};
 
-extern crate self as edifact_rs;
-pub use support::edifact_rs::helpers;
+extern crate self as edifact;
+pub use support::edifact::helpers;
 
-use edifact_rs_derive::{
+use edifact_derive::{
     EdifactDeserialize as DeriveEdifactDeserialize,
     EdifactSerialize as DeriveEdifactSerialize};
 

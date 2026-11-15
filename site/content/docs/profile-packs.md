@@ -28,7 +28,7 @@ Packs can be:
 ## Creating a pack
 
 ```rust
-use edifact_rs::{ProfileRulePack, ValidationIssue, ValidationSeverity};
+use edifact::{ProfileRulePack, ValidationIssue, ValidationSeverity};
 
 let pack = ProfileRulePack::new("ORDERS-RULES")
     .for_message_type("ORDERS")
@@ -73,9 +73,9 @@ let pack = ProfileRulePack::new("ORDERS-RULES")
 ## Plugging into `ValidationContext`
 
 ```rust
-use edifact_rs::{ValidationContext, from_bytes};
+use edifact::{ValidationContext, from_bytes};
 
-# use edifact_rs::{ProfileRulePack, ValidationIssue, ValidationSeverity};
+# use edifact::{ProfileRulePack, ValidationIssue, ValidationSeverity};
 # let pack = ProfileRulePack::new("ORDERS-RULES").for_message_type("ORDERS");
 let segs: Vec<_> = from_bytes(b"UNH+1+ORDERS:D:96A:UN'BGM+220+PO-4711+9'UNT+3+1'")
     .collect::<Result<_, _>>()?;
@@ -86,7 +86,7 @@ let report = ValidationContext::builder()
     .validate(&segs);
 
 println!("{} error(s)", report.errors().len());
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ---
@@ -99,7 +99,7 @@ or override specific ones:
 ### `extend_from` — inherit a base pack, then append specialisations
 
 ```rust
-use edifact_rs::{ProfileRulePack, ValidationIssue, ValidationSeverity};
+use edifact::{ProfileRulePack, ValidationIssue, ValidationSeverity};
 
 let base_pack = ProfileRulePack::new("ORDERS-BASE")
     .for_message_type("ORDERS")
@@ -114,7 +114,7 @@ let partner_pack = ProfileRulePack::new("ORDERS-ACME")
         // ACME-specific rules — appended after base rules …
     })
     .extend_from(&base_pack)?;  // base rules run first
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ### `merge_with_override` — delta upgrades (override specific rules by ID)
@@ -123,7 +123,7 @@ When you have a versioned base and want to ship a delta that replaces only chang
 rules (identified by their stable rule ID):
 
 ```rust
-use edifact_rs::{ProfileRulePack, ValidationIssue, ValidationSeverity};
+use edifact::{ProfileRulePack, ValidationIssue, ValidationSeverity};
 
 let base = ProfileRulePack::new("ORDERS-5.4")
     .for_message_type("ORDERS")
@@ -139,7 +139,7 @@ let delta = ProfileRulePack::new("ORDERS-5.5-delta")
 // Result has rule_count() == 1 (the 5.4 rule is replaced, not duplicated)
 let result = base.merge_with_override(delta)?;
 assert_eq!(result.rule_count(), 1);
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 > Both methods return `Result<ProfileRulePack, EdifactError>` and fail with
@@ -154,7 +154,7 @@ Use `.for_message_type("TYPE")` to restrict a pack to a specific message type.
 Packs check the `UNH` segment element 1 component 0 (the message identifier):
 
 ```rust
-# use edifact_rs::{ProfileRulePack, ValidationIssue, ValidationSeverity};
+# use edifact::{ProfileRulePack, ValidationIssue, ValidationSeverity};
 
 // This pack's rules run ONLY when the message type is "INVOIC"
 let invoic_pack = ProfileRulePack::new("INVOIC-RULES")
@@ -171,7 +171,7 @@ let universal_pack = ProfileRulePack::new("UNIVERSAL")
 Call `.for_message_type` multiple times to include multiple types:
 
 ```rust
-# use edifact_rs::{ProfileRulePack, ValidationIssue, ValidationSeverity};
+# use edifact::{ProfileRulePack, ValidationIssue, ValidationSeverity};
 let multi_pack = ProfileRulePack::new("TRADE-DOCS")
     .for_message_type("ORDERS")
     .for_message_type("ORDRSP")
@@ -186,7 +186,7 @@ let multi_pack = ProfileRulePack::new("TRADE-DOCS")
 Assign stable, namespaced rule IDs and filter them independently:
 
 ```rust
-# use edifact_rs::{ProfileRulePack, ValidationContext, ValidationIssue, ValidationSeverity, from_bytes};
+# use edifact::{ProfileRulePack, ValidationContext, ValidationIssue, ValidationSeverity, from_bytes};
 let segs: Vec<_> = from_bytes(b"UNH+1+ORDERS:D:96A:UN'BGM+220+PO-4711+9'UNT+3+1'")
     .collect::<Result<_, _>>()?;
 
@@ -224,7 +224,7 @@ println!("reference issues: {}", ref_issues.total_issues());
 // Exact rule ID lookup (returns a lazy iterator; use count() or collect()):
 let p001_count = report.issues_for_rule_id("ORDERS-DOC-P001").count();
 println!("ORDERS-DOC-P001 findings: {p001_count}");
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ---
@@ -235,7 +235,7 @@ Instead of returning `ValidationIssue` to your application layer, map rule IDs t
 your own domain error type:
 
 ```rust
-use edifact_rs::{ProfileRulePack, ValidationContext, ValidationIssue, ValidationSeverity, from_bytes};
+use edifact::{ProfileRulePack, ValidationContext, ValidationIssue, ValidationSeverity, from_bytes};
 
 #[derive(Debug)]
 enum TradeError {
@@ -299,7 +299,7 @@ fn validate_orders(input: &[u8]) -> Result<(), Vec<TradeError>> {
 }
 ```
 
-See [`cookbook_profile_error_mapping.rs`](https://github.com/hupe1980/edifact-rs/tree/main/crates/edifact-rs/examples/cookbook_profile_error_mapping.rs)
+See [`cookbook_profile_error_mapping.rs`](https://github.com/hupe1980/edifact/tree/main/crates/edifact/examples/cookbook_profile_error_mapping.rs)
 for a complete example with a custom `Validator` implementation alongside profile packs.
 
 ---
@@ -310,7 +310,7 @@ For rules with shared state or complex initialization, implement the `ProfileRul
 trait directly:
 
 ```rust
-use edifact_rs::{
+use edifact::{
     ProfileRule, ProfileRulePack, ValidationIssue, ValidationRuleContext,
     ValidationSeverity, Segment,
 };
@@ -365,7 +365,7 @@ tree-walking code.
 ### Convenience builders
 
 ```rust
-use edifact_rs::{ProfileRulePack, group::GroupDef};
+use edifact::{ProfileRulePack, group::GroupDef};
 
 // Schema: SG5 contains LIN and zero or more SG6 children.
 static SG6: &[GroupDef] = &[GroupDef::new("SG6", "RFF")];
@@ -390,7 +390,7 @@ For full control, supply a closure via `with_scoped_group_rule_fn(group_scope, r
 The closure receives `(group: &SegmentGroupIndexed, segs: &[Segment], ctx: &ValidationRuleContext, issues: &mut Vec<ValidationIssue>)`:
 
 ```rust
-use edifact_rs::{
+use edifact::{
     ProfileRulePack, ValidationIssue, ValidationSeverity,
     group::SegmentGroupIndexed,
     ValidationRuleContext,
@@ -449,7 +449,7 @@ running a guide pack and an application pack side by side tells their findings
 apart by `pack()`, and missing from not-permitted by `kind()`:
 
 ```rust
-use edifact_rs::{FindingKind, ProfileRulePack, ValidationContext, from_bytes};
+use edifact::{FindingKind, ProfileRulePack, ValidationContext, from_bytes};
 
 let segs: Vec<_> = from_bytes(b"UNH+1+ORDERS:D:96A:UN'BGM+220'UNT+3+1'")
     .collect::<Result<_, _>>()?;
@@ -464,7 +464,7 @@ assert_eq!(mig[0].kind(), Some(FindingKind::Missing));
 let ahb: Vec<_> = report.iter_issues().filter(|i| i.pack() == Some("AHB-ORDERS")).collect();
 assert_eq!(ahb[0].kind(), Some(FindingKind::NotPermitted));
 assert_eq!(ahb[0].segment_position(), Some(2));
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 The name is that of the pack that *runs* the rule: rules taken over with
@@ -480,7 +480,7 @@ A rule that sweeps every segment can produce one issue per segment, and a
 bounds the damage:
 
 ```rust
-use edifact_rs::{ProfileRulePack, ValidationContext, ValidationIssue, ValidationSeverity, from_bytes};
+use edifact::{ProfileRulePack, ValidationContext, ValidationIssue, ValidationSeverity, from_bytes};
 
 let pack = ProfileRulePack::new("NOISY")
     .with_max_issues_per_rule(2)
@@ -501,7 +501,7 @@ let report = ValidationContext::builder()
     .validate(&segments);
 
 assert_eq!(report.total_issues(), 2); // four segments, capped at two
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 The cap is **per rule per call** — not per group. A group rule's budget is spent
@@ -513,7 +513,7 @@ the rule is not called again on that pass.
 ## Pack introspection
 
 ```rust
-# use edifact_rs::ProfileRulePack;
+# use edifact::ProfileRulePack;
 let pack = ProfileRulePack::new("MY-PACK")
     .for_message_type("ORDERS")
     .with_rule_fn(|_segs, _issues| {})

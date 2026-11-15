@@ -11,7 +11,7 @@ of a directory release — so, like the envelope segments, the standard decides
 its shape. Its own `UNH` follows the syntax version of the interchange it
 answers (see [Choosing the message identifier](#choosing-the-message-identifier)).
 
-`edifact-rs` builds one from a [`ValidationReport`](@/docs/validation.md), which
+`edifact` builds one from a [`ValidationReport`](@/docs/validation.md), which
 means the acknowledgement you send and the findings you logged cannot disagree.
 
 ---
@@ -43,7 +43,7 @@ interchange asked for an acknowledgement in `UNB` DE 0031 — check
 `interchange.ack_requested()` before deciding whether you owe one.
 
 ```rust
-use edifact_rs::{Contrl, from_bytes, validate_envelope};
+use edifact::{Contrl, from_bytes, validate_envelope};
 
 let raw = b"UNB+UNOC:3+SENDER+RECEIVER+260101:0900+IC4711'\
             UNH+MSG1+ORDERS:D:96A:UN'BGM+220+PO-1+9'UNT+3+MSG1'\
@@ -60,7 +60,7 @@ assert_eq!(
     wire,
     "UNH+ACK1+CONTRL:D:3:UN'UCI+IC4711+SENDER+RECEIVER+7'UNT+3+ACK1'",
 );
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 A clean interchange needs no `UCM` per message: §5.3.4 makes the `UCI`'s
@@ -80,7 +80,7 @@ Use the **lenient** path: it is the only one that yields both an interchange and
 its faults, which is precisely what a `CONTRL` reports.
 
 ```rust
-use edifact_rs::{Contrl, ValidationContext, from_bytes, validate_envelope_lenient};
+use edifact::{Contrl, ValidationContext, from_bytes, validate_envelope_lenient};
 
 // `FTX+   ` carries a value of nothing but spaces — ISO 9735-1 §9.3.
 let raw = b"UNB+UNOC:3+S+R+260101:0900+IC1'\
@@ -101,7 +101,7 @@ let wire = Contrl::from_report(&validated, &segments, &report).to_edifact_string
 // position 2 (the tag is position 1), component 1.
 assert!(wire.contains("UCS+2'"));
 assert!(wire.contains("UCD+12+2:1'"));
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 Warnings are reported but do not reject: the interchange above stays
@@ -134,11 +134,11 @@ code, and the two rules can pull in opposite directions: "duplicate detected"
 (`26`) is meaningless below the message, so pushing it down would emit a `UCS`
 that says a segment is wrong without saying how.
 
-`edifact-rs` resolves that the way the standard requires — the lowest level that
+`edifact` resolves that the way the standard requires — the lowest level that
 is *both* able to locate the fault and permitted to carry the code:
 
 ```rust
-use edifact_rs::contrl::{ReportingLevel, SyntaxError};
+use edifact::contrl::{ReportingLevel, SyntaxError};
 
 // Legal everywhere, so it descends as far as the finding can locate it.
 assert!(SyntaxError::InvalidValue.permitted_at(ReportingLevel::DataElement));
@@ -150,7 +150,7 @@ assert!(!SyntaxError::DuplicateDetected.permitted_at(ReportingLevel::Segment));
 // Segment level only.
 assert!(SyntaxError::TooManyGroupRepetitions.permitted_at(ReportingLevel::Segment));
 assert!(!SyntaxError::TooManyGroupRepetitions.permitted_at(ReportingLevel::Interchange));
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ### Service segments
@@ -181,7 +181,7 @@ A fault in a group's own `UNG`/`UNE` rejects that group and, implicitly,
 everything in it — while the interchange around it stays acknowledged:
 
 ```rust
-# use edifact_rs::{Contrl, ValidationContext, from_bytes, validate_envelope_lenient};
+# use edifact::{Contrl, ValidationContext, from_bytes, validate_envelope_lenient};
 // The UNE reference does not match its UNG.
 let raw = b"UNB+UNOC:3+S+R+260101:0900+IC1'\
             UNG+ORDERS+SND+RCV+260101:0900+GRP1+UN+D:96A'\
@@ -203,7 +203,7 @@ assert_eq!(
     wire,
     "UNH+IC1+CONTRL:D:3:UN'UCI+IC1+S+R+7'UCF+GRP1+SND+RCV+4+28+UNE'UNT+4+IC1'",
 );
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ---
@@ -225,8 +225,8 @@ a syntax 3 subject — sets it explicitly with `ContrlIdentifier`, either in
 `ContrlOptions` or on a built `CONTRL` with `with_identifier`:
 
 ```rust
-use edifact_rs::contrl::{Contrl, ContrlIdentifier, ContrlOptions};
-use edifact_rs::{from_bytes, validate_envelope};
+use edifact::contrl::{Contrl, ContrlIdentifier, ContrlOptions};
+use edifact::{from_bytes, validate_envelope};
 
 let raw = b"UNB+UNOC:3+SENDER+RECEIVER+260101:0900+IC4711'\
             UNH+MSG1+ORDERS:D:96A:UN'BGM+220+PO-1+9'UNT+3+MSG1'\
@@ -249,7 +249,7 @@ assert!(wire.starts_with("UNH+ACK1+CONTRL:D:3:UN:EX1'"));
 // CONTRL:4:1:UN for a syntax 3 subject, if the partner agreement asks for it.
 let syntax4 = Contrl::acknowledgement(&validated).with_identifier(ContrlIdentifier::syntax_4());
 assert!(syntax4.to_edifact_string()?.starts_with("UNH+IC4711+CONTRL:4:1:UN'"));
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 A component that violates its representation — DE 0052, 0054, 0051 empty or
@@ -282,10 +282,10 @@ the option-less ones keep the defaults and cannot fail.
 The BDEW configuration (CONTRL MIG 2.0b) as caller code:
 
 ```rust
-use edifact_rs::contrl::{
+use edifact::contrl::{
     Action, ActionPolicy, Contrl, ContrlIdentifier, ContrlOptions, RejectionScope, ReportingLevel,
 };
-use edifact_rs::{EdifactError, ValidationContext, from_bytes, validate_envelope_lenient};
+use edifact::{EdifactError, ValidationContext, from_bytes, validate_envelope_lenient};
 
 let bdew = ContrlOptions::new()
     .identifier(ContrlIdentifier::syntax_3().with_association("2.0b")?)
@@ -324,7 +324,7 @@ assert!(matches!(
     Contrl::receipt_with(&validated.interchange, &bdew),
     Err(EdifactError::ActionNotPermitted { segment_tag: "UCI", action: "8" })
 ));
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 Under `RejectionScope::Interchange` a fault in the interchange envelope itself
@@ -389,8 +389,8 @@ and a `ContrlLocation` for every fault — reporting level, message, `UCS`
 DE 0096, `UCD` DE 0098 / DE 0104, the service segment and the DE 0085 code:
 
 ```rust
-use edifact_rs::contrl::ReportingLevel;
-use edifact_rs::{RecoveredInterchange, RecoveryConfig};
+use edifact::contrl::ReportingLevel;
+use edifact::{RecoveredInterchange, RecoveryConfig};
 
 // The second message's BGM tag is broken: `BGME03` is no segment tag.
 let raw = b"UNB+UNOC:3+4012345000023:500+9900357000004:500+261001:0700+IC9'\
@@ -437,7 +437,7 @@ with `locate(&error, Some(message_index))` on the first segment of that message
 with the error's tag, and the location says it is not exact:
 
 ```rust
-use edifact_rs::{EdifactError, RecoveredInterchange, RecoveryConfig};
+use edifact::{EdifactError, RecoveredInterchange, RecoveryConfig};
 
 let raw = b"UNB+UNOC:3+S+R+260101:0900+IC1'\
             UNH+1+ORDERS:D:96A:UN'BGM+220'UNT+3+1'UNZ+1+IC1'";
@@ -462,8 +462,8 @@ options as `from_report_with`. Locations from another layer — `locate` of a
 typed-layer error — go in as `extra` and are reported the same way:
 
 ```rust
-use edifact_rs::contrl::{Contrl, ContrlOptions, RejectionScope};
-use edifact_rs::{RecoveredInterchange, RecoveryConfig};
+use edifact::contrl::{Contrl, ContrlOptions, RejectionScope};
+use edifact::{RecoveredInterchange, RecoveryConfig};
 
 let raw = b"UNB+UNOC:3+4012345000023:500+9900357000004:500+261001:0700+IC9'\
             UNH+1+UTILMD:D:11A:UN:S2.1'BGM+E03+X'UNT+3+1'\
@@ -485,7 +485,7 @@ assert_eq!(
      UCM+2+UTILMD:D:11A:UN:S2.1+4'UCS+2'UCD+12+1'\
      UNT+6+ACK1'",
 );
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 - Without readable `UNB` addressing there is no `CONTRL`
@@ -504,7 +504,7 @@ A `CONTRL` must travel in an interchange of its own and never inside a group
 recipient so the reply goes back the way it came:
 
 ```rust
-# use edifact_rs::{Contrl, from_bytes, validate_envelope};
+# use edifact::{Contrl, from_bytes, validate_envelope};
 # let raw = b"UNB+UNOC:3+SENDER+RECEIVER+260101:0900+IC4711'UNH+M1+ORDERS:D:96A:UN'BGM+220'UNT+3+M1'UNZ+1+IC4711'";
 # let segments: Vec<_> = from_bytes(raw).collect::<Result<Vec<_>, _>>()?;
 # let validated = validate_envelope(&segments)?;
@@ -513,7 +513,7 @@ let wire = Contrl::acknowledgement(&validated)
 
 assert!(wire.starts_with("UNB+UNOC:3+RECEIVER+SENDER+260101:0930+ACK-1'"));
 assert!(wire.ends_with("UNZ+1+ACK-1'"));
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 `UNT` DE 0074 and `UNZ` DE 0036 are computed from what was actually emitted, so
@@ -524,11 +524,11 @@ the counts are right by construction.
 ## Parsing an inbound CONTRL
 
 The same layouts serve the read direction. A `CONTRL` is built entirely from
-segments in `edifact_rs::service`, so `service::lookup` validates one with no
+segments in `edifact::service`, so `service::lookup` validates one with no
 directory involved:
 
 ```rust
-use edifact_rs::{DirectoryValidator, ValidationContext, ValidationLayer, from_bytes, service};
+use edifact::{DirectoryValidator, ValidationContext, ValidationLayer, from_bytes, service};
 
 let raw = b"UNH+ACK1+CONTRL:4:1:UN'UCI+IC4711+SENDER+RECEIVER+7'UNT+3+ACK1'";
 let segments: Vec<_> = from_bytes(raw).collect::<Result<Vec<_>, _>>()?;
@@ -545,7 +545,7 @@ let report = ValidationContext::builder()
     .build()
     .validate(&segments);
 assert!(!report.has_errors());
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ---

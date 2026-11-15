@@ -76,7 +76,7 @@ jobs:
       - name: Build docs.rs-style docs with warnings denied
         env:
           RUSTDOCFLAGS: --cfg docsrs -D warnings
-        run: cargo +nightly doc -p edifact-rs --all-features --no-deps --locked
+        run: cargo +nightly doc -p edifact --all-features --no-deps --locked
 
   feature-matrix:
     runs-on: ubuntu-latest
@@ -89,20 +89,20 @@ jobs:
           - name: test-workspace
             command: cargo test --workspace --locked
           - name: test-no-default-features
-            command: cargo test -p edifact-rs --no-default-features --locked
+            command: cargo test -p edifact --no-default-features --locked
           - name: test-all-features
-            command: cargo test -p edifact-rs --all-features --locked
+            command: cargo test -p edifact --all-features --locked
           # The UI expectations are toolchain-portable, so run them on stable
           # too: pinning them to MSRV alone meant a regression in the derive's
           # diagnostics went unseen until that one job ran.
           - name: test-derive-ui
-            command: EDIFACT_UI_TESTS=1 cargo test -p edifact-rs-derive --locked
+            command: EDIFACT_UI_TESTS=1 cargo test -p edifact-derive --locked
           - name: test-all-features-examples
-            command: cargo test -p edifact-rs --all-features --examples --locked
+            command: cargo test -p edifact --all-features --examples --locked
           # `cargo test` does not build `harness = false` bench targets, so a
           # broken benchmark would otherwise only surface on the bench jobs.
           - name: build-benches
-            command: cargo test -p edifact-rs --benches --no-run --locked
+            command: cargo test -p edifact --benches --no-run --locked
     name: ${{ matrix.name }}
     steps:
       - uses: actions/checkout@v4
@@ -123,7 +123,7 @@ jobs:
       - name: Run property/fuzz targets
         env:
           BOLERO_RANDOM_ITERATIONS: "50000"
-        run: cargo test -p edifact-rs --release --test bolero_harness --locked
+        run: cargo test -p edifact --release --test bolero_harness --locked
 
   benchmark-smoke:
     runs-on: ubuntu-latest
@@ -134,7 +134,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run criterion benchmark smoke suite
-        run: cargo bench -p edifact-rs --bench bench_criterion -- --noplot --sample-size 10
+        run: cargo bench -p edifact --bench bench_criterion -- --noplot --sample-size 10
       - name: Download latest main benchmark baseline artifact
         id: download-baseline
         continue-on-error: true
@@ -151,7 +151,7 @@ jobs:
         run: cargo install critcmp --locked
       - name: Save PR benchmark baseline
         if: steps.download-baseline.outcome == 'success'
-        run: cargo bench -p edifact-rs --bench bench_criterion -- --noplot --sample-size 20 --save-baseline pr
+        run: cargo bench -p edifact --bench bench_criterion -- --noplot --sample-size 20 --save-baseline pr
       - name: Compare PR performance against main baseline
         if: steps.download-baseline.outcome == 'success'
         shell: bash
@@ -181,7 +181,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run full criterion suite and save main baseline
-        run: cargo bench -p edifact-rs --bench bench_criterion -- --noplot --sample-size 50 --warm-up-time 2 --measurement-time 8 --save-baseline main
+        run: cargo bench -p edifact --bench bench_criterion -- --noplot --sample-size 50 --warm-up-time 2 --measurement-time 8 --save-baseline main
       - name: Upload criterion baseline artifact
         uses: actions/upload-artifact@v4
         with:
@@ -197,18 +197,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Verify derive crate packages cleanly
-        run: cargo publish --dry-run -p edifact-rs-derive --locked
+        run: cargo publish --dry-run -p edifact-derive --locked
       - name: Verify crate versions match across workspace
         shell: bash
         run: |
           set -euo pipefail
           derive_ver=$(cargo metadata --no-deps --format-version 1 \
             | python3 -c "import sys,json; pkgs=json.load(sys.stdin)['packages']; \
-              print(next(p['version'] for p in pkgs if p['name']=='edifact-rs-derive'))")
+              print(next(p['version'] for p in pkgs if p['name']=='edifact-derive'))")
           main_ver=$(cargo metadata --no-deps --format-version 1 \
             | python3 -c "import sys,json; pkgs=json.load(sys.stdin)['packages']; \
-              print(next(p['version'] for p in pkgs if p['name']=='edifact-rs'))")
-          echo "edifact-rs-derive=${derive_ver}  edifact-rs=${main_ver}"
+              print(next(p['version'] for p in pkgs if p['name']=='edifact'))")
+          echo "edifact-derive=${derive_ver}  edifact=${main_ver}"
           if [[ "${derive_ver}" != "${main_ver}" ]]; then
             echo "Version mismatch between crates: derive=${derive_ver} main=${main_ver}"
             exit 1

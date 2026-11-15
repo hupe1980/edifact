@@ -1,6 +1,6 @@
 //! Cookbook: async / tokio integration
 //!
-//! `edifact-rs` is a synchronous library — it exposes `std::io::Read`-based
+//! `edifact` is a synchronous library — it exposes `std::io::Read`-based
 //! streaming APIs, not async ones.  This is intentional: EDIFACT parsing is
 //! CPU-bound after the first read, and adding an async runtime dependency would
 //! impose it on every downstream user.
@@ -12,7 +12,7 @@
 //!
 //! ```text
 //! let bytes = tokio::fs::read("payload.edi").await?;
-//! let segments = edifact_rs::from_bytes(&bytes).collect::<Result<Vec<_>, _>>()?;
+//! let segments = edifact::from_bytes(&bytes).collect::<Result<Vec<_>, _>>()?;
 //! ```
 //!
 //! Best when: the payload fits comfortably in memory (typical for UN/EDIFACT
@@ -24,7 +24,7 @@
 //! let path = path.clone();
 //! let messages = tokio::task::spawn_blocking(move || {
 //!     let f = std::fs::File::open(&path)?;
-//!     edifact_rs::message_windows_from_reader(f)
+//!     edifact::message_windows_from_reader(f)
 //!         .collect::<Result<Vec<_>, _>>()
 //! }).await??;
 //! ```
@@ -40,13 +40,13 @@
 
 use std::io::Cursor;
 
-use edifact_rs::{EdifactError, OwnedMessageWindow, message_windows_from_reader};
+use edifact::{EdifactError, OwnedMessageWindow, message_windows_from_reader};
 
 // ── Pattern A: buffer, then parse ─────────────────────────────────────────────
 
 async fn pattern_a_parse_from_bytes(edi_bytes: Vec<u8>) -> Result<usize, EdifactError> {
     // Zero async I/O: the bytes are already in memory.
-    let segments: Vec<_> = edifact_rs::from_bytes(&edi_bytes).collect::<Result<_, _>>()?;
+    let segments: Vec<_> = edifact::from_bytes(&edi_bytes).collect::<Result<_, _>>()?;
     Ok(segments.len())
 }
 
@@ -62,7 +62,7 @@ async fn pattern_b_spawn_blocking(
     .await
     // JoinError from spawn_blocking (panic in the worker thread)
     .map_err(|e| {
-        EdifactError::Io(edifact_rs::IoError::from(std::io::Error::other(format!(
+        EdifactError::Io(edifact::IoError::from(std::io::Error::other(format!(
             "spawn_blocking panicked: {e}"
         ))))
     })?

@@ -10,8 +10,8 @@
 //! `UNH` = 1; DE 0098 counts the segment tag as 1; DE 0104 counts from 1.
 
 use bolero::check;
-use edifact_rs::contrl::{ContrlLocation, ReportingLevel};
-use edifact_rs::{
+use edifact::contrl::{ContrlLocation, ReportingLevel};
+use edifact::{
     EdifactError, Insignificant, RecoveredInterchange, RecoveryConfig, Span, ValidationReport,
 };
 
@@ -163,7 +163,7 @@ fn e019_a_dangling_release_is_22_at_its_element() {
 fn e020_an_overlong_segment_is_39_on_the_message() {
     let input = b"UNB+UNOC:3+S+R+260101:0900+IC1'UNH+M1+ORDERS:D:96A:UN'BGM+XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'UNT+3+M1'UNZ+1+IC1'";
     let config =
-        RecoveryConfig::new().reader(edifact_rs::ReaderConfig::default().max_segment_bytes(35));
+        RecoveryConfig::new().reader(edifact::ReaderConfig::default().max_segment_bytes(35));
     assert_eq!(
         only_fault(input, &config),
         (UCM, Some(0), None, None, None, None, "39", true)
@@ -371,9 +371,9 @@ fn e023_e036_size_errors_are_18_on_the_uci() {
         (UCI, None, None, None, None, None, "18", true)
     );
     // `LimitExceeded` is `#[non_exhaustive]`: obtain one from the parser.
-    let limit = edifact_rs::from_bytes_with_config(
+    let limit = edifact::from_bytes_with_config(
         b"BGM+220'DTM+137'",
-        edifact_rs::ReaderConfig::default().max_segments(1),
+        edifact::ReaderConfig::default().max_segments(1),
     )
     .find_map(Result::err)
     .expect("one segment over the budget");

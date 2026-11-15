@@ -1,5 +1,5 @@
 [package]
-name        = "edifact-rs"
+name        = "edifact"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,15 +7,15 @@ authors.workspace = true
 license.workspace = true
 description = "Zero-copy EDIFACT (ISO 9735) parser, writer, typed derive, validation and CONTRL generation"
 readme = "../../README.md"
-repository = "https://github.com/hupe1980/edifact-rs"
-homepage = "https://hupe1980.github.io/edifact-rs/"
-documentation = "https://docs.rs/edifact-rs"
+repository = "https://github.com/hupe1980/edifact"
+homepage = "https://hupe1980.github.io/edifact/"
+documentation = "https://docs.rs/edifact"
 keywords = ["edifact", "edi", "parser", "serde", "unedifact"]
 categories = ["parser-implementations", "encoding"]
 
 [features]
 default = ["derive"]
-derive = ["dep:edifact-rs-derive"]
+derive = ["dep:edifact-derive"]
 diagnostics = ["dep:miette"]
 serde = ["dep:serde"]
 
@@ -25,7 +25,7 @@ smallvec  = { workspace = true }
 thiserror = { workspace = true }
 miette    = { workspace = true, optional = true }
 serde     = { workspace = true, optional = true }
-edifact-rs-derive = { version = "0.18.0", path = "../edifact-rs-derive", optional = true }
+edifact-derive = { version = "0.19.0", path = "../edifact-derive", optional = true }
 
 [dev-dependencies]
 criterion = { workspace = true }

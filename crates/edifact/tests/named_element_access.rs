@@ -7,7 +7,7 @@
 //! assertion at compile time — instead of quietly reading the neighbouring
 //! element the way a transposed positional index does.
 
-use edifact_rs::{
+use edifact::{
     ComponentRef, EdifactDeserialize, EdifactError, EdifactSerialize, ElementRef,
     OwnedComponentRef, OwnedElementRef, OwnedSegmentDef, SegmentDefinition, SegmentLayout, Status,
 };
@@ -87,8 +87,8 @@ struct RequiredShapes {
     agency: Option<String>,
 }
 
-fn parse(input: &[u8]) -> Vec<edifact_rs::Segment<'_>> {
-    edifact_rs::from_bytes(input)
+fn parse(input: &[u8]) -> Vec<edifact::Segment<'_>> {
+    edifact::from_bytes(input)
         .collect::<Result<Vec<_>, _>>()
         .expect("fixture must parse")
 }
@@ -172,7 +172,7 @@ fn span_by_code_points_at_the_addressed_value() {
 #[test]
 fn owned_and_borrowed_segments_resolve_identically() {
     let input = b"NAD+MS+9900112233445::293'";
-    let owned: Vec<edifact_rs::OwnedSegment> = edifact_rs::from_reader(std::io::Cursor::new(input))
+    let owned: Vec<edifact::OwnedSegment> = edifact::from_reader(std::io::Cursor::new(input))
         .collect::<Result<Vec<_>, _>>()
         .expect("fixture must parse");
 
@@ -233,7 +233,7 @@ fn code_addressed_derive_round_trips() {
 
     let party = SenderParty::edifact_deserialize(&segments).expect("deserialize NAD");
     assert_eq!(
-        edifact_rs::to_edifact_string(&party).expect("serialize NAD"),
+        edifact::to_edifact_string(&party).expect("serialize NAD"),
         "NAD+MS+9900112233445::293'"
     );
 
@@ -242,7 +242,7 @@ fn code_addressed_derive_round_trips() {
     assert_eq!(date.value, "20260101");
     assert_eq!(date.format.as_deref(), Some("102"));
     assert_eq!(
-        edifact_rs::to_edifact_string(&date).expect("serialize DTM"),
+        edifact::to_edifact_string(&date).expect("serialize DTM"),
         "DTM+137:20260101:102'"
     );
 }
@@ -250,7 +250,7 @@ fn code_addressed_derive_round_trips() {
 #[test]
 fn code_addressed_derive_matches_the_owned_path() {
     let input = b"NAD+MS+9900112233445::293'";
-    let owned: Vec<edifact_rs::OwnedSegment> = edifact_rs::from_reader(std::io::Cursor::new(input))
+    let owned: Vec<edifact::OwnedSegment> = edifact::from_reader(std::io::Cursor::new(input))
         .collect::<Result<Vec<_>, _>>()
         .expect("parse");
     let borrowed = parse(input);
@@ -289,7 +289,7 @@ fn required_reports_the_variant_matching_what_the_field_addresses() {
 #[test]
 fn required_variant_agrees_across_borrowed_and_owned_paths() {
     let input = b"NAD++9900112233445::293'";
-    let owned: Vec<edifact_rs::OwnedSegment> = edifact_rs::from_reader(std::io::Cursor::new(input))
+    let owned: Vec<edifact::OwnedSegment> = edifact::from_reader(std::io::Cursor::new(input))
         .collect::<Result<Vec<_>, _>>()
         .expect("parse");
     let borrowed = parse(input);
@@ -302,7 +302,7 @@ fn required_variant_agrees_across_borrowed_and_owned_paths() {
 
 #[test]
 fn declared_components_cap_a_composite_arity() {
-    use edifact_rs::{DirectoryValidator, ValidationReport, Validator};
+    use edifact::{DirectoryValidator, ValidationReport, Validator};
 
     // C082 declares three components; a fourth is a structural error the
     // directory can now catch on its own.
@@ -314,7 +314,7 @@ fn declared_components_cap_a_composite_arity() {
     validator.validate_batch(
         &too_many,
         &mut report,
-        &edifact_rs::ValidationRuleContext::empty(),
+        &edifact::ValidationRuleContext::empty(),
     );
     assert!(
         report
@@ -332,7 +332,7 @@ fn declared_components_cap_a_composite_arity() {
     validator.validate_batch(
         &fewer,
         &mut report,
-        &edifact_rs::ValidationRuleContext::empty(),
+        &edifact::ValidationRuleContext::empty(),
     );
     assert!(
         !report.has_errors(),
@@ -350,7 +350,7 @@ fn absent_optional_component_serializes_as_an_empty_slot() {
         agency: None,
     };
     assert_eq!(
-        edifact_rs::to_edifact_string(&party).expect("serialize"),
+        edifact::to_edifact_string(&party).expect("serialize"),
         "NAD+MS+9900112233445::'"
     );
 }
@@ -385,7 +385,7 @@ fn a_by_design_repeat_stays_addressable_and_points_at_the_first_occurrence() {
     let path = NAD_C080.resolve_code("3036").expect("addressable");
     assert_eq!((path.element, path.component), (1, Some(0)));
 
-    let segments: Vec<_> = edifact_rs::from_bytes(b"NAD+BY+ACME:GMBH:::+X'")
+    let segments: Vec<_> = edifact::from_bytes(b"NAD+BY+ACME:GMBH:::+X'")
         .collect::<Result<Vec<_>, _>>()
         .expect("parse");
     assert_eq!(
@@ -407,14 +407,14 @@ fn the_repeat_count_is_recorded_rather_than_lost() {
 fn a_repeated_composite_is_not_capped_at_its_entry_count() {
     // Six values in the composite: the arity check must count slots (6), not
     // declared entries (2), or a conformant C080 is rejected.
-    let segments: Vec<_> = edifact_rs::from_bytes(b"NAD+BY+A:B:C:D:E:F'")
+    let segments: Vec<_> = edifact::from_bytes(b"NAD+BY+A:B:C:D:E:F'")
         .collect::<Result<Vec<_>, _>>()
         .expect("parse");
 
     let validator =
-        edifact_rs::DirectoryValidator::from_definitions(std::slice::from_ref(&NAD_C080_STATIC));
-    let report = edifact_rs::ValidationContext::builder()
-        .with_validator(edifact_rs::ValidationLayer::Structure, validator)
+        edifact::DirectoryValidator::from_definitions(std::slice::from_ref(&NAD_C080_STATIC));
+    let report = edifact::ValidationContext::builder()
+        .with_validator(edifact::ValidationLayer::Structure, validator)
         .build()
         .validate(&segments);
 
@@ -433,7 +433,7 @@ static NAD_C080_STATIC: SegmentDefinition = NAD_C080;
 // ── layout auditing ───────────────────────────────────────────────────────────
 
 mod layout_audit {
-    use edifact_rs::{
+    use edifact::{
         ComponentRef, ElementRef, LayoutFinding, SegmentDefinition, SegmentLayout, Status,
         from_bytes,
     };
@@ -469,7 +469,7 @@ mod layout_audit {
     static FULL_DTM: SegmentDefinition =
         SegmentDefinition::new("DTM", "Date/time/period", FULL_DTM_ELEMENTS);
 
-    fn corpus(input: &[u8]) -> Vec<edifact_rs::Segment<'_>> {
+    fn corpus(input: &[u8]) -> Vec<edifact::Segment<'_>> {
         from_bytes(input)
             .collect::<Result<Vec<_>, _>>()
             .expect("parse")
@@ -563,7 +563,7 @@ mod layout_audit {
         // conditional composite, so a conformant UNB without a password would
         // have been reported as violating its own layout.
         let corpus = corpus(b"UNB+UNOC:3+S+R+260101:0900+IC1'");
-        let audit = edifact_rs::service::UNB.audit(&corpus);
+        let audit = edifact::service::UNB.audit(&corpus);
 
         assert_eq!(audit.segments_examined(), 1);
         assert!(!audit.has_contradictions(), "{audit}");
@@ -576,7 +576,7 @@ mod layout_audit {
         // The other half of §8.6: once the composite is present, its mandatory
         // components are.  S005 comp 1 is populated here, comp 2 is optional.
         let corpus = corpus(b"UNB+UNOC:3+S+R+260101:0900+IC1+:AA'");
-        let audit = edifact_rs::service::UNB.audit(&corpus);
+        let audit = edifact::service::UNB.audit(&corpus);
 
         assert!(audit.has_contradictions(), "{audit}");
         assert!(audit.findings().iter().any(|f| matches!(
@@ -587,7 +587,7 @@ mod layout_audit {
 
     #[test]
     fn a_directory_wide_audit_covers_every_tag_the_corpus_contains() {
-        use edifact_rs::{audit_directory, service};
+        use edifact::{audit_directory, service};
 
         let corpus =
             corpus(b"UNB+UNOC:3+S+R+260101:0900+IC1'UNH+M1+ORDERS:D:96A:UN'UNT+2+M1'UNZ+1+IC1'");
@@ -597,7 +597,7 @@ mod layout_audit {
         assert_eq!(
             audits
                 .iter()
-                .map(edifact_rs::LayoutAudit::tag)
+                .map(edifact::LayoutAudit::tag)
                 .collect::<Vec<_>>(),
             ["UNB", "UNH", "UNT", "UNZ"],
         );
@@ -622,7 +622,7 @@ mod layout_audit {
     /// means a definition cannot be added without a fixture that exercises it.
     #[test]
     fn every_shipped_service_layout_is_confirmed_by_a_corpus_that_fills_it() {
-        use edifact_rs::service;
+        use edifact::service;
 
         // Every service segment the module ships, each populated to the full
         // width its definition declares.  Not a valid interchange, and not

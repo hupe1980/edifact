@@ -16,7 +16,7 @@
 //! like a differential test and silently covers only the agreeing half.
 
 use bolero::check;
-use edifact_rs::{from_bytes, segments_to_bytes};
+use edifact::{from_bytes, segments_to_bytes};
 
 #[test]
 fn fuzz_parser_output_is_well_formed() {
@@ -46,7 +46,7 @@ fn fuzz_parser_output_is_well_formed() {
                     segment.tag(),
                 );
 
-                let in_bounds = |span: edifact_rs::Span, what: &str| {
+                let in_bounds = |span: edifact::Span, what: &str| {
                     assert!(span.start <= span.end, "inverted {what} span {span:?}");
                     assert!(
                         span.end <= input.len(),
@@ -146,7 +146,7 @@ fn fuzz_parse_write_parse_invariant_small_message() {
 
 #[test]
 fn fuzz_validation_report_is_self_consistent() {
-    use edifact_rs::{
+    use edifact::{
         Segment, ValidationContext, ValidationLayer, ValidationReport, ValidationRuleContext,
         Validator, validate_each,
     };
@@ -203,7 +203,7 @@ fn fuzz_validation_report_is_self_consistent() {
 
 #[test]
 fn fuzz_qualifier_matches_pattern_no_panic() {
-    use edifact_rs::qualifier_matches_pattern;
+    use edifact::qualifier_matches_pattern;
     // For any two arbitrary strings the function must never panic.
     check!().with_type::<(String, String)>().cloned().for_each(
         |(value, pattern): (String, String)| {
@@ -214,7 +214,7 @@ fn fuzz_qualifier_matches_pattern_no_panic() {
 
 #[test]
 fn fuzz_qualifier_pattern_invariants() {
-    use edifact_rs::qualifier_matches_pattern;
+    use edifact::qualifier_matches_pattern;
     // Invariant 1: a literal pattern (no '*') is always an exact match.
     // Invariant 2: pattern "*" matches every value (wildcard-only).
     // Invariant 3: empty pattern matches only empty value.
@@ -248,7 +248,7 @@ fn fuzz_qualifier_pattern_invariants() {
 
 #[test]
 fn fuzz_valid_service_characters_are_writable() {
-    use edifact_rs::{ServiceStringAdvice, Writer};
+    use edifact::{ServiceStringAdvice, Writer};
     // `is_valid` is the gate the writer trusts before emitting a `UNA`, so the
     // two must agree exactly: anything it calls valid must be writable, and
     // anything it rejects must be refused.  Asserting only "does not panic"
@@ -292,7 +292,7 @@ fn fuzz_valid_service_characters_are_writable() {
 
 #[test]
 fn fuzz_service_string_advice_valid_una_prefix() {
-    use edifact_rs::ServiceStringAdvice;
+    use edifact::ServiceStringAdvice;
     // Every valid UNA must start with "UNA" — fuzz the rest.
     check!()
         .with_type::<[u8; 6]>()
@@ -457,7 +457,7 @@ fn fuzz_custom_una_round_trip_is_stable() {
     // Same invariant, but written through a fuzzed (valid) UNA.  A writer that
     // hardcodes a default delimiter, or forgets to escape one that the active UNA
     // declares, fails here and nowhere else.
-    use edifact_rs::{ServiceStringAdvice, Writer};
+    use edifact::{ServiceStringAdvice, Writer};
     check!()
         .with_type::<(Vec<u8>, [u8; 6])>()
         .cloned()
@@ -519,7 +519,7 @@ fn fuzz_anything_the_writer_accepts_reparses() {
         .cloned()
         .for_each(|(tag, elements): (String, Vec<Vec<String>>)| {
             let mut buf: Vec<u8> = Vec::new();
-            let mut writer = edifact_rs::Writer::new(&mut buf);
+            let mut writer = edifact::Writer::new(&mut buf);
             if writer.write_composites(&tag, &elements).is_err() {
                 return; // refused: nothing to reparse
             }
@@ -546,7 +546,7 @@ fn fuzz_anything_the_writer_accepts_reparses() {
 #[test]
 fn fuzz_validate_envelope_no_panic() {
     // `validate_envelope` must not panic for any parseable byte sequence.
-    use edifact_rs::validate_envelope;
+    use edifact::validate_envelope;
 
     check!()
         .with_type::<Vec<u8>>()
@@ -563,7 +563,7 @@ fn fuzz_validate_envelope_no_panic() {
 #[test]
 fn fuzz_message_windows_no_panic() {
     // `message_windows` must not panic for any byte sequence.
-    use edifact_rs::message_windows;
+    use edifact::message_windows;
 
     check!()
         .with_type::<Vec<u8>>()
@@ -589,7 +589,7 @@ fn fuzz_reader_no_panic_and_equivalence() {
         .for_each(|input: Vec<u8>| {
             // Use a small BufReader capacity to maximise buffer-boundary splits.
             let reader = std::io::BufReader::with_capacity(8, std::io::Cursor::new(&input));
-            let reader_result: Result<Vec<_>, _> = edifact_rs::from_bufread(reader).collect();
+            let reader_result: Result<Vec<_>, _> = edifact::from_bufread(reader).collect();
             let slice_result: Result<Vec<_>, _> = from_bytes(&input).collect();
 
             let head = &input[..input.len().min(64)];
@@ -645,9 +645,7 @@ fn fuzz_reader_and_slice_agree_on_limit_errors() {
     // example a doubled segment terminator, which the reader skips and the
     // slice tokenizer refuses) are a separate parity question, and must not
     // make this target fail.
-    use edifact_rs::{
-        EdifactError, ReaderConfig, from_bufread_with_config, from_bytes_with_config,
-    };
+    use edifact::{EdifactError, ReaderConfig, from_bufread_with_config, from_bytes_with_config};
 
     fn outcome<T: std::fmt::Debug>(
         mut iter: impl Iterator<Item = Result<T, EdifactError>>,
@@ -775,7 +773,7 @@ UNH+M2+ORDERS:D:96A:UN'BGM+220+PO2'UNT+3+M2'UNZ+2+IC1'  \n",
 fn fuzz_from_bytes_no_panic() {
     // `ServiceStringAdvice::from_bytes` must not panic or unwind for any
     // arbitrary byte input.  It may return errors or valid SSAs.
-    use edifact_rs::ServiceStringAdvice;
+    use edifact::ServiceStringAdvice;
 
     check!()
         .with_type::<Vec<u8>>()
@@ -789,16 +787,14 @@ fn fuzz_from_bytes_no_panic() {
 #[test]
 fn fuzz_tokenizer_with_limit_no_panic() {
     // The tokenizer with a size limit and custom SSA must never panic for any byte input.
-    use edifact_rs::{
-        Parser, ReaderConfig, ServiceStringAdvice, Tokenizer, from_bytes_with_config,
-    };
+    use edifact::{Parser, ReaderConfig, ServiceStringAdvice, Tokenizer, from_bytes_with_config};
 
     check!()
         .with_type::<Vec<u8>>()
         .cloned()
         .for_each(|input: Vec<u8>| {
             // Default path: exercises UNA detection + default 64 KiB limit.
-            for result in edifact_rs::from_bytes(&input) {
+            for result in edifact::from_bytes(&input) {
                 // Results may be Ok or Err; we only require no panic.
                 let _ = result;
             }
@@ -831,7 +827,7 @@ fn fuzz_directory_validator_no_panic() {
     // `DirectoryValidator::validate_batch` must never panic for any parseable byte
     // sequence, regardless of whether the interchange looks like a known message type
     // or contains completely invalid structure.
-    use edifact_rs::{
+    use edifact::{
         DirectoryValidator, ElementRef, SegmentDefinition, Status, ValidationReport,
         ValidationRuleContext, Validator,
     };
@@ -890,7 +886,7 @@ fn fuzz_directory_validator_no_panic() {
 fn fuzz_serialization_no_panic() {
     // Feeding arbitrary segments through the serialisation round-trip must never panic.
     // Specifically exercises `Writer::write_segment` and the escape logic in `ser.rs`.
-    use edifact_rs::segments_to_bytes;
+    use edifact::segments_to_bytes;
 
     check!()
         .with_type::<Vec<u8>>()
@@ -919,7 +915,7 @@ fn fuzz_serialization_no_panic() {
 /// escape path and verify the invariant.
 #[test]
 fn fuzz_escape_value_no_unescaped_delimiters() {
-    use edifact_rs::{Parser, ServiceStringAdvice, Tokenizer, Writer};
+    use edifact::{Parser, ServiceStringAdvice, Tokenizer, Writer};
 
     check!()
         .with_type::<(Vec<u8>, u8, u8, u8, u8)>()
@@ -1008,7 +1004,7 @@ fn fuzz_escape_value_no_unescaped_delimiters() {
 #[test]
 fn fuzz_validate_envelope_lenient_no_panic() {
     // `validate_envelope_lenient` must not panic for any parseable byte sequence.
-    use edifact_rs::validate_envelope_lenient;
+    use edifact::validate_envelope_lenient;
 
     check!()
         .with_type::<Vec<u8>>()
@@ -1034,7 +1030,7 @@ fn fuzz_validate_envelope_lenient_no_panic() {
 /// - `validate_lenient_grouped` (combined flat + group pass)
 #[test]
 fn fuzz_profile_rule_pack_no_panic() {
-    use edifact_rs::{
+    use edifact::{
         ProfileRulePack, ValidationContext,
         group::{GroupDef, group_segments_indexed},
     };
@@ -1102,13 +1098,13 @@ fn legacy_schema(
         .collect()
 }
 
-fn owned_open(def: &legacy_grouping::LegacyDef) -> edifact_rs::GroupDef {
+fn owned_open(def: &legacy_grouping::LegacyDef) -> edifact::GroupDef {
     def.children
         .iter()
         .fold(
-            edifact_rs::GroupDef::builder(
+            edifact::GroupDef::builder(
                 def.name.as_str(),
-                edifact_rs::SegmentPlace::owned(def.trigger.as_str()),
+                edifact::SegmentPlace::owned(def.trigger.as_str()),
             ),
             |b, child| b.group(owned_open(child)),
         )
@@ -1116,7 +1112,7 @@ fn owned_open(def: &legacy_grouping::LegacyDef) -> edifact_rs::GroupDef {
         .expect("generated schemas are valid")
 }
 
-fn to_legacy(node: &edifact_rs::SegmentGroupIndexed<'_>) -> legacy_grouping::LegacyNode {
+fn to_legacy(node: &edifact::SegmentGroupIndexed<'_>) -> legacy_grouping::LegacyNode {
     legacy_grouping::LegacyNode {
         definition: node.definition.to_owned(),
         total_span: node.total_span.clone(),
@@ -1127,10 +1123,7 @@ fn to_legacy(node: &edifact_rs::SegmentGroupIndexed<'_>) -> legacy_grouping::Leg
 
 /// Every node's direct indices agree with the legacy oracle
 /// (`common/legacy_grouping.rs`).
-fn assert_same_direct(
-    new: &edifact_rs::SegmentGroupIndexed<'_>,
-    old: &legacy_grouping::LegacyNode,
-) {
+fn assert_same_direct(new: &edifact::SegmentGroupIndexed<'_>, old: &legacy_grouping::LegacyNode) {
     assert!(new.unplaced.is_empty(), "an open group never unplaces");
     assert_eq!(
         new.direct_segment_indices().collect::<Vec<_>>(),
@@ -1146,8 +1139,8 @@ fn assert_same_direct(
 /// children, direct segments.
 #[test]
 fn fuzz_group_open_matches_legacy_reference() {
-    use edifact_rs::group::{GroupDef, group_segments_indexed};
-    use edifact_rs::{Element, Segment};
+    use edifact::group::{GroupDef, group_segments_indexed};
+    use edifact::{Element, Segment};
 
     // The const-constructed (static) form, checked on every input as well.
     static G3: &[GroupDef] = &[GroupDef::new("G3", "CCC")];
@@ -1216,8 +1209,8 @@ fn fuzz_group_open_matches_legacy_reference() {
 fn ordered_entries(
     seed: &mut impl Iterator<Item = u8>,
     depth: usize,
-) -> Vec<edifact_rs::group::Entry> {
-    use edifact_rs::group::{Entry, GroupDef};
+) -> Vec<edifact::group::Entry> {
+    use edifact::group::{Entry, GroupDef};
     let count = usize::from(seed.next().unwrap_or(0) % 5);
     let mut entries = Vec::new();
     for _ in 0..count {
@@ -1255,8 +1248,8 @@ fn fuzz_max(seed: &mut impl Iterator<Item = u8>) -> Option<u32> {
     }
 }
 
-fn fuzz_place(seed: &mut impl Iterator<Item = u8>) -> edifact_rs::SegmentPlace {
-    use edifact_rs::group::{Discriminator, SegmentPlace};
+fn fuzz_place(seed: &mut impl Iterator<Item = u8>) -> edifact::SegmentPlace {
+    use edifact::group::{Discriminator, SegmentPlace};
     let byte = seed.next().unwrap_or(0);
     let mut place = SegmentPlace::new(GROUP_TAGS[usize::from(byte % 5)]);
     let code = ["A", "B", "C"][usize::from(byte / 5 % 3)];
@@ -1279,7 +1272,7 @@ fn fuzz_place(seed: &mut impl Iterator<Item = u8>) -> edifact_rs::SegmentPlace {
 }
 
 /// `(definition, span, occurrence, unplaced, children)` of a tree, recursively.
-fn tree_shape(node: &edifact_rs::SegmentGroupIndexed<'_>) -> String {
+fn tree_shape(node: &edifact::SegmentGroupIndexed<'_>) -> String {
     let mut out = format!(
         "{}#{}{:?}u{:?}[",
         node.definition, node.occurrence_index, node.total_span, node.unplaced
@@ -1291,7 +1284,7 @@ fn tree_shape(node: &edifact_rs::SegmentGroupIndexed<'_>) -> String {
     out
 }
 
-fn assert_tree_invariants(node: &edifact_rs::SegmentGroupIndexed<'_>, owner: &mut [u32]) {
+fn assert_tree_invariants(node: &edifact::SegmentGroupIndexed<'_>, owner: &mut [u32]) {
     let mut last_end = node.total_span.start;
     for (k, child) in node.children.iter().enumerate() {
         assert!(
@@ -1331,8 +1324,8 @@ fn assert_tree_invariants(node: &edifact_rs::SegmentGroupIndexed<'_>, owner: &mu
 /// every finding carries kind, layer and (for a segment) its span.
 #[test]
 fn fuzz_group_ordered_invariants() {
-    use edifact_rs::group::{Entry, GroupSchema};
-    use edifact_rs::{Element, Segment, ValidationLayer};
+    use edifact::group::{Entry, GroupSchema};
+    use edifact::{Element, Segment, ValidationLayer};
 
     check!()
         .with_type::<(Vec<u8>, Vec<u8>, bool)>()
@@ -1415,7 +1408,7 @@ fn fuzz_group_ordered_invariants() {
 /// occurrences instead of producing a parse error.
 #[test]
 fn fuzz_repetition_round_trip_is_stable() {
-    use edifact_rs::{ServiceStringAdvice, Writer};
+    use edifact::{ServiceStringAdvice, Writer};
 
     check!()
         .with_type::<(Vec<u8>, u8)>()
@@ -1436,11 +1429,11 @@ fn fuzz_repetition_round_trip_is_stable() {
             };
 
             let owned: Vec<String> = (0..repeats).map(value).collect();
-            let mut built = edifact_rs::Element::of(&["ON", owned[0].as_str()]);
+            let mut built = edifact::Element::of(&["ON", owned[0].as_str()]);
             for v in owned.iter().skip(1) {
                 built = built.and_repeat(&["ON", v.as_str()]);
             }
-            let segment = edifact_rs::Segment::new("RFF", vec![built]);
+            let segment = edifact::Segment::new("RFF", vec![built]);
 
             let mut buf = Vec::new();
             {
@@ -1485,8 +1478,8 @@ fn fuzz_recovering_scan_matches_strict() {
     //
     // C1/C2 run with and without `max_input_bytes`: both paths count every
     // consumed byte against it. C3 runs with it in every case.
-    use edifact_rs::recover::Scanned;
-    use edifact_rs::{
+    use edifact::recover::Scanned;
+    use edifact::{
         EdifactError, ReaderConfig, RecoveryConfig, from_bytes_with_config, scan_recovering,
     };
 
@@ -1627,11 +1620,11 @@ fn fuzz_contrl_options_reparse() {
     // enforces. The lenient envelope also yields an interchange with an empty
     // party, and `to_interchange_bytes` then writes a reply UNB without S002 or
     // S003; that is a property of the wrapper, unchanged by the options.
-    use edifact_rs::contrl::{
+    use edifact::contrl::{
         Action, ActionPolicy, Contrl, ContrlIdentifier, ContrlOptions, RejectionScope,
         ReportingLevel,
     };
-    use edifact_rs::{
+    use edifact::{
         RecoveredInterchange, RecoveryConfig, ValidationContext, validate_envelope,
         validate_envelope_lenient,
     };

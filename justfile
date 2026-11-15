@@ -1,4 +1,4 @@
-# edifact-rs — task runner.
+# edifact — task runner.
 #
 # Recipes mirror .github/workflows/ci.yml so a green `just ci` means a green CI.
 # When you change a CI job, change the matching recipe in the same commit.
@@ -47,7 +47,7 @@ test-one PATTERN:
 
 # Doctests only — the guides and README compile through these.
 test-docs:
-    cargo test -p edifact-rs --all-features --doc {{ locked }}
+    cargo test -p edifact --all-features --doc {{ locked }}
 
 # Format every crate.
 fmt:
@@ -89,11 +89,11 @@ site-check:
 
 # Build the public docs with warnings denied.
 doc:
-    RUSTDOCFLAGS="-D warnings" cargo doc -p edifact-rs --all-features --no-deps {{ locked }}
+    RUSTDOCFLAGS="-D warnings" cargo doc -p edifact --all-features --no-deps {{ locked }}
 
 # Build the docs and open them in a browser.
 doc-open:
-    RUSTDOCFLAGS="-D warnings" cargo doc -p edifact-rs --all-features --no-deps --open {{ locked }}
+    RUSTDOCFLAGS="-D warnings" cargo doc -p edifact --all-features --no-deps --open {{ locked }}
 
 # The `docsrs-check` CI job.  Nightly, with the `docsrs` cfg docs.rs itself sets.
 #
@@ -101,47 +101,47 @@ doc-open:
 # `redundant_explicit_links` among them — and those are what gate the published
 # documentation.  A green `just doc` says nothing about docs.rs.
 doc-docsrs:
-    RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo +nightly doc -p edifact-rs --all-features --no-deps {{ locked }}
+    RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo +nightly doc -p edifact --all-features --no-deps {{ locked }}
 
 # ── derive UI suite ───────────────────────────────────────────────────────────
 
 # The `test-derive-ui` CI job: compile-fail/compile-pass expectations for the macros.
 ui:
-    {{ ui_env }} cargo test -p edifact-rs-derive {{ locked }}
+    {{ ui_env }} cargo test -p edifact-derive {{ locked }}
 
 # Review the diff before committing.  The expectations must hold ONLY this
 # crate's own messages: one that captures a rustc warning or note will drift on
 # the next release and bury real regressions.  Silence incidental lints at the
-# source (see crates/edifact-rs-derive/tests/ui/support.rs) instead.
+# source (see crates/edifact-derive/tests/ui/support.rs) instead.
 
 [doc("Re-bless the .stderr expectations after an intentional diagnostic change.")]
 ui-bless:
-    {{ ui_env }} TRYBUILD=overwrite cargo test -p edifact-rs-derive
+    {{ ui_env }} TRYBUILD=overwrite cargo test -p edifact-derive
     @echo
-    @echo "Blessed. Now: git diff crates/edifact-rs-derive/tests/ui/"
+    @echo "Blessed. Now: git diff crates/edifact-derive/tests/ui/"
     @echo "Then confirm both toolchains agree: just ui && just ui-msrv"
 
 # Run the UI suite on the MSRV toolchain, where CI also runs it.
 ui-msrv:
-    {{ ui_env }} cargo +{{ msrv }} test -p edifact-rs-derive {{ locked }}
+    {{ ui_env }} cargo +{{ msrv }} test -p edifact-derive {{ locked }}
 
 # ── feature matrix (the `feature-matrix` CI job) ──────────────────────────────
 
 # No features: the crate must build without the derive and serde layers.
 test-no-default:
-    cargo test -p edifact-rs --no-default-features {{ locked }}
+    cargo test -p edifact --no-default-features {{ locked }}
 
 # All features enabled.
 test-all-features:
-    cargo test -p edifact-rs --all-features {{ locked }}
+    cargo test -p edifact --all-features {{ locked }}
 
 # Compile and run the cookbook examples.
 test-examples:
-    cargo test -p edifact-rs --all-features --examples {{ locked }}
+    cargo test -p edifact --all-features --examples {{ locked }}
 
 # `cargo test` skips `harness = false` bench targets, so build them explicitly.
 build-benches:
-    cargo test -p edifact-rs --benches --no-run {{ locked }}
+    cargo test -p edifact --benches --no-run {{ locked }}
 
 # Every feature-matrix entry, in CI's order.
 feature-matrix: check test test-no-default test-all-features ui test-examples build-benches
@@ -184,9 +184,9 @@ publish-check:
     set -euo pipefail
     if [[ -n "$(git status --porcelain 2>/dev/null)" ]]; then
         echo "note: working tree is dirty — packaging it as-is (--allow-dirty)"
-        cargo publish --dry-run -p edifact-rs-derive --allow-dirty
+        cargo publish --dry-run -p edifact-derive --allow-dirty
     else
-        cargo publish --dry-run -p edifact-rs-derive {{ locked }}
+        cargo publish --dry-run -p edifact-derive {{ locked }}
     fi
 
 # They are released as a pair, and the main crate depends on the derive by
@@ -200,9 +200,9 @@ versions-match:
         cargo metadata --no-deps --format-version 1 \
             | python3 -c "import sys,json;print(next(p['version'] for p in json.load(sys.stdin)['packages'] if p['name']=='$1'))"
     }
-    derive_ver=$(read_version edifact-rs-derive)
-    main_ver=$(read_version edifact-rs)
-    echo "edifact-rs-derive=${derive_ver}  edifact-rs=${main_ver}"
+    derive_ver=$(read_version edifact-derive)
+    main_ver=$(read_version edifact)
+    echo "edifact-derive=${derive_ver}  edifact=${main_ver}"
     if [[ "${derive_ver}" != "${main_ver}" ]]; then
         echo "Version mismatch: derive=${derive_ver} main=${main_ver}" >&2
         exit 1
@@ -215,19 +215,19 @@ release-check: publish-check versions-match
 
 # The `fuzz-smoke` CI job: bolero targets in release, with a long random sweep.
 fuzz ITERATIONS="50000":
-    BOLERO_RANDOM_ITERATIONS="{{ ITERATIONS }}" cargo test -p edifact-rs --release --test bolero_harness {{ locked }}
+    BOLERO_RANDOM_ITERATIONS="{{ ITERATIONS }}" cargo test -p edifact --release --test bolero_harness {{ locked }}
 
 # Divan microbenchmarks.
 bench:
-    cargo bench -p edifact-rs --bench bench_core
+    cargo bench -p edifact --bench bench_core
 
 # The criterion smoke run CI uses on pull requests.
 bench-smoke:
-    cargo bench -p edifact-rs --bench bench_criterion -- --noplot --sample-size 10
+    cargo bench -p edifact --bench bench_criterion -- --noplot --sample-size 10
 
 # Record the current criterion numbers under a named baseline.
 bench-baseline NAME="main":
-    cargo bench -p edifact-rs --bench bench_criterion -- --noplot --sample-size 50 --warm-up-time 2 --measurement-time 8 --save-baseline {{ NAME }}
+    cargo bench -p edifact --bench bench_criterion -- --noplot --sample-size 50 --warm-up-time 2 --measurement-time 8 --save-baseline {{ NAME }}
 
 # Compare two recorded baselines; needs `cargo install critcmp --locked`.
 bench-compare FROM="main" TO="pr":

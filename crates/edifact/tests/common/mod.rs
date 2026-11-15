@@ -3,8 +3,8 @@
 /// Defines two rules:
 /// - `DEMO-P001` (Error): rejects `BGM` document code `220`.
 /// - `DEMO-P002` (Warning): flags purchase-order reference `PO-4711` as reserved.
-pub fn demo_orders_profile_pack() -> edifact_rs::ProfileRulePack {
-    use edifact_rs::{FindingKind, ProfileRulePack, ValidationIssue, ValidationSeverity};
+pub fn demo_orders_profile_pack() -> edifact::ProfileRulePack {
+    use edifact::{FindingKind, ProfileRulePack, ValidationIssue, ValidationSeverity};
 
     ProfileRulePack::new("ORDERS-DEMO")
         .for_message_type("ORDERS")

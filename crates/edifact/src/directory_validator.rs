@@ -333,7 +333,7 @@ impl ComponentRef {
     /// # Example
     ///
     /// ```rust
-    /// use edifact_rs::{ComponentRef, Status};
+    /// use edifact::{ComponentRef, Status};
     ///
     /// const DTM_2005: ComponentRef = ComponentRef::new(1, "2005", Status::Mandatory);
     /// ```
@@ -379,7 +379,7 @@ impl ComponentRef {
     /// # Example
     ///
     /// ```rust
-    /// use edifact_rs::{ComponentRef, ElementRef, SegmentDefinition, SegmentLayout, Status};
+    /// use edifact::{ComponentRef, ElementRef, SegmentDefinition, SegmentLayout, Status};
     ///
     /// // C080 PARTY NAME: 3036 ×5, then 3045 at position 6.
     /// static C080: &[ComponentRef] = &[
@@ -395,7 +395,7 @@ impl ComponentRef {
     /// // Addressable, and it points at the first occurrence.
     /// let path = NAD.resolve_code("3036")?;
     /// assert_eq!((path.element, path.component), (3, Some(0)));
-    /// # Ok::<(), edifact_rs::EdifactError>(())
+    /// # Ok::<(), edifact::EdifactError>(())
     /// ```
     #[must_use]
     pub const fn repeated(
@@ -461,7 +461,7 @@ impl ComponentRef {
     /// # Example
     ///
     /// ```
-    /// use edifact_rs::{ComponentRef, Repr, Status};
+    /// use edifact::{ComponentRef, Repr, Status};
     ///
     /// const SENDER: ComponentRef =
     ///     ComponentRef::new(1, "0004", Status::Mandatory).with_repr(Repr::an_up_to(35));
@@ -552,7 +552,7 @@ impl ElementRef {
     /// # Example
     ///
     /// ```rust
-    /// use edifact_rs::{ElementRef, Status};
+    /// use edifact::{ElementRef, Status};
     ///
     /// const BGM_1001: ElementRef = ElementRef::new(1, "1001", Status::Mandatory, 1);
     /// ```
@@ -593,7 +593,7 @@ impl ElementRef {
     /// # Example
     ///
     /// ```rust
-    /// use edifact_rs::{ComponentRef, ElementRef, Status};
+    /// use edifact::{ComponentRef, ElementRef, Status};
     ///
     /// static C507: &[ComponentRef] = &[
     ///     ComponentRef::new(1, "2005", Status::Mandatory),
@@ -803,7 +803,7 @@ impl ElementPath {
 /// # Example
 ///
 /// ```rust
-/// use edifact_rs::{ElementRef, SegmentDefinition, SegmentLayout, Status};
+/// use edifact::{ElementRef, SegmentDefinition, SegmentLayout, Status};
 ///
 /// static BGM_ELEMENTS: &[ElementRef] = &[
 ///     ElementRef::new(1, "C002", Status::Conditional, 1),
@@ -816,7 +816,7 @@ impl ElementPath {
 /// let path = BGM.resolve_code("1225")?;
 /// assert_eq!(path.element, 2);
 /// assert!(BGM.resolve_code("9999").is_err());
-/// # Ok::<(), edifact_rs::EdifactError>(())
+/// # Ok::<(), edifact::EdifactError>(())
 /// ```
 pub trait SegmentLayout {
     /// The segment tag this layout describes (e.g. `"NAD"`).
@@ -865,7 +865,7 @@ pub trait SegmentLayout {
     /// # Example
     ///
     /// ```
-    /// use edifact_rs::{ComponentRef, ElementRef, SegmentDefinition, SegmentLayout, Status, from_bytes};
+    /// use edifact::{ComponentRef, ElementRef, SegmentDefinition, SegmentLayout, Status, from_bytes};
     ///
     /// // A hand-authored C507 that stops one component short of the directory.
     /// static C507: &[ComponentRef] = &[
@@ -883,7 +883,7 @@ pub trait SegmentLayout {
     /// // The format qualifier `102` has nowhere to go — the layout is short.
     /// assert!(audit.has_contradictions());
     /// assert_eq!(audit.segments_examined(), 1);
-    /// # Ok::<(), edifact_rs::EdifactError>(())
+    /// # Ok::<(), edifact::EdifactError>(())
     /// ```
     fn audit(&self, segments: &[crate::Segment<'_>]) -> LayoutAudit {
         audit_layout(self.layout_tag(), &self.slots(), segments)
@@ -1084,7 +1084,7 @@ fn describe_slot(slot: &LayoutSlot) -> String {
 /// # Example
 ///
 /// ```
-/// use edifact_rs::{audit_directory, from_bytes, service};
+/// use edifact::{audit_directory, from_bytes, service};
 ///
 /// let corpus: Vec<_> = from_bytes(
 ///     b"UNB+UNOC:3+S+R+260101:0900+IC1'UNH+M1+ORDERS:D:96A:UN'UNT+2+M1'UNZ+1+IC1'",
@@ -1097,7 +1097,7 @@ fn describe_slot(slot: &LayoutSlot) -> String {
 /// assert_eq!(audits.len(), 4);
 /// // The shipped service tables are not disproved by conformant input.
 /// assert!(audits.iter().all(|a| !a.has_contradictions()));
-/// # Ok::<(), edifact_rs::EdifactError>(())
+/// # Ok::<(), edifact::EdifactError>(())
 /// ```
 pub fn audit_directory<'a, L, F>(lookup: F, segments: &[crate::Segment<'_>]) -> Vec<LayoutAudit>
 where
@@ -1263,7 +1263,7 @@ impl SegmentDefinition {
     /// # Example
     ///
     /// ```rust
-    /// # use edifact_rs::{ElementRef, SegmentDefinition, Status};
+    /// # use edifact::{ElementRef, SegmentDefinition, Status};
     /// # static E: &[ElementRef] = &[ElementRef::new(1, "3035", Status::Mandatory, 1)];
     /// static NAD: SegmentDefinition = SegmentDefinition::new("NAD", "Name and address", E);
     /// const _: () = assert!(NAD.code_positions("3035") == 1);
@@ -1888,7 +1888,7 @@ impl OwnedElementRef {
     /// # Example
     ///
     /// ```rust
-    /// use edifact_rs::{OwnedComponentRef, OwnedElementRef, Status};
+    /// use edifact::{OwnedComponentRef, OwnedElementRef, Status};
     ///
     /// let dtm = OwnedElementRef::new_unchecked(1, "C507".to_owned(), Status::Mandatory, 1)
     ///     .with_components(vec![

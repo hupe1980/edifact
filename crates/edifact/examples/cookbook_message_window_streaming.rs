@@ -12,9 +12,7 @@
 //! All three variants skip envelope segments (`UNB`, `UNZ`, `UNG`, `UNE`)
 //! automatically and yield only the `UNH..UNT` windows.
 
-use edifact_rs::{
-    EdifactDeserialize, EdifactSerialize, message_windows, message_windows_from_reader,
-};
+use edifact::{EdifactDeserialize, EdifactSerialize, message_windows, message_windows_from_reader};
 
 // ── 1. Manual approach: inspect windows as raw segment slices ─────────────────
 
@@ -77,7 +75,7 @@ fn demonstrate_error_propagation() {
     assert_eq!(windows.len(), 2);
     assert!(matches!(
         windows[1],
-        Err(edifact_rs::EdifactError::UnexpectedEof { .. })
+        Err(edifact::EdifactError::UnexpectedEof { .. })
     ));
     println!(
         "Received {} complete window(s) before end-of-stream",

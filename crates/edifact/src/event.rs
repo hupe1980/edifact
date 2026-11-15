@@ -212,14 +212,14 @@ impl<W: Write> WriterEmitter<W> {
     /// # Example
     ///
     /// ```
-    /// use edifact_rs::{Charset, EdifactEvent, EventEmitter, WriterEmitter};
+    /// use edifact::{Charset, EdifactEvent, EventEmitter, WriterEmitter};
     ///
     /// let mut emitter = WriterEmitter::new(Vec::new()).with_charset(Charset::UnoC);
     /// emitter.emit(EdifactEvent::start("NAD"))?;
     /// emitter.emit(EdifactEvent::element("Müller"))?;
     /// emitter.emit(EdifactEvent::EndSegment)?;
     /// assert_eq!(emitter.finish()?, b"NAD+M\xFCller'".to_vec());
-    /// # Ok::<(), edifact_rs::EdifactError>(())
+    /// # Ok::<(), edifact::EdifactError>(())
     /// ```
     #[must_use]
     pub fn with_charset(mut self, charset: crate::Charset) -> Self {

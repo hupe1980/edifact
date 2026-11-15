@@ -67,7 +67,7 @@ impl std::fmt::Display for Insignificant {
     }
 }
 
-/// All errors produced by `edifact-rs`.
+/// All errors produced by `edifact`.
 ///
 /// # Positional data
 ///

@@ -1,5 +1,5 @@
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use edifact_rs::{
+use edifact::{
     ProfileRulePack, ServiceStringAdvice, Tokenizer, ValidationContext, ValidationIssue,
     ValidationLayer, ValidationReport, ValidationRuleContext, ValidationSeverity, Validator,
     from_bytes, segments_to_bytes,
@@ -72,7 +72,7 @@ fn bench_reader(c: &mut Criterion) {
     group.bench_function("1mb", |b| {
         b.iter(|| {
             let cursor = std::io::Cursor::new(data);
-            let segments = edifact_rs::from_reader(cursor)
+            let segments = edifact::from_reader(cursor)
                 .collect::<Result<Vec<_>, _>>()
                 .expect("bench fixture must be valid EDIFACT");
             black_box(segments);
@@ -82,7 +82,7 @@ fn bench_reader(c: &mut Criterion) {
     group.bench_function("parse_reader_chunked", |b| {
         b.iter(|| {
             let reader = ChunkedReader::new(data, 4 * 1024);
-            let segments = edifact_rs::from_reader(reader)
+            let segments = edifact::from_reader(reader)
                 .collect::<Result<Vec<_>, _>>()
                 .expect("bench fixture must be valid EDIFACT");
             black_box(segments);
@@ -118,7 +118,7 @@ fn bench_validation(c: &mut Criterion) {
     impl Validator for NoopValidator {
         fn validate_batch(
             &self,
-            _segments: &[edifact_rs::Segment<'_>],
+            _segments: &[edifact::Segment<'_>],
             _report: &mut ValidationReport,
             _context: &ValidationRuleContext<'_>,
         ) {
@@ -292,22 +292,22 @@ impl Read for ChunkedReader<'_> {
 /// ratio of at most 2.5). `resolve_ordered` resolves the same message against
 /// an ordered schema (`BGM`, `SG1[LIN, QTY]`, `UNS`) with `GroupSchema::resolve`.
 fn bench_grouping(c: &mut Criterion) {
-    use edifact_rs::Segment;
-    use edifact_rs::group::{Entry, GroupDef, GroupSchema, SegmentPlace, group_segments_indexed};
+    use edifact::Segment;
+    use edifact::group::{Entry, GroupDef, GroupSchema, SegmentPlace, group_segments_indexed};
 
     static FLAT: &[GroupDef] = &[GroupDef::new("SG1", "LIN")];
 
     fn flat_message(groups: usize) -> Vec<Segment<'static>> {
         let mut segments = Vec::with_capacity(groups * 2 + 2);
-        segments.push(Segment::new("BGM", vec![edifact_rs::Element::of(&["220"])]));
+        segments.push(Segment::new("BGM", vec![edifact::Element::of(&["220"])]));
         for _ in 0..groups {
-            segments.push(Segment::new("LIN", vec![edifact_rs::Element::of(&["1"])]));
+            segments.push(Segment::new("LIN", vec![edifact::Element::of(&["1"])]));
             segments.push(Segment::new(
                 "QTY",
-                vec![edifact_rs::Element::of(&["21", "5"])],
+                vec![edifact::Element::of(&["21", "5"])],
             ));
         }
-        segments.push(Segment::new("UNS", vec![edifact_rs::Element::of(&["S"])]));
+        segments.push(Segment::new("UNS", vec![edifact::Element::of(&["S"])]));
         segments
     }
 

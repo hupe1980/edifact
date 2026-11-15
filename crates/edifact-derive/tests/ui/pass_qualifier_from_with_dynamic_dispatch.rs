@@ -3,14 +3,14 @@
 #[path = "support.rs"]
 mod support;
 
-pub use support::edifact_rs::{
+pub use support::edifact::{
     Element, EdifactDeserialize, EdifactError, EdifactEvent, EdifactSegmentTag,
     EdifactSerialize, EventEmitter, Segment, find_qualified_segment, find_segment};
 
-extern crate self as edifact_rs;
-pub use support::edifact_rs::helpers;
+extern crate self as edifact;
+pub use support::edifact::helpers;
 
-use edifact_rs_derive::EdifactDeserialize as DeriveEdifactDeserialize;
+use edifact_derive::EdifactDeserialize as DeriveEdifactDeserialize;
 
 /// Qualifier is taken from element 0, component 0 at runtime.
 #[derive(DeriveEdifactDeserialize)]

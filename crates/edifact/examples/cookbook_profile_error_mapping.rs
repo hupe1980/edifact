@@ -1,7 +1,7 @@
 //! Cookbook: mapping profile rule violations to structured diagnostics
 //!
 //! Shows two complementary patterns for downstream crates building domain
-//! validators on top of `edifact-rs`:
+//! validators on top of `edifact`:
 //!
 //! ## Pattern A — `ProfileRulePack` rules mapped to application error codes
 //!
@@ -16,7 +16,7 @@
 //! reference counting, cross-segment consistency), implement the `Validator`
 //! trait directly and register it alongside a `ProfileRulePack`.
 
-use edifact_rs::{
+use edifact::{
     FindingKind, ProfileRulePack, ValidationContext, ValidationIssue, ValidationLayer,
     ValidationReport, ValidationRuleContext, ValidationSeverity, Validator, from_bytes,
 };
@@ -138,7 +138,7 @@ struct MaxSegmentValidator {
 impl Validator for MaxSegmentValidator {
     fn validate_batch(
         &self,
-        segments: &[edifact_rs::Segment<'_>],
+        segments: &[edifact::Segment<'_>],
         report: &mut ValidationReport,
         _context: &ValidationRuleContext<'_>,
     ) {
@@ -164,7 +164,7 @@ impl Validator for MaxSegmentValidator {
 
 // ── main ──────────────────────────────────────────────────────────────────────
 
-fn main() -> Result<(), edifact_rs::EdifactError> {
+fn main() -> Result<(), edifact::EdifactError> {
     // ── valid message ─────────────────────────────────────────────────────────
     let valid_input = b"UNH+1+ORDERS:D:96A:UN'BGM+220+PO-001+9'UNT+3+1'";
     let valid_segments: Vec<_> = from_bytes(valid_input).collect::<Result<_, _>>()?;

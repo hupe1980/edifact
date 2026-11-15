@@ -41,7 +41,7 @@ use std::borrow::Cow;
 use std::io::Cursor;
 
 use counting_alloc::{CountingAlloc, measure};
-use edifact_rs::{Segment, Span, from_bytes, from_reader};
+use edifact::{Segment, Span, from_bytes, from_reader};
 
 #[global_allocator]
 static ALLOC: CountingAlloc = CountingAlloc;
@@ -171,7 +171,7 @@ fn repeats_unallocated_on_both_paths() {
 #[test]
 fn repeating_element_layout_and_spans() {
     type Occurrence<'s> = Vec<(&'s str, Span)>;
-    fn flat<'s>(components: &'s edifact_rs::Components<'_>) -> Occurrence<'s> {
+    fn flat<'s>(components: &'s edifact::Components<'_>) -> Occurrence<'s> {
         components
             .iter()
             .map(|(v, span)| (v.as_ref(), *span))
@@ -374,7 +374,7 @@ fn one_mb_peak_heap_reader_stream() {
 
 #[test]
 fn writer_emitter_allocates_nothing_per_event() {
-    use edifact_rs::{EdifactEvent, EventEmitter, WriterEmitter};
+    use edifact::{EdifactEvent, EventEmitter, WriterEmitter};
 
     // The buffer is pre-sized so growth of the sink is not what is measured.
     let mut emitter = WriterEmitter::new(Vec::<u8>::with_capacity(64 * 1024));
@@ -417,7 +417,7 @@ fn leaked_segment(tag: &str) -> &'static Segment<'static> {
 #[test]
 fn parse_unh_allocates_nothing() {
     let unh = leaked_segment("UNH");
-    let (id, stats) = measure(|| edifact_rs::parse_unh(unh));
+    let (id, stats) = measure(|| edifact::parse_unh(unh));
     let id = id.expect("UNH parses");
     assert_eq!(stats.allocations, 0, "{stats:?}");
     assert_eq!(id.message_type, "ORDERS");
@@ -426,7 +426,7 @@ fn parse_unh_allocates_nothing() {
 #[test]
 fn parse_ung_allocates_nothing() {
     let ung = leaked_segment("UNG");
-    let (id, stats) = measure(|| edifact_rs::parse_ung(ung));
+    let (id, stats) = measure(|| edifact::parse_ung(ung));
     id.expect("UNG parses");
     assert_eq!(stats.allocations, 0, "{stats:?}");
 }
@@ -436,7 +436,7 @@ fn messages_by_type_iter_allocates_nothing() {
     let segments: Vec<Segment<'_>> = from_bytes(ENVELOPE)
         .collect::<Result<_, _>>()
         .expect("envelope parses");
-    let validated = edifact_rs::validate_envelope(&segments).expect("valid envelope");
+    let validated = edifact::validate_envelope(&segments).expect("valid envelope");
     let (count, stats) = measure(|| validated.iter_messages_by_type("ORDERS").count());
     assert_eq!(stats.allocations, 0, "{stats:?}");
     assert_eq!(count, 2);

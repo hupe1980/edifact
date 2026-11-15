@@ -1,4 +1,4 @@
-# cargo-deny configuration for edifact-rs
+# cargo-deny configuration for edifact
 #
 # Run exactly as CI does — the `--all-features` flag matters, because the
 # `diagnostics` feature pulls in `miette` and a whole subtree that is invisible

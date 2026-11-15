@@ -1,4 +1,4 @@
-use edifact_rs::{
+use edifact::{
     DirectoryValidator, EdifactError, ElementRef, OwnedElementRef, OwnedSegmentDef,
     SegmentDefinition, Status, ValidationReport, ValidationRuleContext, Validator, from_bytes,
 };
@@ -307,12 +307,12 @@ fn faults_from_different_check_families_are_all_reported() {
 // ── representation and repetition enforcement ─────────────────────────────────
 
 mod representation {
-    use edifact_rs::{
+    use edifact::{
         ComponentRef, DirectoryValidator, ElementRef, Repr, SegmentDefinition, Status,
         ValidationContext, ValidationLayer, from_bytes, service,
     };
 
-    fn service_report(input: &[u8]) -> edifact_rs::ValidationReport {
+    fn service_report(input: &[u8]) -> edifact::ValidationReport {
         let segments: Vec<_> = from_bytes(input)
             .collect::<Result<Vec<_>, _>>()
             .expect("parse");
@@ -330,10 +330,10 @@ mod representation {
             .validate(&segments)
     }
 
-    fn codes(report: &edifact_rs::ValidationReport) -> Vec<&str> {
+    fn codes(report: &edifact::ValidationReport) -> Vec<&str> {
         report
             .iter_issues()
-            .filter_map(edifact_rs::ValidationIssue::error_code)
+            .filter_map(edifact::ValidationIssue::error_code)
             .collect()
     }
 

@@ -10,7 +10,7 @@
 //! cargo run --example cookbook_contrl_acknowledgement
 //! ```
 
-use edifact_rs::{Contrl, EdifactError, ValidationContext, from_bytes, validate_envelope_lenient};
+use edifact::{Contrl, EdifactError, ValidationContext, from_bytes, validate_envelope_lenient};
 
 /// A clean interchange: nothing to report but its arrival and acceptance.
 const CLEAN: &[u8] = b"UNB+UNOC:3+SENDER:14+RECEIVER:14+260101:0900+IC4711++++1'\

@@ -1,32 +1,32 @@
-# edifact-rs ⚡
+# edifact ⚡
 
-[![crates.io](https://img.shields.io/crates/v/edifact-rs.svg)](https://crates.io/crates/edifact-rs)
-[![docs.rs](https://docs.rs/edifact-rs/badge.svg)](https://docs.rs/edifact-rs)
-[![CI](https://github.com/hupe1980/edifact-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/hupe1980/edifact-rs/actions)
-[![license](https://img.shields.io/crates/l/edifact-rs.svg)](#license)
+[![crates.io](https://img.shields.io/crates/v/edifact.svg)](https://crates.io/crates/edifact)
+[![docs.rs](https://docs.rs/edifact/badge.svg)](https://docs.rs/edifact)
+[![CI](https://github.com/hupe1980/edifact/actions/workflows/ci.yml/badge.svg)](https://github.com/hupe1980/edifact/actions)
+[![license](https://img.shields.io/crates/l/edifact.svg)](#license)
 [![MSRV](https://img.shields.io/badge/rust-1.85%2B-blue.svg)](#msrv-and-edition)
 
 **EDIFACT (ISO 9735) for Rust** — zero-copy parsing, streaming deserialization,
 typed derive macros, and composable validation.
 
-📖 **[Guides](https://hupe1980.github.io/edifact-rs/docs/)** ·
-🦀 **[API reference](https://docs.rs/edifact-rs)** ·
-📦 **[crates.io](https://crates.io/crates/edifact-rs)**
+📖 **[Guides](https://hupe1980.github.io/edifact/docs/)** ·
+🦀 **[API reference](https://docs.rs/edifact)** ·
+📦 **[crates.io](https://crates.io/crates/edifact)**
 
 ---
 
 ## Install
 
 ```bash
-cargo add edifact-rs
+cargo add edifact
 ```
 
 `derive` is on by default. Optional features:
 
 ```bash
-cargo add edifact-rs --features diagnostics   # miette-powered error rendering
-cargo add edifact-rs --features serde         # Serialize/Deserialize on reports
-cargo add edifact-rs --no-default-features    # core parse + write only
+cargo add edifact --features diagnostics   # miette-powered error rendering
+cargo add edifact --features serde         # Serialize/Deserialize on reports
+cargo add edifact --no-default-features    # core parse + write only
 ```
 
 ## Quick start
@@ -35,7 +35,7 @@ Parsing borrows straight from the input — segment tags and component values ar
 `Cow<'_, str>` that borrow from your buffer unless a release escape forced a copy:
 
 ```rust
-use edifact_rs::from_bytes;
+use edifact::from_bytes;
 
 let input = b"UNA:+.? 'UNH+1+ORDERS:D:11A:UN'BGM+220+PO-4711+9'UNT+3+1'";
 let segments: Vec<_> = from_bytes(input).collect::<Result<_, _>>()?;
@@ -44,14 +44,14 @@ let bgm = &segments[1];
 assert_eq!(bgm.tag, "BGM");
 assert_eq!(bgm.element_str(0), Some("220"));      // document code
 assert_eq!(bgm.element_str(1), Some("PO-4711"));  // document number
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 Map segments and whole messages onto structs, dispatching repeated segments by
 their qualifier:
 
 ```rust
-use edifact_rs::{EdifactDeserialize, EdifactSerialize, from_bytes};
+use edifact::{EdifactDeserialize, EdifactSerialize, from_bytes};
 
 #[derive(Debug, EdifactDeserialize, EdifactSerialize)]
 #[edifact(segment = "BGM")]
@@ -86,21 +86,21 @@ let segments: Vec<_> = from_bytes(input).collect::<Result<_, _>>()?;
 let msg = OrderMessage::edifact_deserialize(&segments)?;
 
 assert_eq!(msg.buyer.unwrap().party_id.as_deref(), Some("4000001000002"));
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 Write it back out with delimiters escaped for you:
 
 ```rust
-use edifact_rs::to_edifact_string;
-# use edifact_rs::EdifactSerialize;
+use edifact::to_edifact_string;
+# use edifact::EdifactSerialize;
 # #[derive(EdifactSerialize)]
 # #[edifact(segment = "BGM")]
 # struct Bgm { #[edifact(element = 0)] doc_code: String }
 
 let wire = to_edifact_string(&Bgm { doc_code: "220".into() })?;
 assert_eq!(wire, "BGM+220'");
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ## What makes it different
@@ -108,13 +108,13 @@ assert_eq!(wire, "BGM+220'");
 EDIFACT looks simple, but its delimiters are redefinable per interchange, any
 of them may appear inside a value when release-escaped, and syntax version 4 adds
 a repetition separator that changes an element's shape. Where hand-rolled parsers
-usually go wrong, `edifact-rs` takes a position (clause numbers refer to
+usually go wrong, `edifact` takes a position (clause numbers refer to
 ISO 9735-1:2002):
 
 | | |
 |---|---|
 | **One segment type, borrowed or owned** | `Segment<'a>` holds `Cow` text: `from_bytes` borrows, `from_reader` owns (`OwnedSegment` = `Segment<'static>`). One API serves both. |
-| **Zero-copy by default** | `from_bytes` borrows tags and values from the input and allocates each segment's element vector once; a value is copied only where a release escape was resolved. The [allocation budget](https://hupe1980.github.io/edifact-rs/docs/performance/) is enforced by tests. |
+| **Zero-copy by default** | `from_bytes` borrows tags and values from the input and allocates each segment's element vector once; a value is copied only where a release escape was resolved. The [allocation budget](https://hupe1980.github.io/edifact/docs/performance/) is enforced by tests. |
 | **Bounded streaming** | Reader iterators hold one segment, at most `max_segment_bytes`; message windows hold one `UNH`…`UNT` message, which `ReaderConfig::max_segments_per_message` caps however long the stream runs. |
 | **Identifiers, not indices** | Address a field by its UN/EDIFACT data element identifier. The derive resolves it during const evaluation, so a stale identifier fails the build instead of reading the element next door. |
 | **Repetitions survive the round trip** | The repetition separator splits an element into real occurrences (ISO 9735-1 §8.7) instead of leaving `1*ON` in the value as literal text — read from the `UNA`, or from the syntax version in `UNB` S001 when there is none. `#[edifact(repeat)]` maps those occurrences onto a `Vec<T>` and writes them back byte-for-byte. |
@@ -134,7 +134,7 @@ still validates clean. Given a segment definition, address the value by its
 identifier instead, and a wrong reference becomes a lookup error:
 
 ```rust
-use edifact_rs::{ComponentRef, ElementRef, SegmentDefinition, Status, from_bytes};
+use edifact::{ComponentRef, ElementRef, SegmentDefinition, Status, from_bytes};
 
 static C082: &[ComponentRef] = &[
     ComponentRef::new(1, "3039", Status::Mandatory),
@@ -152,67 +152,67 @@ let segs: Vec<_> = from_bytes(b"NAD+BY+4000001000002::9'").collect::<Result<Vec<
 assert_eq!(segs[0].value_by_code(&NAD, "3039")?, Some("4000001000002"));
 assert_eq!(segs[0].value_by_code(&NAD, "3055")?, Some("9"));
 assert!(segs[0].value_by_code(&NAD, "2380").is_err()); // DE 2380 belongs to DTM
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 The derive performs the same resolution at compile time — see
-[Typed Derive](https://hupe1980.github.io/edifact-rs/docs/typed-derive/#element-by-identifier).
+[Typed Derive](https://hupe1980.github.io/edifact/docs/typed-derive/#element-by-identifier).
 
 ## Documentation
 
-Full guides live at **[hupe1980.github.io/edifact-rs](https://hupe1980.github.io/edifact-rs/docs/)**.
+Full guides live at **[hupe1980.github.io/edifact](https://hupe1980.github.io/edifact/docs/)**.
 Rust snippets in the guides are doctests: compiled and run, except `no_run`
 blocks (file and network I/O), which are compiled only, and three `ignore`d
 fragments.
 
 | Guide | |
 |---|---|
-| [Getting Started](https://hupe1980.github.io/edifact-rs/docs/getting-started/) | Install, first parse, feature flags |
-| [Core Concepts](https://hupe1980.github.io/edifact-rs/docs/core-concepts/) | Wire format, UNA, release characters, repetitions, Rust type mapping |
-| [Character Sets](https://hupe1980.github.io/edifact-rs/docs/character-sets/) | `UNOA`–`UNOK`/`UNOY` decoding, encoding, and repertoire validation |
-| [Parsing](https://hupe1980.github.io/edifact-rs/docs/parsing/) | Entry points, byte spans, and the `ReaderConfig` budgets |
-| [Writing](https://hupe1980.github.io/edifact-rs/docs/writing/) | `Writer`, escaping, custom UNA, repeating elements |
-| [Typed Derive](https://hupe1980.github.io/edifact-rs/docs/typed-derive/) | Every derive attribute, including identifier-addressed fields |
-| [Streaming](https://hupe1980.github.io/edifact-rs/docs/streaming/) | Reader iterators, message windows, typed extraction |
-| [Validation](https://hupe1980.github.io/edifact-rs/docs/validation/) | `Validator`, `ValidationContext`, the validation layers (envelope, syntax, charset, structure, code list, profile) |
-| [CONTRL](https://hupe1980.github.io/edifact-rs/docs/contrl/) | Acknowledgements and rejections from a validation report |
-| [Profile Packs](https://hupe1980.github.io/edifact-rs/docs/profile-packs/) | Authoring, composing, and filtering business rules |
-| [Diagnostics](https://hupe1980.github.io/edifact-rs/docs/diagnostics/) | `miette` integration |
-| [Async Integration](https://hupe1980.github.io/edifact-rs/docs/async-integration/) | Bridging to `tokio` |
-| [Error Reference](https://hupe1980.github.io/edifact-rs/docs/error-reference/) | Every stable code: `E001`–`E053`, `E066`–`E071` |
-| [Performance](https://hupe1980.github.io/edifact-rs/docs/performance/) | Allocation budget, memory bounds, benchmarks, tuning |
+| [Getting Started](https://hupe1980.github.io/edifact/docs/getting-started/) | Install, first parse, feature flags |
+| [Core Concepts](https://hupe1980.github.io/edifact/docs/core-concepts/) | Wire format, UNA, release characters, repetitions, Rust type mapping |
+| [Character Sets](https://hupe1980.github.io/edifact/docs/character-sets/) | `UNOA`–`UNOK`/`UNOY` decoding, encoding, and repertoire validation |
+| [Parsing](https://hupe1980.github.io/edifact/docs/parsing/) | Entry points, byte spans, and the `ReaderConfig` budgets |
+| [Writing](https://hupe1980.github.io/edifact/docs/writing/) | `Writer`, escaping, custom UNA, repeating elements |
+| [Typed Derive](https://hupe1980.github.io/edifact/docs/typed-derive/) | Every derive attribute, including identifier-addressed fields |
+| [Streaming](https://hupe1980.github.io/edifact/docs/streaming/) | Reader iterators, message windows, typed extraction |
+| [Validation](https://hupe1980.github.io/edifact/docs/validation/) | `Validator`, `ValidationContext`, the validation layers (envelope, syntax, charset, structure, code list, profile) |
+| [CONTRL](https://hupe1980.github.io/edifact/docs/contrl/) | Acknowledgements and rejections from a validation report |
+| [Profile Packs](https://hupe1980.github.io/edifact/docs/profile-packs/) | Authoring, composing, and filtering business rules |
+| [Diagnostics](https://hupe1980.github.io/edifact/docs/diagnostics/) | `miette` integration |
+| [Async Integration](https://hupe1980.github.io/edifact/docs/async-integration/) | Bridging to `tokio` |
+| [Error Reference](https://hupe1980.github.io/edifact/docs/error-reference/) | Every stable code: `E001`–`E053`, `E066`–`E071` |
+| [Performance](https://hupe1980.github.io/edifact/docs/performance/) | Allocation budget, memory bounds, benchmarks, tuning |
 
 Runnable cookbooks live in
-[`crates/edifact-rs/examples/`](crates/edifact-rs/examples) — try one with
+[`crates/edifact/examples/`](crates/edifact/examples) — try one with
 `cargo run --example cookbook_parse_map_validate_write`.
 
 ## Scope
 
-`edifact-rs` is the **engine**, not a directory distribution.
+`edifact` is the **engine**, not a directory distribution.
 
 It ships the parser, writer, validation pipeline, the table types for segment
 definitions, and every **batch service segment** of ISO 9735 — `UNB`, `UNG`,
 `UNH`, `UNT`, `UNE`, `UNZ`, `UNS`, `UNO`, `UNP`, `UGH`, `UGT` — as ready-to-use
-layouts in `edifact_rs::service`. Those are fixed by the syntax standard rather
+layouts in `edifact::service`. Those are fixed by the syntax standard rather
 than by a directory release, so there is one correct answer and no version to
 pick:
 
 ```rust
-use edifact_rs::{from_bytes, service};
+use edifact::{from_bytes, service};
 
 let segments: Vec<_> = from_bytes(b"UNB+UNOC:3+SENDER+RECEIVER+260101:0900+IC4711'UNZ+0+IC4711'")
     .collect::<Result<Vec<_>, _>>()?;
 
 // DE 0020 by name, not by counting to element 4.
 assert_eq!(segments[0].value_by_code(&service::UNB, "0020")?, Some("IC4711"));
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 It also ships **`CONTRL`** (ISO 9735-4) — the acknowledgement you owe a partner —
 generated from a validation report rather than assembled by hand:
 
 ```rust
-use edifact_rs::{Contrl, from_bytes, validate_envelope};
+use edifact::{Contrl, from_bytes, validate_envelope};
 
 let raw = b"UNB+UNOC:3+SENDER+RECEIVER+260101:0900+IC4711'\
             UNH+MSG1+ORDERS:D:96A:UN'BGM+220+PO-1+9'UNT+3+MSG1'\
@@ -226,7 +226,7 @@ let wire = Contrl::acknowledgement(&validated)
 // Its own interchange, addressed back the way it came.
 assert!(wire.starts_with("UNB+UNOC:3+RECEIVER+SENDER+260101:0930+ACK-1'"));
 assert!(wire.contains("UCI+IC4711+SENDER+RECEIVER+7'"));
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 It does **not** ship UN/EDIFACT *directory* data (`BGM`, `DTM`, `NAD`, `C507`, …).
@@ -239,7 +239,7 @@ projects do publish them — so this crate takes the conservative reading.
 
 Supply the subset you touch as `static` tables at compile time, or load them at
 startup with `DirectoryValidatorBuilder` — then point
-[`SegmentLayout::audit`](https://hupe1980.github.io/edifact-rs/docs/validation/#auditing-a-hand-written-layout)
+[`SegmentLayout::audit`](https://hupe1980.github.io/edifact/docs/validation/#auditing-a-hand-written-layout)
 at your fixtures, because a hand-authored layout that disagrees with the wire
 fails silently.
 

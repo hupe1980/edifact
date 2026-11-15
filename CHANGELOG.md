@@ -1,6 +1,7 @@
 # Changelog
 
-All notable changes to `edifact-rs` and `edifact-rs-derive` are documented here.
+All notable changes to `edifact` and `edifact-derive` (published as
+`edifact-rs` and `edifact-rs-derive` up to 0.18.0) are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -8,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ---
 
 ## [Unreleased]
+
+## [0.19.0] — 2026-11-15
+
+### Changed
+
+- **Renamed to `edifact` and `edifact-derive`.** Depend on `edifact` and import
+  `edifact::…` instead of `edifact_rs::…`; derive users import
+  `edifact_derive::…`. The fork-validation report ID is now
+  `edifact::fork::excluded-validator`. The repository moved to
+  `hupe1980/edifact` and the guides to <https://hupe1980.github.io/edifact/>.
+  `edifact-rs` 0.19.0 only re-exports `edifact` and receives no further
+  releases.
 
 ## [0.18.0] — 2026-10-18
 
@@ -762,7 +775,7 @@ the derive dropping components on write — was silent data loss on the way out.
 
 ### Documentation
 
-- New guide: [Character Sets](https://hupe1980.github.io/edifact-rs/docs/character-sets/).
+- New guide: [Character Sets](https://hupe1980.github.io/edifact/docs/character-sets/).
   *Core Concepts* no longer claims UTF-8 input as an unqualified requirement, and
   the `E003` entry no longer describes `UNOA` as a "Latin-1 subset" (it is an
   ASCII subset) or suggests transcoding as the only remedy.
@@ -1779,17 +1792,18 @@ Initial public release.  See commit history for full details.
 
 ---
 
-[Unreleased]: https://github.com/hupe1980/edifact-rs/compare/v0.18.0...HEAD
-[0.18.0]: https://github.com/hupe1980/edifact-rs/compare/v0.17.0...v0.18.0
-[0.17.0]: https://github.com/hupe1980/edifact-rs/compare/v0.16.0...v0.17.0
-[0.16.0]: https://github.com/hupe1980/edifact-rs/compare/v0.15.0...v0.16.0
-[0.15.0]: https://github.com/hupe1980/edifact-rs/compare/v0.14.0...v0.15.0
-[0.14.0]: https://github.com/hupe1980/edifact-rs/compare/v0.13.0...v0.14.0
-[0.13.0]: https://github.com/hupe1980/edifact-rs/compare/v0.12.0...v0.13.0
-[0.12.0]: https://github.com/hupe1980/edifact-rs/compare/v0.11.0...v0.12.0
-[0.10.0]: https://github.com/hupe1980/edifact-rs/compare/v0.9.1...v0.10.0
-[0.9.1]: https://github.com/hupe1980/edifact-rs/compare/v0.9.0...v0.9.1
-[0.9.0]: https://github.com/hupe1980/edifact-rs/compare/v0.8.0...v0.9.0
-[0.8.0]: https://github.com/hupe1980/edifact-rs/compare/v0.7.0...v0.8.0
-[0.7.0]: https://github.com/hupe1980/edifact-rs/compare/v0.6.0...v0.7.0
-[0.6.0]: https://github.com/hupe1980/edifact-rs/releases/tag/v0.6.0
+[Unreleased]: https://github.com/hupe1980/edifact/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/hupe1980/edifact/compare/v0.18.0...v0.19.0
+[0.18.0]: https://github.com/hupe1980/edifact/compare/v0.17.0...v0.18.0
+[0.17.0]: https://github.com/hupe1980/edifact/compare/v0.16.0...v0.17.0
+[0.16.0]: https://github.com/hupe1980/edifact/compare/v0.15.0...v0.16.0
+[0.15.0]: https://github.com/hupe1980/edifact/compare/v0.14.0...v0.15.0
+[0.14.0]: https://github.com/hupe1980/edifact/compare/v0.13.0...v0.14.0
+[0.13.0]: https://github.com/hupe1980/edifact/compare/v0.12.0...v0.13.0
+[0.12.0]: https://github.com/hupe1980/edifact/compare/v0.11.0...v0.12.0
+[0.10.0]: https://github.com/hupe1980/edifact/compare/v0.9.1...v0.10.0
+[0.9.1]: https://github.com/hupe1980/edifact/compare/v0.9.0...v0.9.1
+[0.9.0]: https://github.com/hupe1980/edifact/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/hupe1980/edifact/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/hupe1980/edifact/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/hupe1980/edifact/releases/tag/v0.6.0

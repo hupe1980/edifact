@@ -1,4 +1,4 @@
-use edifact_rs::{
+use edifact::{
     Segment, ValidationContext, ValidationLayer, ValidationReport, ValidationRuleContext,
     Validator, validate_each,
 };
@@ -51,10 +51,9 @@ fn run_case(
     name: &str,
     input: &str,
     context: &ValidationContext,
-) -> Result<(), edifact_rs::EdifactError> {
+) -> Result<(), edifact::EdifactError> {
     // Parse the fixture into zero-copy segments, then validate.
-    let segments: Vec<_> =
-        edifact_rs::from_bytes(input.as_bytes()).collect::<Result<Vec<_>, _>>()?;
+    let segments: Vec<_> = edifact::from_bytes(input.as_bytes()).collect::<Result<Vec<_>, _>>()?;
     let report = context.validate(&segments);
     println!("report:\n{}", report.render_deterministic());
 
@@ -94,7 +93,7 @@ fn run_case(
     Ok(())
 }
 
-fn main() -> Result<(), edifact_rs::EdifactError> {
+fn main() -> Result<(), edifact::EdifactError> {
     let context = ValidationContext::builder()
         .with_message_type("ORDERS")
         .with_validator(ValidationLayer::Structure, DemoStructuralValidator)

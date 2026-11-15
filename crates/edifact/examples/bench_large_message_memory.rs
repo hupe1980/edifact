@@ -1,7 +1,7 @@
 //! Memory benchmark: large interchange streaming
 //!
 //! Builds a ~10 MB synthetic interchange and streams it with
-//! [`edifact_rs::from_bytes`], counting segments. The point is that peak heap
+//! [`edifact::from_bytes`], counting segments. The point is that peak heap
 //! usage is bounded by one `Segment` — each borrows from the input slice — and
 //! does not grow with the payload.
 //!
@@ -14,7 +14,7 @@
 //!
 //! Run with:
 //! ```text
-//! cargo run -p edifact-rs --example bench_large_message_memory --release
+//! cargo run -p edifact --example bench_large_message_memory --release
 //! ```
 
 /// One repetition of the message body — four segments, no envelope.
@@ -51,14 +51,14 @@ fn interchange(target_bytes: usize) -> (Vec<u8>, usize) {
     (payload, body_segments + 4)
 }
 
-fn main() -> Result<(), edifact_rs::EdifactError> {
+fn main() -> Result<(), edifact::EdifactError> {
     let (payload, expected_segments) = interchange(10_000_000);
 
     let mut segment_count = 0usize;
     // `from_bytes` returns a zero-copy iterator: each `Segment<'_>` borrows
     // directly from `payload`.  Peak heap usage is bounded to a single segment
     // at a time — it does not grow with `payload.len()`.
-    for segment in edifact_rs::from_bytes(&payload) {
+    for segment in edifact::from_bytes(&payload) {
         segment?; // propagate any parse error
         segment_count += 1;
     }
@@ -71,8 +71,8 @@ fn main() -> Result<(), edifact_rs::EdifactError> {
     // A second pass proves the synthetic payload is a conformant interchange and
     // not merely one this parser tolerates: the trailers' declared counts are
     // checked against what is actually there.
-    let segments: Vec<_> = edifact_rs::from_bytes(&payload).collect::<Result<Vec<_>, _>>()?;
-    let validated = edifact_rs::validate_envelope(&segments)?;
+    let segments: Vec<_> = edifact::from_bytes(&payload).collect::<Result<Vec<_>, _>>()?;
+    let validated = edifact::validate_envelope(&segments)?;
 
     println!(
         "payload_bytes={} segment_count={} messages={}",

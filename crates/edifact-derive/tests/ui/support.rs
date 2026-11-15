@@ -1,11 +1,11 @@
-//! A minimal stand-in for `edifact_rs`, so the UI suite can compile the derive
+//! A minimal stand-in for `edifact`, so the UI suite can compile the derive
 //! output without a dependency cycle.
 //!
 //! Every item here mirrors the real crate's shape closely enough that generated
 //! code type-checks against it. Keep it in step with what the derive actually
-//! emits — `grep -o "::edifact_rs::[A-Za-z_]*" src/lib.rs` lists the surface.
+//! emits — `grep -o "::edifact::[A-Za-z_]*" src/lib.rs` lists the surface.
 
-pub mod edifact_rs {
+pub mod edifact {
     use std::borrow::Cow;
 
     #[derive(Debug)]

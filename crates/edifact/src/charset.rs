@@ -17,7 +17,7 @@
 //! is UTF-8 throughout — can parse them:
 //!
 //! ```
-//! use edifact_rs::{Charset, decode_interchange, from_bytes};
+//! use edifact::{Charset, decode_interchange, from_bytes};
 //!
 //! // A UNOC interchange: `Müller` is `4D FC 6C 6C 65 72`, not valid UTF-8.
 //! let mut raw = b"UNB+UNOC:3+S+R+200101:0900+1'NAD+BY+M".to_vec();
@@ -31,7 +31,7 @@
 //! let utf8 = decode_interchange(&raw)?;
 //! let segments: Vec<_> = from_bytes(&utf8).collect::<Result<Vec<_>, _>>()?;
 //! assert_eq!(segments[1].element_str(1), Some("Müller"));
-//! # Ok::<(), edifact_rs::EdifactError>(())
+//! # Ok::<(), edifact::EdifactError>(())
 //! ```
 //!
 //! # Decoding is permissive, validation is strict
@@ -253,7 +253,7 @@ impl Charset {
     /// # Example
     ///
     /// ```
-    /// use edifact_rs::Charset;
+    /// use edifact::Charset;
     ///
     /// assert!(Charset::UnoA.permits('A'));
     /// assert!(!Charset::UnoA.permits('a'));   // level A is upper-case only
@@ -401,7 +401,7 @@ impl Charset {
     /// # Example
     ///
     /// ```
-    /// use edifact_rs::{Charset, from_reader};
+    /// use edifact::{Charset, from_reader};
     ///
     /// let mut raw = b"UNB+UNOC:3+S+R+200101:0900+1'NAD+BY+M".to_vec();
     /// raw.push(0xFC);
@@ -410,7 +410,7 @@ impl Charset {
     /// let reader = Charset::UnoC.decoding_reader(std::io::Cursor::new(raw));
     /// let segments = from_reader(reader).collect::<Result<Vec<_>, _>>()?;
     /// assert_eq!(segments[1].element_str(1), Some("Müller"));
-    /// # Ok::<(), edifact_rs::EdifactError>(())
+    /// # Ok::<(), edifact::EdifactError>(())
     /// ```
     pub fn decoding_reader<R: Read>(self, reader: R) -> DecodingReader<R> {
         DecodingReader {
@@ -598,7 +598,7 @@ const SNIFF_PROBE_BYTES: usize = 4096;
 /// # Example
 ///
 /// ```
-/// use edifact_rs::{decode_reader, from_reader};
+/// use edifact::{decode_reader, from_reader};
 ///
 /// let mut raw = b"UNB+UNOC:3+S+R+260101:0900+IC1'NAD+BY+M".to_vec();
 /// raw.push(0xFC); // `ü` in ISO 8859-1
@@ -608,7 +608,7 @@ const SNIFF_PROBE_BYTES: usize = 4096;
 /// let segments: Vec<_> = from_reader(decode_reader(std::io::Cursor::new(raw))?)
 ///     .collect::<Result<_, _>>()?;
 /// assert_eq!(segments[1].element_str(1), Some("Müller"));
-/// # Ok::<(), edifact_rs::EdifactError>(())
+/// # Ok::<(), edifact::EdifactError>(())
 /// ```
 ///
 /// # Errors

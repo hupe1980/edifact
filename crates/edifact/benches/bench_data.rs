@@ -1,4 +1,4 @@
-use edifact_rs::{Element, Segment};
+use edifact::{Element, Segment};
 
 /// One representative D.11A message (~230 bytes).
 pub fn sample_msg() -> &'static [u8] {

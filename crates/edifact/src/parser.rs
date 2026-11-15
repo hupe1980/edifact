@@ -375,7 +375,7 @@ impl<'a> Iterator for Parser<'a> {
 ///
 /// # Example
 /// ```
-/// use edifact_rs::{ReaderConfig, from_reader_with_config};
+/// use edifact::{ReaderConfig, from_reader_with_config};
 ///
 /// let cfg = ReaderConfig::default()
 ///     .max_segment_bytes(4_096)
@@ -521,7 +521,7 @@ impl ReaderConfig {
     /// # Example
     ///
     /// ```
-    /// use edifact_rs::{EdifactError, ReaderConfig, from_bytes_with_config};
+    /// use edifact::{EdifactError, ReaderConfig, from_bytes_with_config};
     ///
     /// let config = ReaderConfig::default().max_segments_per_message(2);
     /// let input = b"UNH+1+ORDERS:D:96A:UN'BGM+220'DTM+137:20260101:102'UNT+4+1'";
@@ -546,7 +546,7 @@ impl ReaderConfig {
     /// # Example
     ///
     /// ```
-    /// use edifact_rs::{ReaderConfig, ServiceStringAdvice, from_bytes_with_config};
+    /// use edifact::{ReaderConfig, ServiceStringAdvice, from_bytes_with_config};
     ///
     /// // A message lifted out of an interchange whose UNA declared `;` and `~`.
     /// let ssa = ServiceStringAdvice::from_bytes(b"UNA:;.? ~")?;
@@ -555,7 +555,7 @@ impl ReaderConfig {
     /// let segments: Vec<_> = from_bytes_with_config(b"BGM;220;PO-4711~", config)
     ///     .collect::<Result<Vec<_>, _>>()?;
     /// assert_eq!(segments[0].element_str(1), Some("PO-4711"));
-    /// # Ok::<(), edifact_rs::EdifactError>(())
+    /// # Ok::<(), edifact::EdifactError>(())
     /// ```
     #[must_use]
     pub fn with_service_string_advice(
@@ -1139,7 +1139,7 @@ pub fn from_reader_stream<R: Read>(reader: R) -> OwnedSegmentStream<BufReader<R>
 ///
 /// # Example
 /// ```
-/// use edifact_rs::{ReaderConfig, from_reader_with_config};
+/// use edifact::{ReaderConfig, from_reader_with_config};
 ///
 /// let cfg = ReaderConfig::default().max_segment_bytes(4_096);
 /// let segs: Vec<_> = from_reader_with_config(b"BGM+220+1+9'".as_ref(), cfg)

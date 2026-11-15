@@ -10,37 +10,37 @@ This crate provides two benchmark suites:
 Quick micro-benchmarks:
 
 ```bash
-cargo bench -p edifact-rs --bench bench_core
+cargo bench -p edifact --bench bench_core
 ```
 
 Criterion suite:
 
 ```bash
-cargo bench -p edifact-rs --bench bench_criterion -- --noplot
+cargo bench -p edifact --bench bench_criterion -- --noplot
 ```
 
 Fast smoke configuration (matches CI intent):
 
 ```bash
-cargo bench -p edifact-rs --bench bench_criterion -- --noplot --sample-size 10
+cargo bench -p edifact --bench bench_criterion -- --noplot --sample-size 10
 ```
 
 Save baseline for comparison (main/release workflow):
 
 ```bash
-cargo bench -p edifact-rs --bench bench_criterion -- --noplot --sample-size 50 --warm-up-time 2 --measurement-time 8 --save-baseline main
+cargo bench -p edifact --bench bench_criterion -- --noplot --sample-size 50 --warm-up-time 2 --measurement-time 8 --save-baseline main
 ```
 
 Compare against baseline (PR regression check):
 
 ```bash
-cargo bench -p edifact-rs --bench bench_criterion -- --noplot --sample-size 20 --baseline main
+cargo bench -p edifact --bench bench_criterion -- --noplot --sample-size 20 --baseline main
 ```
 
 Large-message memory probe:
 
 ```bash
-cargo run -p edifact-rs --release --example bench_large_message_memory
+cargo run -p edifact --release --example bench_large_message_memory
 ```
 
 ## What is measured

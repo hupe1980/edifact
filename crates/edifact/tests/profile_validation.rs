@@ -1,11 +1,11 @@
 mod common;
 
-use edifact_rs::ValidationContext;
+use edifact::ValidationContext;
 
 const ORDERS_CONFORMING: &str = include_str!("fixtures/orders_conforming.edi");
 #[test]
 fn custom_profile_pack_reports_rule_ids_for_orders_fixture() {
-    let segments: Vec<_> = edifact_rs::from_bytes(ORDERS_CONFORMING.as_bytes())
+    let segments: Vec<_> = edifact::from_bytes(ORDERS_CONFORMING.as_bytes())
         .collect::<Result<Vec<_>, _>>()
         .expect("fixture should parse");
 
@@ -31,10 +31,9 @@ fn custom_profile_pack_reports_rule_ids_for_orders_fixture() {
 
 #[test]
 fn custom_profile_pack_is_skipped_for_other_message_types() {
-    let segments: Vec<_> =
-        edifact_rs::from_bytes(b"UNH+1+INVOIC:D:96A:UN'BGM+220+INV-1+9'UNT+3+1'")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("fixture should parse");
+    let segments: Vec<_> = edifact::from_bytes(b"UNH+1+INVOIC:D:96A:UN'BGM+220+INV-1+9'UNT+3+1'")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("fixture should parse");
 
     let ctx = ValidationContext::builder()
         .with_profile_pack(common::demo_orders_profile_pack())
@@ -49,7 +48,7 @@ fn custom_profile_pack_is_skipped_for_other_message_types() {
 
 #[test]
 fn custom_profile_pack_strict_mode_fails_for_error_level_issues() {
-    let segments: Vec<_> = edifact_rs::from_bytes(ORDERS_CONFORMING.as_bytes())
+    let segments: Vec<_> = edifact::from_bytes(ORDERS_CONFORMING.as_bytes())
         .collect::<Result<Vec<_>, _>>()
         .expect("fixture should parse");
 
@@ -69,7 +68,7 @@ fn custom_profile_pack_strict_mode_fails_for_error_level_issues() {
 #[test]
 fn profile_pack_message_type_set_before_pack_matches_set_after() {
     let input = b"UNH+1+ORDERS:D:96A:UN'BGM+220+PO123+9'UNT+3+1'";
-    let segments: Vec<_> = edifact_rs::from_bytes(input)
+    let segments: Vec<_> = edifact::from_bytes(input)
         .collect::<Result<Vec<_>, _>>()
         .expect("fixture should parse");
 

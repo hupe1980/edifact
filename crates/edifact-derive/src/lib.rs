@@ -89,7 +89,7 @@
 //! By default, `Option<T>` fields produce `None` when the element is absent.
 //! Annotating an `Option<T>` field with `#[edifact(required)]` changes this:
 //! instead of `None`, deserialization returns
-//! `edifact_rs::EdifactError::MissingRequiredElement`
+//! `edifact::EdifactError::MissingRequiredElement`
 //! when the element is absent or empty.  The Rust type stays `Option<T>`, which
 //! is useful when the EDIFACT specification mandates the element but your domain
 //! model treats it as optional for other reasons.
@@ -128,7 +128,7 @@ use syn::{Data, DeriveInput, Field, Fields, Type, parse_macro_input, spanned::Sp
 // ── entry points ───────────────────────────────────────────────────────────────
 
 #[proc_macro_derive(EdifactSerialize, attributes(edifact))]
-/// Derive `edifact_rs::EdifactSerialize` for segment or message structs.
+/// Derive `edifact::EdifactSerialize` for segment or message structs.
 ///
 /// # Limitations
 ///
@@ -144,7 +144,7 @@ pub fn derive_edifact_serialize(input: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_derive(EdifactDeserialize, attributes(edifact))]
-/// Derive `edifact_rs::EdifactDeserialize` for segment or message structs.
+/// Derive `edifact::EdifactDeserialize` for segment or message structs.
 ///
 /// # Limitations
 ///
@@ -160,7 +160,7 @@ pub fn derive_edifact_deserialize(input: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_derive(EdifactCompositeDeserialize, attributes(edifact))]
-/// Derive `edifact_rs::EdifactCompositeDeserialize` for a composite-element struct.
+/// Derive `edifact::EdifactCompositeDeserialize` for a composite-element struct.
 ///
 /// Each named field maps to one component of the composite, in declaration
 /// order, unless `#[edifact(component = N)]` overrides the index. `Option<T>`
@@ -182,7 +182,7 @@ pub fn derive_edifact_composite_deserialize(input: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_derive(EdifactCompositeSerialize, attributes(edifact))]
-/// Derive `edifact_rs::EdifactCompositeSerialize` for a composite-element struct.
+/// Derive `edifact::EdifactCompositeSerialize` for a composite-element struct.
 ///
 /// The mirror of [`macro@EdifactCompositeDeserialize`]: field `n` is emitted as
 /// component `n`, `None` becomes an empty component, and any gap left by a
@@ -868,7 +868,7 @@ fn impl_composite_deserialize(input: &DeriveInput) -> syn::Result<TokenStream2> 
                     let __value = __composite
                         .get(#idx)
                         .filter(|v| !v.is_empty())
-                        .ok_or_else(|| ::edifact_rs::EdifactError::MissingRequiredComponent {
+                        .ok_or_else(|| ::edifact::EdifactError::MissingRequiredComponent {
                             tag: ::std::string::String::from(stringify!(#name)),
                             element_index: 0,
                             component_index: #idx,
@@ -880,10 +880,10 @@ fn impl_composite_deserialize(input: &DeriveInput) -> syn::Result<TokenStream2> 
     });
 
     Ok(quote! {
-        impl ::edifact_rs::EdifactCompositeDeserialize for #name {
+        impl ::edifact::EdifactCompositeDeserialize for #name {
             fn edifact_deserialize_composite(
-                __composite: ::edifact_rs::CompositeElement<'_>,
-            ) -> ::core::result::Result<Self, ::edifact_rs::EdifactError> {
+                __composite: ::edifact::CompositeElement<'_>,
+            ) -> ::core::result::Result<Self, ::edifact::EdifactError> {
                 ::core::result::Result::Ok(Self {
                     #(#assignments)*
                 })
@@ -916,27 +916,27 @@ fn impl_composite_serialize(input: &DeriveInput) -> syn::Result<TokenStream2> {
         };
         // Component 0 opens the element; the rest extend it.
         if index == 0 {
-            quote! { __emitter.emit(::edifact_rs::EdifactEvent::element(#value))?; }
+            quote! { __emitter.emit(::edifact::EdifactEvent::element(#value))?; }
         } else {
             quote! {
-                __emitter.emit(::edifact_rs::EdifactEvent::component(#value))?;
+                __emitter.emit(::edifact::EdifactEvent::component(#value))?;
             }
         }
     });
 
     // A field-less composite still occupies its element slot.
     let body = if slots.is_empty() {
-        quote! { __emitter.emit(::edifact_rs::EdifactEvent::element(""))?; }
+        quote! { __emitter.emit(::edifact::EdifactEvent::element(""))?; }
     } else {
         quote! { #(#emits)* }
     };
 
     Ok(quote! {
-        impl ::edifact_rs::EdifactCompositeSerialize for #name {
-            fn edifact_serialize_composite<__E: ::edifact_rs::EventEmitter>(
+        impl ::edifact::EdifactCompositeSerialize for #name {
+            fn edifact_serialize_composite<__E: ::edifact::EventEmitter>(
                 &self,
                 __emitter: &mut __E,
-            ) -> ::core::result::Result<(), ::edifact_rs::EdifactError> {
+            ) -> ::core::result::Result<(), ::edifact::EdifactError> {
                 #body
                 ::core::result::Result::Ok(())
             }
@@ -1127,7 +1127,7 @@ fn static_element_index(attrs: &FieldAttrs, decl_index: usize) -> u32 {
 /// code-addressed struct cannot do: its slots are only known once the `const`
 /// items in `slot_prelude` are evaluated.  So each field contributes a
 /// `(element, component, value)` triple and
-/// [`emit_sparse_segment`][edifact_rs::emit_sparse_segment] orders them.
+/// [`emit_sparse_segment`][edifact::emit_sparse_segment] orders them.
 /// Absent optional values still contribute an empty triple, so a trailing `None`
 /// produces the same empty element the positional path emits.
 fn impl_serialize_sparse(
@@ -1154,32 +1154,32 @@ fn impl_serialize_sparse(
             let serialize_composite = if is_option_type(ty) {
                 quote! {
                     if let ::core::option::Option::Some(__v) = &self.#ident {
-                        ::edifact_rs::EdifactCompositeSerialize::edifact_serialize_composite(
+                        ::edifact::EdifactCompositeSerialize::edifact_serialize_composite(
                             __v, &mut __sub,
                         )?;
                     }
                 }
             } else {
                 quote! {
-                    ::edifact_rs::EdifactCompositeSerialize::edifact_serialize_composite(
+                    ::edifact::EdifactCompositeSerialize::edifact_serialize_composite(
                         &self.#ident, &mut __sub,
                     )?;
                 }
             };
             stmts.push(quote! {
                 {
-                    let mut __sub = ::edifact_rs::VecEmitter::default();
+                    let mut __sub = ::edifact::VecEmitter::default();
                     #serialize_composite
                     let mut __comp = 0usize;
                     let mut __any = false;
                     for __event in __sub.events {
                         match __event {
-                            ::edifact_rs::EdifactEvent::Element { value } => {
+                            ::edifact::EdifactEvent::Element { value } => {
                                 __comp = 0;
                                 __any = true;
                                 __parts.push((#element, 0usize, ::std::borrow::Cow::Owned(value)));
                             }
-                            ::edifact_rs::EdifactEvent::ComponentElement { value } => {
+                            ::edifact::EdifactEvent::ComponentElement { value } => {
                                 __comp += 1;
                                 __any = true;
                                 __parts.push((#element, __comp, ::std::borrow::Cow::Owned(value)));
@@ -1230,11 +1230,11 @@ fn impl_serialize_sparse(
     let capacity = field_data.len() + usize::from(struct_attrs.qualifier.is_some());
 
     quote! {
-        impl ::edifact_rs::EdifactSerialize for #name {
-            fn edifact_serialize<__E: ::edifact_rs::EventEmitter>(
+        impl ::edifact::EdifactSerialize for #name {
+            fn edifact_serialize<__E: ::edifact::EventEmitter>(
                 &self,
                 emitter: &mut __E,
-            ) -> ::core::result::Result<(), ::edifact_rs::EdifactError> {
+            ) -> ::core::result::Result<(), ::edifact::EdifactError> {
                 #slot_prelude
                 let mut __parts: ::std::vec::Vec<(
                     usize,
@@ -1242,7 +1242,7 @@ fn impl_serialize_sparse(
                     ::std::borrow::Cow<'_, str>,
                 )> = ::std::vec::Vec::with_capacity(#capacity);
                 #(#stmts)*
-                ::edifact_rs::emit_sparse_segment(emitter, #seg_tag, &mut __parts)
+                ::edifact::emit_sparse_segment(emitter, #seg_tag, &mut __parts)
             }
         }
     }
@@ -1336,10 +1336,10 @@ fn impl_serialize(input: &DeriveInput) -> syn::Result<TokenStream2> {
         }
 
         let empty_element = quote! {
-            emitter.emit(::edifact_rs::EdifactEvent::element(""))?;
+            emitter.emit(::edifact::EdifactEvent::element(""))?;
         };
         let empty_component = quote! {
-            emitter.emit(::edifact_rs::EdifactEvent::component(""))?;
+            emitter.emit(::edifact::EdifactEvent::component(""))?;
         };
 
         let mut elem_stmts: Vec<TokenStream2> = Vec::new();
@@ -1416,7 +1416,7 @@ fn impl_serialize(input: &DeriveInput) -> syn::Result<TokenStream2> {
                         Some(Cell::Qualifier) => {
                             let qual = struct_attrs.qualifier.as_deref().unwrap_or("");
                             elem_stmts.push(quote! {
-                                emitter.emit(::edifact_rs::EdifactEvent::element(#qual))?;
+                                emitter.emit(::edifact::EdifactEvent::element(#qual))?;
                             });
                         }
                         Some(Cell::Field(index)) => {
@@ -1439,9 +1439,9 @@ fn impl_serialize(input: &DeriveInput) -> syn::Result<TokenStream2> {
         }
 
         quote! {
-            emitter.emit(::edifact_rs::EdifactEvent::start(#seg_tag))?;
+            emitter.emit(::edifact::EdifactEvent::start(#seg_tag))?;
             #(#elem_stmts)*
-            emitter.emit(::edifact_rs::EdifactEvent::EndSegment)?;
+            emitter.emit(::edifact::EdifactEvent::EndSegment)?;
         }
     } else {
         // ── Message struct: delegate to each field ────────────────────────────
@@ -1451,12 +1451,12 @@ fn impl_serialize(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 if attrs.group || is_vec_type(ty) {
                     quote! {
                         for __item in &self.#ident {
-                            ::edifact_rs::EdifactSerialize::edifact_serialize(__item, emitter)?;
+                            ::edifact::EdifactSerialize::edifact_serialize(__item, emitter)?;
                         }
                     }
                 } else {
                     quote! {
-                        ::edifact_rs::EdifactSerialize::edifact_serialize(&self.#ident, emitter)?;
+                        ::edifact::EdifactSerialize::edifact_serialize(&self.#ident, emitter)?;
                     }
                 }
             })
@@ -1465,11 +1465,11 @@ fn impl_serialize(input: &DeriveInput) -> syn::Result<TokenStream2> {
     };
 
     Ok(quote! {
-        impl ::edifact_rs::EdifactSerialize for #name {
-            fn edifact_serialize<__E: ::edifact_rs::EventEmitter>(
+        impl ::edifact::EdifactSerialize for #name {
+            fn edifact_serialize<__E: ::edifact::EventEmitter>(
                 &self,
                 emitter: &mut __E,
-            ) -> ::core::result::Result<(), ::edifact_rs::EdifactError> {
+            ) -> ::core::result::Result<(), ::edifact::EdifactError> {
                 #body
                 ::core::result::Result::Ok(())
             }
@@ -1506,7 +1506,7 @@ fn repeating_field_init(
             quote!(#inner)
         );
         quote! {
-            __value.parse::<#inner>().map_err(|_| ::edifact_rs::EdifactError::InvalidFieldValue {
+            __value.parse::<#inner>().map_err(|_| ::edifact::EdifactError::InvalidFieldValue {
                 tag: __seg.tag().to_string(),
                 element_index: #element,
                 value: ::std::format!("{}: {}", #message, __value),
@@ -1516,7 +1516,7 @@ fn repeating_field_init(
     Ok(quote! {
         let #ident = __seg.repeated_component(#element, #component)
             .map(|__value| #convert)
-            .collect::<::core::result::Result<::std::vec::Vec<#inner>, ::edifact_rs::EdifactError>>()?;
+            .collect::<::core::result::Result<::std::vec::Vec<#inner>, ::edifact::EdifactError>>()?;
     })
 }
 
@@ -1564,14 +1564,14 @@ fn emit_repeating_element_with_qualifier(
             let __n = ::core::cmp::max(1usize, [#(#lengths),*].into_iter().max().unwrap_or(0));
             for __k in 0..__n {
                 let __event = if __k == 0 {
-                    ::edifact_rs::EdifactEvent::element(#qualifier)
+                    ::edifact::EdifactEvent::element(#qualifier)
                 } else {
-                    ::edifact_rs::EdifactEvent::repeat(#qualifier)
+                    ::edifact::EdifactEvent::repeat(#qualifier)
                 };
                 emitter.emit(__event)?;
                 #(
                     let __v = #values;
-                    emitter.emit(::edifact_rs::EdifactEvent::component(__v.as_ref()))?;
+                    emitter.emit(::edifact::EdifactEvent::component(__v.as_ref()))?;
                 )*
             }
         }
@@ -1649,14 +1649,14 @@ fn emit_repeating_element(
             for __k in 0..__n {
                 let __v = #first;
                 let __event = if __k == 0 {
-                    ::edifact_rs::EdifactEvent::element(__v.as_ref())
+                    ::edifact::EdifactEvent::element(__v.as_ref())
                 } else {
-                    ::edifact_rs::EdifactEvent::repeat(__v.as_ref())
+                    ::edifact::EdifactEvent::repeat(__v.as_ref())
                 };
                 emitter.emit(__event)?;
                 #(
                     let __v = #rest;
-                    emitter.emit(::edifact_rs::EdifactEvent::component(__v.as_ref()))?;
+                    emitter.emit(::edifact::EdifactEvent::component(__v.as_ref()))?;
                 )*
             }
         }
@@ -1674,10 +1674,10 @@ fn emit_element(ident: &syn::Ident, ty: &Type) -> TokenStream2 {
             quote! {
                 match &self.#ident {
                     ::core::option::Option::Some(__v) => {
-                        emitter.emit(::edifact_rs::EdifactEvent::element(__v.as_str()))?;
+                        emitter.emit(::edifact::EdifactEvent::element(__v.as_str()))?;
                     }
                     ::core::option::Option::None => {
-                        emitter.emit(::edifact_rs::EdifactEvent::element(""))?;
+                        emitter.emit(::edifact::EdifactEvent::element(""))?;
                     }
                 }
             }
@@ -1686,27 +1686,27 @@ fn emit_element(ident: &syn::Ident, ty: &Type) -> TokenStream2 {
                 match &self.#ident {
                     ::core::option::Option::Some(__v) => {
                         let __s = ::std::string::ToString::to_string(__v);
-                        emitter.emit(::edifact_rs::EdifactEvent::element(&__s))?;
+                        emitter.emit(::edifact::EdifactEvent::element(&__s))?;
                     }
                     ::core::option::Option::None => {
-                        emitter.emit(::edifact_rs::EdifactEvent::element(""))?;
+                        emitter.emit(::edifact::EdifactEvent::element(""))?;
                     }
                 }
             }
         }
     } else if is_string_type(ty) {
         quote! {
-            emitter.emit(::edifact_rs::EdifactEvent::element(self.#ident.as_str()))?;
+            emitter.emit(::edifact::EdifactEvent::element(self.#ident.as_str()))?;
         }
     } else if is_str_ref_type(ty) {
         quote! {
-            emitter.emit(::edifact_rs::EdifactEvent::element(self.#ident))?;
+            emitter.emit(::edifact::EdifactEvent::element(self.#ident))?;
         }
     } else {
         quote! {
             {
                 let __s = ::std::string::ToString::to_string(&self.#ident);
-                emitter.emit(::edifact_rs::EdifactEvent::element(&__s))?;
+                emitter.emit(::edifact::EdifactEvent::element(&__s))?;
             }
         }
     }
@@ -1722,10 +1722,10 @@ fn emit_component_element(ident: &syn::Ident, ty: &Type) -> TokenStream2 {
             quote! {
                 match &self.#ident {
                     ::core::option::Option::Some(__v) => {
-                        emitter.emit(::edifact_rs::EdifactEvent::component(__v.as_str()))?;
+                        emitter.emit(::edifact::EdifactEvent::component(__v.as_str()))?;
                     }
                     ::core::option::Option::None => {
-                        emitter.emit(::edifact_rs::EdifactEvent::component(""))?;
+                        emitter.emit(::edifact::EdifactEvent::component(""))?;
                     }
                 }
             }
@@ -1734,27 +1734,27 @@ fn emit_component_element(ident: &syn::Ident, ty: &Type) -> TokenStream2 {
                 match &self.#ident {
                     ::core::option::Option::Some(__v) => {
                         let __s = ::std::string::ToString::to_string(__v);
-                        emitter.emit(::edifact_rs::EdifactEvent::component(&__s))?;
+                        emitter.emit(::edifact::EdifactEvent::component(&__s))?;
                     }
                     ::core::option::Option::None => {
-                        emitter.emit(::edifact_rs::EdifactEvent::component(""))?;
+                        emitter.emit(::edifact::EdifactEvent::component(""))?;
                     }
                 }
             }
         }
     } else if is_string_type(ty) {
         quote! {
-            emitter.emit(::edifact_rs::EdifactEvent::component(self.#ident.as_str()))?;
+            emitter.emit(::edifact::EdifactEvent::component(self.#ident.as_str()))?;
         }
     } else if is_str_ref_type(ty) {
         quote! {
-            emitter.emit(::edifact_rs::EdifactEvent::component(self.#ident))?;
+            emitter.emit(::edifact::EdifactEvent::component(self.#ident))?;
         }
     } else {
         quote! {
             {
                 let __s = ::std::string::ToString::to_string(&self.#ident);
-                emitter.emit(::edifact_rs::EdifactEvent::component(&__s))?;
+                emitter.emit(::edifact::EdifactEvent::component(&__s))?;
             }
         }
     }
@@ -1766,16 +1766,16 @@ fn emit_composite_field(ident: &syn::Ident, ty: &Type) -> TokenStream2 {
         quote! {
             match &self.#ident {
                 ::core::option::Option::Some(__v) => {
-                    ::edifact_rs::EdifactCompositeSerialize::edifact_serialize_composite(__v, emitter)?;
+                    ::edifact::EdifactCompositeSerialize::edifact_serialize_composite(__v, emitter)?;
                 }
                 ::core::option::Option::None => {
-                    emitter.emit(::edifact_rs::EdifactEvent::element(""))?;
+                    emitter.emit(::edifact::EdifactEvent::element(""))?;
                 }
             }
         }
     } else {
         quote! {
-            ::edifact_rs::EdifactCompositeSerialize::edifact_serialize_composite(&self.#ident, emitter)?;
+            ::edifact::EdifactCompositeSerialize::edifact_serialize_composite(&self.#ident, emitter)?;
         }
     }
 }
@@ -1812,7 +1812,7 @@ fn impl_deserialize(input: &DeriveInput) -> syn::Result<TokenStream2> {
             quote! {
                 if __seg.element_str(0).unwrap_or("") != #qual {
                     return ::core::result::Result::Err(
-                        ::edifact_rs::EdifactError::MissingRequiredElement {
+                        ::edifact::EdifactError::MissingRequiredElement {
                             tag: #seg_tag.to_owned(),
                             element_index: 0,
                         }
@@ -1826,13 +1826,13 @@ fn impl_deserialize(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 // std variants and break the generated code.
                 match __seg.element_str(#idx as usize) {
                     ::core::option::Option::None => return ::core::result::Result::Err(
-                        ::edifact_rs::EdifactError::MissingRequiredElement {
+                        ::edifact::EdifactError::MissingRequiredElement {
                             tag: #seg_tag.to_owned(),
                             element_index: #idx as usize,
                         }
                     ),
                     ::core::option::Option::Some("") => return ::core::result::Result::Err(
-                        ::edifact_rs::EdifactError::InvalidFieldValue {
+                        ::edifact::EdifactError::InvalidFieldValue {
                             tag: #seg_tag.to_owned(),
                             element_index: #idx as usize,
                             value: ::std::string::String::new(),
@@ -1847,11 +1847,11 @@ fn impl_deserialize(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
         let find_seg = if let Some(qual) = &struct_attrs.qualifier {
             quote! {
-                ::edifact_rs::find_qualified_segment(segments, #seg_tag, #qual)
+                ::edifact::find_qualified_segment(segments, #seg_tag, #qual)
             }
         } else {
             quote! {
-                ::edifact_rs::find_segment(segments, #seg_tag)
+                ::edifact::find_segment(segments, #seg_tag)
             }
         };
 
@@ -1868,10 +1868,10 @@ fn impl_deserialize(input: &DeriveInput) -> syn::Result<TokenStream2> {
                         let inner_ty = option_inner_type(ty)
                             .ok_or_else(|| syn::Error::new(ident.span(), "expected Option<T>"))?;
                         return Ok(quote! {
-                            let #ident = match ::edifact_rs::composite_element(__seg, #idx) {
+                            let #ident = match ::edifact::composite_element(__seg, #idx) {
                                 ::core::option::Option::Some(__composite) => {
                                     ::core::option::Option::Some(
-                                        <#inner_ty as ::edifact_rs::EdifactCompositeDeserialize>::edifact_deserialize_composite(__composite)?
+                                        <#inner_ty as ::edifact::EdifactCompositeDeserialize>::edifact_deserialize_composite(__composite)?
                                     )
                                 }
                                 ::core::option::Option::None => ::core::option::Option::None,
@@ -1879,8 +1879,8 @@ fn impl_deserialize(input: &DeriveInput) -> syn::Result<TokenStream2> {
                         });
                     }
                     return Ok(quote! {
-                        let #ident = <#ty as ::edifact_rs::EdifactCompositeDeserialize>::edifact_deserialize_composite(
-                            ::edifact_rs::composite_element(__seg, #idx).ok_or_else(|| ::edifact_rs::EdifactError::MissingRequiredElement {
+                        let #ident = <#ty as ::edifact::EdifactCompositeDeserialize>::edifact_deserialize_composite(
+                            ::edifact::composite_element(__seg, #idx).ok_or_else(|| ::edifact::EdifactError::MissingRequiredElement {
                                 tag: #seg_tag.to_owned(),
                                 element_index: #idx,
                             })?
@@ -1901,13 +1901,13 @@ fn impl_deserialize(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 let names_component = &slot.names_component;
                 let missing_required_err = quote! {
                     if #names_component {
-                        ::edifact_rs::EdifactError::MissingRequiredComponent {
+                        ::edifact::EdifactError::MissingRequiredComponent {
                             tag: #seg_tag.to_owned(),
                             element_index: #idx,
                             component_index: #comp,
                         }
                     } else {
-                        ::edifact_rs::EdifactError::MissingRequiredElement {
+                        ::edifact::EdifactError::MissingRequiredElement {
                             tag: #seg_tag.to_owned(),
                             element_index: #idx,
                         }
@@ -1938,7 +1938,7 @@ fn impl_deserialize(input: &DeriveInput) -> syn::Result<TokenStream2> {
                                         .filter(|__s| !__s.is_empty())
                                         .ok_or_else(|| #missing_required_err)?
                                         .parse::<#inner_ty>()
-                                        .map_err(|_| ::edifact_rs::EdifactError::InvalidText { offset: __seg.span.start })?
+                                        .map_err(|_| ::edifact::EdifactError::InvalidText { offset: __seg.span.start })?
                                 );
                             }
                         }
@@ -1955,7 +1955,7 @@ fn impl_deserialize(input: &DeriveInput) -> syn::Result<TokenStream2> {
                             let #ident = #value_expr
                                 .filter(|__s| !__s.is_empty())
                                 .map(|__s| __s.parse::<#inner_ty>()
-                                    .map_err(|_| ::edifact_rs::EdifactError::InvalidText { offset: __seg.span.start })
+                                    .map_err(|_| ::edifact::EdifactError::InvalidText { offset: __seg.span.start })
                                 )
                                 .transpose()?;
                         }
@@ -1964,7 +1964,7 @@ fn impl_deserialize(input: &DeriveInput) -> syn::Result<TokenStream2> {
                     quote! {
                         let #ident = #value_expr
                             .filter(|__s| !__s.is_empty())
-                            .ok_or_else(|| ::edifact_rs::EdifactError::MissingRequiredElement {
+                            .ok_or_else(|| ::edifact::EdifactError::MissingRequiredElement {
                                 tag: #seg_tag.to_owned(),
                                 element_index: #idx,
                             })?
@@ -1974,12 +1974,12 @@ fn impl_deserialize(input: &DeriveInput) -> syn::Result<TokenStream2> {
                     quote! {
                         let #ident = #value_expr
                             .filter(|__s| !__s.is_empty())
-                            .ok_or_else(|| ::edifact_rs::EdifactError::MissingRequiredElement {
+                            .ok_or_else(|| ::edifact::EdifactError::MissingRequiredElement {
                                 tag: #seg_tag.to_owned(),
                                 element_index: #idx,
                             })?
                             .parse::<#ty>()
-                            .map_err(|_| ::edifact_rs::EdifactError::InvalidText { offset: __seg.span.start })?;
+                            .map_err(|_| ::edifact::EdifactError::InvalidText { offset: __seg.span.start })?;
                     }
                 })
             })
@@ -1988,7 +1988,7 @@ fn impl_deserialize(input: &DeriveInput) -> syn::Result<TokenStream2> {
         let body = quote! {
             #slot_prelude
             let __seg = #find_seg
-                .ok_or_else(|| ::edifact_rs::EdifactError::MissingSegment {
+                .ok_or_else(|| ::edifact::EdifactError::MissingSegment {
                     tag: #seg_tag.to_owned(),
                     expected_position: "message body".to_owned(),
                 })?;
@@ -2012,7 +2012,7 @@ fn impl_deserialize(input: &DeriveInput) -> syn::Result<TokenStream2> {
             // `QUALIFIER_PATTERN`, which addresses element 0 only, so the matcher
             // is overridden explicitly.
             quote! {
-                fn matches_segment(seg: &::edifact_rs::Segment<'_>) -> bool {
+                fn matches_segment(seg: &::edifact::Segment<'_>) -> bool {
                     seg.tag == Self::SEGMENT_TAG
                         && !seg.element_str(#idx as usize).unwrap_or("").is_empty()
                 }
@@ -2022,7 +2022,7 @@ fn impl_deserialize(input: &DeriveInput) -> syn::Result<TokenStream2> {
         };
 
         let seg_tag_impl = quote! {
-            impl ::edifact_rs::EdifactSegmentTag for #name {
+            impl ::edifact::EdifactSegmentTag for #name {
                 const SEGMENT_TAG: &'static str = #seg_tag;
                 #qualifier_match
             }
@@ -2042,28 +2042,28 @@ fn impl_deserialize(input: &DeriveInput) -> syn::Result<TokenStream2> {
                             let #ident = segments
                                 .iter()
                                 .filter(|__seg| {
-                                    __seg.tag == <#inner_ty as ::edifact_rs::EdifactSegmentTag>::SEGMENT_TAG
+                                    __seg.tag == <#inner_ty as ::edifact::EdifactSegmentTag>::SEGMENT_TAG
                                         && __seg.element_str(0).unwrap_or("") == #qual
                                 })
                                 .map(|__seg| {
-                                    ::edifact_rs::EdifactDeserialize::edifact_deserialize(
+                                    ::edifact::EdifactDeserialize::edifact_deserialize(
                                         ::core::slice::from_ref(__seg),
                                     )
                                 })
-                                .collect::<::core::result::Result<::std::vec::Vec<#inner_ty>, ::edifact_rs::EdifactError>>()?;
+                                .collect::<::core::result::Result<::std::vec::Vec<#inner_ty>, ::edifact::EdifactError>>()?;
                         }
                     } else if is_option_type(ty) {
                         let inner_ty = option_inner_type(ty)
                             .ok_or_else(|| syn::Error::new(ident.span(), "expected Option<T>"))?;
                         quote! {
-                            let #ident = match ::edifact_rs::find_qualified_segment(
+                            let #ident = match ::edifact::find_qualified_segment(
                                 segments,
-                                <#inner_ty as ::edifact_rs::EdifactSegmentTag>::SEGMENT_TAG,
+                                <#inner_ty as ::edifact::EdifactSegmentTag>::SEGMENT_TAG,
                                 #qual,
                             ) {
                                 ::core::option::Option::Some(__seg) => {
                                     ::core::option::Option::Some(
-                                        ::edifact_rs::EdifactDeserialize::edifact_deserialize(
+                                        ::edifact::EdifactDeserialize::edifact_deserialize(
                                             ::core::slice::from_ref(__seg),
                                         )?
                                     )
@@ -2073,16 +2073,16 @@ fn impl_deserialize(input: &DeriveInput) -> syn::Result<TokenStream2> {
                         }
                     } else {
                         quote! {
-                            let __seg = ::edifact_rs::find_qualified_segment(
+                            let __seg = ::edifact::find_qualified_segment(
                                 segments,
-                                <#ty as ::edifact_rs::EdifactSegmentTag>::SEGMENT_TAG,
+                                <#ty as ::edifact::EdifactSegmentTag>::SEGMENT_TAG,
                                 #qual,
                             )
-                            .ok_or_else(|| ::edifact_rs::EdifactError::MissingSegment {
-                                tag: <#ty as ::edifact_rs::EdifactSegmentTag>::SEGMENT_TAG.to_owned(),
+                            .ok_or_else(|| ::edifact::EdifactError::MissingSegment {
+                                tag: <#ty as ::edifact::EdifactSegmentTag>::SEGMENT_TAG.to_owned(),
                                 expected_position: "message body".to_owned(),
                             })?;
-                            let #ident = ::edifact_rs::EdifactDeserialize::edifact_deserialize(
+                            let #ident = ::edifact::EdifactDeserialize::edifact_deserialize(
                                 ::core::slice::from_ref(__seg),
                             )?;
                         }
@@ -2091,9 +2091,9 @@ fn impl_deserialize(input: &DeriveInput) -> syn::Result<TokenStream2> {
                     let inner_ty = vec_inner_type(ty)
                         .ok_or_else(|| syn::Error::new(ident.span(), "expected Vec<T>"))?;
                     quote! {
-                        let #ident = ::edifact_rs::find_segments_typed::<#inner_ty>(segments)
+                        let #ident = ::edifact::find_segments_typed::<#inner_ty>(segments)
                             .map(|__seg| {
-                                <#inner_ty as ::edifact_rs::EdifactDeserialize>::edifact_deserialize(
+                                <#inner_ty as ::edifact::EdifactDeserialize>::edifact_deserialize(
                                     ::core::slice::from_ref(__seg),
                                 )
                             })
@@ -2105,10 +2105,10 @@ fn impl_deserialize(input: &DeriveInput) -> syn::Result<TokenStream2> {
                     quote! {
                         let #ident = if segments
                             .iter()
-                            .any(|__seg| __seg.tag == <#inner_ty as ::edifact_rs::EdifactSegmentTag>::SEGMENT_TAG)
+                            .any(|__seg| __seg.tag == <#inner_ty as ::edifact::EdifactSegmentTag>::SEGMENT_TAG)
                         {
                             ::core::option::Option::Some(
-                                <#inner_ty as ::edifact_rs::EdifactDeserialize>::edifact_deserialize(segments)?
+                                <#inner_ty as ::edifact::EdifactDeserialize>::edifact_deserialize(segments)?
                             )
                         } else {
                             ::core::option::Option::None
@@ -2116,7 +2116,7 @@ fn impl_deserialize(input: &DeriveInput) -> syn::Result<TokenStream2> {
                     }
                 } else {
                     quote! {
-                        let #ident = ::edifact_rs::EdifactDeserialize::edifact_deserialize(segments)?;
+                        let #ident = ::edifact::EdifactDeserialize::edifact_deserialize(segments)?;
                     }
                 })
             })
@@ -2131,10 +2131,10 @@ fn impl_deserialize(input: &DeriveInput) -> syn::Result<TokenStream2> {
     };
 
     Ok(quote! {
-        impl ::edifact_rs::EdifactDeserialize for #name {
+        impl ::edifact::EdifactDeserialize for #name {
             fn edifact_deserialize(
-                segments: &[::edifact_rs::Segment<'_>],
-            ) -> ::core::result::Result<Self, ::edifact_rs::EdifactError> {
+                segments: &[::edifact::Segment<'_>],
+            ) -> ::core::result::Result<Self, ::edifact::EdifactError> {
                 #body
             }
         }

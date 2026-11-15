@@ -1,13 +1,13 @@
 mod common;
 
-use edifact_rs::ValidationContext;
+use edifact::ValidationContext;
 use expect_test::expect_file;
 
 const ORDERS_CONFORMING: &str = include_str!("fixtures/orders_conforming.edi");
 
 #[test]
 fn snapshot_profile_orders_demo_report_contract() {
-    let segments: Vec<_> = edifact_rs::from_bytes(ORDERS_CONFORMING.as_bytes())
+    let segments: Vec<_> = edifact::from_bytes(ORDERS_CONFORMING.as_bytes())
         .collect::<Result<Vec<_>, _>>()
         .expect("fixture should parse");
 
@@ -40,11 +40,11 @@ fn snapshot_profile_orders_demo_report_contract() {
 #[cfg(feature = "diagnostics")]
 #[test]
 fn miette_renders_one_labelled_diagnostic_per_issue() {
-    use edifact_rs::{FindingKind, GroupPath, GroupStep, ProfileRulePack, ValidationIssue};
+    use edifact::{FindingKind, GroupPath, GroupStep, ProfileRulePack, ValidationIssue};
     use miette::{Diagnostic, GraphicalReportHandler, GraphicalTheme};
 
     const SOURCE: &str = "UNH+1+ORDERS:D:96A:UN'BGM+220+PO-4711+9'DTM+999:20240101:102'UNT+4+1'";
-    let segments: Vec<_> = edifact_rs::from_bytes(SOURCE.as_bytes())
+    let segments: Vec<_> = edifact::from_bytes(SOURCE.as_bytes())
         .collect::<Result<Vec<_>, _>>()
         .expect("fixture should parse");
     let pack = ProfileRulePack::new("ORDERS-DEMO")
@@ -52,16 +52,13 @@ fn miette_renders_one_labelled_diagnostic_per_issue() {
         .with_rule_fn(|segments, issues| {
             let bgm = segments.iter().find(|s| s.tag == "BGM").expect("BGM");
             issues.push(
-                ValidationIssue::new(
-                    edifact_rs::ValidationSeverity::Warning,
-                    "reserved reference",
-                )
-                .with_rule_id("DEMO-P002")
-                .with_segment("BGM")
-                .with_span(bgm.get_element(1).expect("element").span)
-                .with_kind(FindingKind::NotPermitted)
-                .with_group_path(GroupPath::new(GroupStep::new("SG1", 0)).expect("path"))
-                .with_suggestion("Use a non-reserved reference"),
+                ValidationIssue::new(edifact::ValidationSeverity::Warning, "reserved reference")
+                    .with_rule_id("DEMO-P002")
+                    .with_segment("BGM")
+                    .with_span(bgm.get_element(1).expect("element").span)
+                    .with_kind(FindingKind::NotPermitted)
+                    .with_group_path(GroupPath::new(GroupStep::new("SG1", 0)).expect("path"))
+                    .with_suggestion("Use a non-reserved reference"),
             );
         });
     let mut report = ValidationContext::builder()

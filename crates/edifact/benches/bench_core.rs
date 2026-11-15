@@ -1,7 +1,7 @@
-//! divan micro-benchmarks for `edifact-rs`.
+//! divan micro-benchmarks for `edifact`.
 //!
 //! Run with:
-//!   cargo bench -p edifact-rs --bench bench_core
+//!   cargo bench -p edifact --bench bench_core
 //!
 //! Every closure returns its result and every input is passed through
 //! `black_box`.  Without both, LLVM is free to delete the measured work: divan
@@ -11,7 +11,7 @@
 //! into the measurement.
 
 use divan::{Bencher, black_box};
-use edifact_rs::{
+use edifact::{
     ProfileRulePack, ValidationContext, ValidationIssue, ValidationSeverity, from_bytes,
     segments_to_bytes, validate_envelope,
 };
@@ -29,8 +29,8 @@ fn bench_tokenize_small(b: Bencher) {
     let data = sample_msg();
     b.bench(|| {
         let input = black_box(data);
-        let ssa = edifact_rs::ServiceStringAdvice::from_bytes_unchecked(input);
-        edifact_rs::Tokenizer::new(input, ssa).count()
+        let ssa = edifact::ServiceStringAdvice::from_bytes_unchecked(input);
+        edifact::Tokenizer::new(input, ssa).count()
     });
 }
 
@@ -39,8 +39,8 @@ fn bench_tokenize_1mb(b: Bencher) {
     let data = one_mb();
     b.bench(|| {
         let input = black_box(data);
-        let ssa = edifact_rs::ServiceStringAdvice::from_bytes_unchecked(input);
-        edifact_rs::Tokenizer::new(input, ssa).count()
+        let ssa = edifact::ServiceStringAdvice::from_bytes_unchecked(input);
+        edifact::Tokenizer::new(input, ssa).count()
     });
 }
 
@@ -70,7 +70,7 @@ fn bench_parse_1mb(b: Bencher) {
 fn bench_parse_reader_1mb(b: Bencher) {
     let data = one_mb();
     b.bench(|| {
-        edifact_rs::from_reader(std::io::Cursor::new(black_box(data)))
+        edifact::from_reader(std::io::Cursor::new(black_box(data)))
             .collect::<Result<Vec<_>, _>>()
             .expect("bench fixture must be valid EDIFACT")
     });
@@ -92,7 +92,7 @@ fn bench_serialize_sample_message(b: Bencher) {
 /// the other benchmarks measure.
 #[divan::bench]
 fn bench_serialize_escape_heavy(b: Bencher) {
-    use edifact_rs::{Element, Segment};
+    use edifact::{Element, Segment};
     let segments: Vec<Segment<'static>> = (0..64)
         .map(|_| {
             Segment::new(

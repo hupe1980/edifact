@@ -27,7 +27,7 @@
     },
     {
       "@type": "Question",
-      "name": "Does edifact-rs parse without allocating?",
+      "name": "Does edifact parse without allocating?",
       "acceptedAnswer": {
         "@type": "Answer",
         "text": "Segment tags and component values borrow directly from the input byte slice. Each segment allocates its element vector once, and an owned string is created only for values that contained a release-character escape. The allocation budget is enforced by tests."
@@ -35,7 +35,7 @@
     },
     {
       "@type": "Question",
-      "name": "Can edifact-rs stream files larger than memory?",
+      "name": "Can edifact stream files larger than memory?",
       "acceptedAnswer": {
         "@type": "Answer",
         "text": "Yes. The reader-based APIs hold one owned segment at a time, at most max_segment_bytes. Message windows hold one UNH..UNT message, which ReaderConfig::max_segments_per_message caps however long the stream runs."
@@ -43,7 +43,7 @@
     },
     {
       "@type": "Question",
-      "name": "Does edifact-rs support EDIFACT syntax version 4 repeating data elements?",
+      "name": "Does edifact support EDIFACT syntax version 4 repeating data elements?",
       "acceptedAnswer": {
         "@type": "Answer",
         "text": "Yes. The repetition separator is read from the UNA service string advice, or — when an interchange has no UNA — from the syntax version in UNB S001, which makes it an asterisk for syntax version 4. Repeating data elements are then split into separate occurrences rather than left glued into the value, per ISO 9735-1:2002 clause 8.7."
@@ -71,11 +71,11 @@
       <a class="btn btn-ghost" href="{{ config.extra.docs_rs }}" rel="noopener">API reference</a>
     </div>
 
-    <p class="install"><code>cargo add edifact-rs</code></p>
+    <p class="install"><code>cargo add edifact</code></p>
 
     <p class="badges">
-      <a href="{{ config.extra.crates_io }}" rel="noopener"><img src="https://img.shields.io/crates/v/edifact-rs.svg" alt="edifact-rs on crates.io" loading="lazy" width="96" height="20"></a>
-      <a href="{{ config.extra.docs_rs }}" rel="noopener"><img src="https://docs.rs/edifact-rs/badge.svg" alt="API documentation on docs.rs" loading="lazy" width="96" height="20"></a>
+      <a href="{{ config.extra.crates_io }}" rel="noopener"><img src="https://img.shields.io/crates/v/edifact.svg" alt="edifact on crates.io" loading="lazy" width="96" height="20"></a>
+      <a href="{{ config.extra.docs_rs }}" rel="noopener"><img src="https://docs.rs/edifact/badge.svg" alt="API documentation on docs.rs" loading="lazy" width="96" height="20"></a>
       <a href="{{ config.extra.repository }}/actions" rel="noopener"><img src="{{ config.extra.repository }}/actions/workflows/ci.yml/badge.svg" alt="CI status" loading="lazy" width="120" height="20"></a>
     </p>
   </div>
@@ -86,7 +86,7 @@
   <div class="sample-grid">
     <div>
       <h3>Borrow straight from the bytes</h3>
-      <pre><code class="language-rust">use edifact_rs::from_bytes;
+      <pre><code class="language-rust">use edifact::from_bytes;
 
 let input = b"UNA:+.? 'BGM+220+PO-4711+9'";
 let segments: Vec&lt;_&gt; = from_bytes(input).collect::&lt;Result&lt;_, _&gt;&gt;()?;
@@ -109,7 +109,7 @@ struct Nad {
 </section>
 
 <section class="wrap features" aria-labelledby="features-heading">
-  <h2 id="features-heading">Why edifact-rs</h2>
+  <h2 id="features-heading">Why edifact</h2>
   <ul class="feature-grid">
     <li>
       <h3>Zero-copy by default</h3>

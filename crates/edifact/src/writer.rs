@@ -20,7 +20,7 @@ use std::io::Write;
 /// # Example
 ///
 /// ```rust
-/// use edifact_rs::{DataElement, Writer};
+/// use edifact::{DataElement, Writer};
 ///
 /// let mut w = Writer::new(Vec::new());
 /// w.write_elements(
@@ -31,7 +31,7 @@ use std::io::Write;
 ///     ],
 /// )?;
 /// assert_eq!(w.finish()?, b"NAD+MS+9900112233445::293'".to_vec());
-/// # Ok::<(), edifact_rs::EdifactError>(())
+/// # Ok::<(), edifact::EdifactError>(())
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataElement<'a> {
@@ -86,7 +86,7 @@ impl<'a, const N: usize> From<&'a [&'a str; N]> for DataElement<'a> {
 /// # Example
 ///
 /// ```rust
-/// use edifact_rs::{AsDataElement, DataElement};
+/// use edifact::{AsDataElement, DataElement};
 ///
 /// let qualifier = String::from("MS");
 /// let party = ["9900112233445", "", "293"];
@@ -166,7 +166,7 @@ impl AsDataElement for DataElement<'_> {
 /// shape that dominates real EDIFACT:
 ///
 /// ```rust
-/// use edifact_rs::{Writer, elements};
+/// use edifact::{Writer, elements};
 ///
 /// // Runtime values, not just literals — the everyday builder shape.
 /// let qualifier = String::from("MS");
@@ -179,7 +179,7 @@ impl AsDataElement for DataElement<'_> {
 ///     w.finish()?,
 ///     b"NAD+MS+9900112233445::293'DTM+137:20260101:102'".to_vec(),
 /// );
-/// # Ok::<(), edifact_rs::EdifactError>(())
+/// # Ok::<(), edifact::EdifactError>(())
 /// ```
 ///
 /// Composite components must be string *slices*: a `[String; N]` cannot borrow
@@ -230,7 +230,7 @@ macro_rules! elements {
 ///
 /// ```rust
 /// use std::io::BufWriter;
-/// use edifact_rs::Writer;
+/// use edifact::Writer;
 ///
 /// let sink = Vec::new(); // stands in for a File or TcpStream
 /// let mut writer = Writer::new(BufWriter::new(sink));
@@ -238,7 +238,7 @@ macro_rules! elements {
 /// // `finish` flushes the `Writer` and hands the `BufWriter` back.
 /// let buffered = writer.finish()?;
 /// assert_eq!(buffered.into_inner().unwrap(), b"BGM+220'".to_vec());
-/// # Ok::<(), edifact_rs::EdifactError>(())
+/// # Ok::<(), edifact::EdifactError>(())
 /// ```
 pub struct Writer<W: Write> {
     inner: W,
@@ -326,19 +326,19 @@ impl<W: Write> Writer<W> {
     /// # Example
     ///
     /// ```
-    /// use edifact_rs::{Charset, Writer};
+    /// use edifact::{Charset, Writer};
     ///
     /// let mut writer = Writer::new(Vec::new()).with_charset(Charset::UnoC);
     /// writer.write_composites("NAD", &[&["BY"], &["Müller"]])?;
     /// // `ü` goes out as the single Latin-1 byte 0xFC.
     /// assert_eq!(writer.finish()?, b"NAD+BY+M\xFCller'".to_vec());
-    /// # Ok::<(), edifact_rs::EdifactError>(())
+    /// # Ok::<(), edifact::EdifactError>(())
     /// ```
     ///
     /// A value outside the repertoire is refused:
     ///
     /// ```
-    /// use edifact_rs::{Charset, EdifactError, Writer};
+    /// use edifact::{Charset, EdifactError, Writer};
     ///
     /// let mut writer = Writer::new(Vec::new()).with_charset(Charset::UnoA);
     /// // Level A is upper-case only.
@@ -373,7 +373,7 @@ impl<W: Write> Writer<W> {
     /// # Example
     ///
     /// ```
-    /// use edifact_rs::{ServiceStringAdvice, Writer, from_bytes};
+    /// use edifact::{ServiceStringAdvice, Writer, from_bytes};
     ///
     /// // Version 4: `*` separates RFF's two occurrences, with no UNA to say so.
     /// let input = b"UNB+UNOC:4+S+R+260101:0900+I'RFF+ON:1*ON:2'UNZ+0+I'";
@@ -386,7 +386,7 @@ impl<W: Write> Writer<W> {
     /// }
     /// // Byte-for-byte the input, with no UNA invented.
     /// assert_eq!(writer.finish()?, input.to_vec());
-    /// # Ok::<(), edifact_rs::EdifactError>(())
+    /// # Ok::<(), edifact::EdifactError>(())
     /// ```
     pub fn with_service_string_advice(
         inner: W,
@@ -512,14 +512,14 @@ impl<W: Write> Writer<W> {
     /// # Example
     ///
     /// ```
-    /// use edifact_rs::Writer;
+    /// use edifact::Writer;
     ///
     /// let mut w = Writer::new(Vec::new());
     /// w.write_simple("BGM", &["220", "PO-4711", "9"])?;
     /// // A literal `:` stays inside the value it belongs to.
     /// w.write_simple("FTX", &["AAA", "ACME:INC"])?;
     /// assert_eq!(w.finish()?, b"BGM+220+PO-4711+9'FTX+AAA+ACME?:INC'".to_vec());
-    /// # Ok::<(), edifact_rs::EdifactError>(())
+    /// # Ok::<(), edifact::EdifactError>(())
     /// ```
     ///
     /// # Errors
@@ -556,7 +556,7 @@ impl<W: Write> Writer<W> {
     /// # Example
     ///
     /// ```
-    /// use edifact_rs::Writer;
+    /// use edifact::Writer;
     ///
     /// let mut w = Writer::new(Vec::new());
     /// // Borrowed literals …
@@ -565,7 +565,7 @@ impl<W: Write> Writer<W> {
     /// let dtm = vec![vec!["137".to_string(), "20260101".to_string()]];
     /// w.write_composites("DTM", &dtm)?;
     /// assert_eq!(w.finish()?, b"NAD+MS+ACME?:INC'DTM+137:20260101'".to_vec());
-    /// # Ok::<(), edifact_rs::EdifactError>(())
+    /// # Ok::<(), edifact::EdifactError>(())
     /// ```
     ///
     /// # Errors
@@ -606,7 +606,7 @@ impl<W: Write> Writer<W> {
     /// # Example
     ///
     /// ```rust
-    /// use edifact_rs::{DataElement, Writer, elements};
+    /// use edifact::{DataElement, Writer, elements};
     ///
     /// let mut w = Writer::new(Vec::new());
     /// // Explicit form …
@@ -620,7 +620,7 @@ impl<W: Write> Writer<W> {
     ///     w.finish()?,
     ///     b"NAD+MS+ACME?:INC::9'DTM+137:20260101:102'".to_vec(),
     /// );
-    /// # Ok::<(), edifact_rs::EdifactError>(())
+    /// # Ok::<(), edifact::EdifactError>(())
     /// ```
     ///
     /// # Errors
@@ -827,14 +827,14 @@ impl<W: Write> Writer<W> {
     /// # Example
     ///
     /// ```
-    /// use edifact_rs::Writer;
+    /// use edifact::Writer;
     /// let mut w = Writer::new(Vec::new());
     /// w.begin_interchange("UNOA", "1", "SENDER", "RECEIVER", "200101", "0900", "IC1")?;
     /// assert_eq!(
     ///     w.finish()?,
     ///     b"UNB+UNOA:1+SENDER+RECEIVER+200101:0900+IC1'".to_vec(),
     /// );
-    /// # Ok::<(), edifact_rs::EdifactError>(())
+    /// # Ok::<(), edifact::EdifactError>(())
     /// ```
     ///
     /// # Errors
@@ -955,8 +955,8 @@ impl<W: Write> Writer<W> {
 /// # Example
 ///
 /// ```rust,no_run
-/// # use edifact_rs::{Writer, Segment};
-/// # fn example() -> Result<(), edifact_rs::EdifactError> {
+/// # use edifact::{Writer, Segment};
+/// # fn example() -> Result<(), edifact::EdifactError> {
 /// let mut writer = Writer::new(Vec::new());
 /// writer.begin_interchange("UNOA", "1", "SENDER", "RECEIVER", "200101", "0900", "1")?;
 /// {

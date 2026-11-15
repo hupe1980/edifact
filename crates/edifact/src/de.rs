@@ -163,7 +163,7 @@ pub fn deserialize_str<T: EdifactDeserialize>(input: &str) -> Result<T, EdifactE
 ///
 #[cfg_attr(feature = "derive", doc = "```")]
 #[cfg_attr(not(feature = "derive"), doc = "```ignore")]
-/// use edifact_rs::{EdifactDeserialize, deserialize_each};
+/// use edifact::{EdifactDeserialize, deserialize_each};
 ///
 /// #[derive(EdifactDeserialize)]
 /// #[edifact(segment = "RFF")]
@@ -177,7 +177,7 @@ pub fn deserialize_str<T: EdifactDeserialize>(input: &str) -> Result<T, EdifactE
 ///
 /// assert_eq!(refs.len(), 2);
 /// assert_eq!(refs[1].number, "B");
-/// # Ok::<(), edifact_rs::EdifactError>(())
+/// # Ok::<(), edifact::EdifactError>(())
 /// ```
 pub fn deserialize_each<'a, T>(
     input: &'a [u8],
@@ -302,7 +302,7 @@ where
 /// # Example
 ///
 /// ```
-/// use edifact_rs::{EdifactSegmentTag, contiguous_groups, from_bytes};
+/// use edifact::{EdifactSegmentTag, contiguous_groups, from_bytes};
 ///
 /// struct Loc;
 /// impl EdifactSegmentTag for Loc {
@@ -314,7 +314,7 @@ where
 /// let runs: Vec<usize> = contiguous_groups::<Loc>(&segments).map(<[_]>::len).collect();
 ///
 /// assert_eq!(runs, [2, 1]);
-/// # Ok::<(), edifact_rs::EdifactError>(())
+/// # Ok::<(), edifact::EdifactError>(())
 /// ```
 pub fn contiguous_groups<'s, 'd, T>(
     segments: &'s [Segment<'d>],
@@ -514,17 +514,17 @@ impl<'a> MessageWindow<'a> {
     /// # Example
     ///
     /// ```
-    /// use edifact_rs::message_windows;
+    /// use edifact::message_windows;
     ///
     /// let input = b"UNH+1+ORDERS:D:96A:UN'BGM+220+A+9'UNT+3+1'";
     /// let windows: Vec<_> = message_windows(input).collect::<Result<Vec<_>, _>>()?;
     ///
     /// assert_eq!(windows[0].segments.len(), 3); // UNH, BGM, UNT
     /// assert_eq!(
-    ///     windows[0].body().iter().map(edifact_rs::Segment::tag).collect::<Vec<_>>(),
+    ///     windows[0].body().iter().map(edifact::Segment::tag).collect::<Vec<_>>(),
     ///     ["BGM"],
     /// );
-    /// # Ok::<(), edifact_rs::EdifactError>(())
+    /// # Ok::<(), edifact::EdifactError>(())
     /// ```
     #[must_use]
     pub fn body(&self) -> &[Segment<'a>] {
@@ -673,7 +673,7 @@ where
 /// # Example
 ///
 /// ```
-/// use edifact_rs::message_windows;
+/// use edifact::message_windows;
 ///
 /// let input = b"UNB+UNOA:1+SENDER+RECEIVER+200101:0900+1'\
 ///               UNH+1+ORDERS:D:96A:UN'BGM+220+PO-001+9'UNT+3+1'\
@@ -683,7 +683,7 @@ where
 ///
 /// assert_eq!(windows.len(), 1);
 /// assert_eq!(windows[0].message_type.as_deref(), Some("ORDERS"));
-/// # Ok::<(), edifact_rs::EdifactError>(())
+/// # Ok::<(), edifact::EdifactError>(())
 /// ```
 pub fn message_windows(input: &[u8]) -> MessageWindows<'_, FromBytesIter<'_>> {
     message_windows_with_config(input, ReaderConfig::default())
@@ -735,7 +735,7 @@ pub fn message_windows_from_reader<R: Read>(
 /// # Example
 ///
 /// ```
-/// use edifact_rs::{EdifactError, ReaderConfig, message_windows_from_reader_with_config};
+/// use edifact::{EdifactError, ReaderConfig, message_windows_from_reader_with_config};
 ///
 /// // A message that never ends, as a hostile peer would send it.
 /// let mut input = b"UNB+UNOC:3+S+R+260101:0900+IC1'UNH+1+ORDERS:D:96A:UN'".to_vec();
@@ -765,7 +765,7 @@ pub fn message_windows_from_reader_with_config<R: Read>(
 ///
 #[cfg_attr(feature = "derive", doc = "```")]
 #[cfg_attr(not(feature = "derive"), doc = "```ignore")]
-/// use edifact_rs::{EdifactDeserialize, deserialize_messages};
+/// use edifact::{EdifactDeserialize, deserialize_messages};
 ///
 /// #[derive(EdifactDeserialize)]
 /// #[edifact(segment = "BGM")]
@@ -781,7 +781,7 @@ pub fn message_windows_from_reader_with_config<R: Read>(
 ///
 /// let orders: Vec<Bgm> = deserialize_messages(input).collect::<Result<_, _>>()?;
 /// assert_eq!(orders[1].number, "PO-2");
-/// # Ok::<(), edifact_rs::EdifactError>(())
+/// # Ok::<(), edifact::EdifactError>(())
 /// ```
 pub fn deserialize_messages<'a, T>(
     input: &'a [u8],

@@ -14,7 +14,7 @@ programmatically.
 ## Enabling the feature
 
 ```bash
-cargo add edifact-rs --features diagnostics
+cargo add edifact --features diagnostics
 ```
 
 You also need `miette` to render the errors:
@@ -58,7 +58,7 @@ Help: Use a valid document name code from UNTDID 1001
 ```rust
 fn main() -> miette::Result<()> {
     let input = b"UNH+1+ORDERS:D:11A:UN'BGM+999+PO-4711+9'UNT+3+1'";
-    let segs: Vec<_> = edifact_rs::from_bytes(input)
+    let segs: Vec<_> = edifact::from_bytes(input)
         .collect::<Result<_, _>>()?;  // EdifactError auto-converts to miette::Report
     Ok(())
 }
@@ -71,7 +71,7 @@ renders any `EdifactError` with full source context.
 
 ```rust
 fn validate(input: &[u8]) {
-    use edifact_rs::{from_bytes, EdifactError, ValidationContext};
+    use edifact::{from_bytes, EdifactError, ValidationContext};
 
     match from_bytes(input).collect::<Result<Vec<_>, _>>() {
         Ok(segs) => {
@@ -93,8 +93,8 @@ fn validate(input: &[u8]) {
 ```rust,ignore
 use anyhow::Context;
 
-fn parse_edi(input: &[u8]) -> anyhow::Result<Vec<edifact_rs::OwnedSegment>> {
-    edifact_rs::from_reader(std::io::Cursor::new(input))
+fn parse_edi(input: &[u8]) -> anyhow::Result<Vec<edifact::OwnedSegment>> {
+    edifact::from_reader(std::io::Cursor::new(input))
         .context("failed to parse EDIFACT interchange")
 }
 ```
@@ -107,8 +107,8 @@ fn parse_edi(input: &[u8]) -> anyhow::Result<Vec<edifact_rs::OwnedSegment>> {
 same input, making it suitable for snapshot tests:
 
 ```rust
-use edifact_rs::{from_bytes, ValidationContext, ValidationLayer, Validator, ValidationReport, Segment};
-# use edifact_rs::ValidationRuleContext;
+use edifact::{from_bytes, ValidationContext, ValidationLayer, Validator, ValidationReport, Segment};
+# use edifact::ValidationRuleContext;
 
 # struct DemoValidator;
 # impl Validator for DemoValidator {
@@ -125,7 +125,7 @@ let rendered = report.render_deterministic();
 
 // Use in snapshot tests (insta, expect-test, etc.)
 println!("{rendered}");
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 Each line is the message followed by the tokens that are set, in a fixed order:
@@ -143,7 +143,7 @@ has a span is underlined where it occurred:
 ```rust
 # #[cfg(feature = "diagnostics")]
 # {
-use edifact_rs::{ProfileRulePack, ValidationContext, from_bytes};
+use edifact::{ProfileRulePack, ValidationContext, from_bytes};
 
 let input = "UNH+1+ORDERS:D:96A:UN'BGM+220'DTM+137:20240101:102'UNT+4+1'";
 let segs: Vec<_> = from_bytes(input.as_bytes()).collect::<Result<_, _>>().unwrap();
@@ -195,12 +195,12 @@ fn setup_error_handler() {
 
 ## Example
 
-See [`cookbook_diagnostics.rs`](https://github.com/hupe1980/edifact-rs/tree/main/crates/edifact-rs/examples/cookbook_diagnostics.rs)
+See [`cookbook_diagnostics.rs`](https://github.com/hupe1980/edifact/tree/main/crates/edifact/examples/cookbook_diagnostics.rs)
 for a full example that triggers a code-value validation error and renders it with
 `miette::Report`:
 
 ```bash
-cargo run -p edifact-rs --example cookbook_diagnostics --features diagnostics
+cargo run -p edifact --example cookbook_diagnostics --features diagnostics
 ```
 
 Sample output (with `miette`'s `fancy` feature):
@@ -224,7 +224,7 @@ Sample output (with `miette`'s `fancy` feature):
 | `diagnostics` disabled (default) | `EdifactError` implements `std::error::Error` + `Display` + `Debug` |
 | `diagnostics` enabled | Also implements `miette::Diagnostic`; adds no runtime overhead when errors don't occur |
 | `diagnostics` + `miette` fancy | Full ANSI-colored, span-annotated terminal output |
-| `diagnostics` + no `miette` in deps | You can still construct `miette::Report::new(err)` because `edifact_rs` re-exports the `miette` dependency |
+| `diagnostics` + no `miette` in deps | You can still construct `miette::Report::new(err)` because `edifact` re-exports the `miette` dependency |
 
 ---
 

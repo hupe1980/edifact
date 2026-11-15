@@ -155,7 +155,7 @@ impl ServiceStringAdvice {
     /// # Example
     ///
     /// ```
-    /// use edifact_rs::ServiceStringAdvice;
+    /// use edifact::ServiceStringAdvice;
     ///
     /// assert!(ServiceStringAdvice::for_syntax_version(Some(4)).is_repetition_active());
     /// assert!(!ServiceStringAdvice::for_syntax_version(Some(3)).is_repetition_active());
@@ -200,13 +200,13 @@ impl ServiceStringAdvice {
     /// # Example
     ///
     /// ```
-    /// use edifact_rs::ServiceStringAdvice;
+    /// use edifact::ServiceStringAdvice;
     ///
     /// // A duplicated *active* character is fatal …
     /// assert!(ServiceStringAdvice::from_bytes(b"UNA::.? '").is_err());
     /// // … but the ignored decimal-mark slot may hold anything, even a space.
     /// assert!(ServiceStringAdvice::from_bytes(b"UNA:+ ? '")?.is_repetition_active() == false);
-    /// # Ok::<(), edifact_rs::EdifactError>(())
+    /// # Ok::<(), edifact::EdifactError>(())
     /// ```
     pub fn is_valid(&self) -> bool {
         let printable_ascii = |b: u8| (0x21..=0x7E).contains(&b) && !b.is_ascii_alphanumeric();
@@ -239,11 +239,11 @@ impl ServiceStringAdvice {
     /// # Example
     ///
     /// ```
-    /// use edifact_rs::ServiceStringAdvice;
+    /// use edifact::ServiceStringAdvice;
     ///
     /// assert!(!ServiceStringAdvice::default().is_repetition_active());
     /// assert!(ServiceStringAdvice::from_bytes(b"UNA:+.?*'")?.is_repetition_active());
-    /// # Ok::<(), edifact_rs::EdifactError>(())
+    /// # Ok::<(), edifact::EdifactError>(())
     /// ```
     #[inline]
     #[must_use]
@@ -485,7 +485,7 @@ impl<'a> Tokenizer<'a> {
     /// # Examples
     ///
     /// ```
-    /// use edifact_rs::{ServiceStringAdvice, Tokenizer};
+    /// use edifact::{ServiceStringAdvice, Tokenizer};
     ///
     /// let input = b"BGM+220+PO-4711+9'";
     /// let ssa = ServiceStringAdvice::default();

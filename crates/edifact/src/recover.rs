@@ -42,8 +42,8 @@
 //! # Example
 //!
 //! ```
-//! use edifact_rs::{RecoveredInterchange, RecoveryConfig};
-//! use edifact_rs::contrl::{ReportingLevel, SyntaxError};
+//! use edifact::{RecoveredInterchange, RecoveryConfig};
+//! use edifact::contrl::{ReportingLevel, SyntaxError};
 //!
 //! // The second message's BGM tag is broken: `BGME03` is no segment tag.
 //! let input = b"UNB+UNOC:3+4012345000023:500+9900357000004:500+261001:0700+IC9'\
@@ -101,7 +101,7 @@ use crate::tokenizer::{ServiceStringAdvice, Tokenizer, prologue_len};
 /// # Example
 ///
 /// ```
-/// use edifact_rs::{ReaderConfig, RecoveryConfig};
+/// use edifact::{ReaderConfig, RecoveryConfig};
 ///
 /// let config = RecoveryConfig::new()
 ///     .reader(ReaderConfig::default().max_segments(10_000))
@@ -218,8 +218,8 @@ impl<'a> Scanned<'a> {
 /// # Example
 ///
 /// ```
-/// use edifact_rs::scan_recovering;
-/// use edifact_rs::RecoveryConfig;
+/// use edifact::scan_recovering;
+/// use edifact::RecoveryConfig;
 ///
 /// let input = b"UNH+1+ORDERS:D:96A:UN'BGME03+X'UNT+3+1'";
 /// let fault = scan_recovering(input, &RecoveryConfig::default())
@@ -992,8 +992,8 @@ impl<'a> RecoveredInterchange<'a> {
     /// # Example
     ///
     /// ```
-    /// use edifact_rs::{EdifactError, RecoveredInterchange, RecoveryConfig};
-    /// use edifact_rs::contrl::ReportingLevel;
+    /// use edifact::{EdifactError, RecoveredInterchange, RecoveryConfig};
+    /// use edifact::contrl::ReportingLevel;
     ///
     /// let input = b"UNB+UNOC:3+S+R+260101:0900+IC1'\
     ///               UNH+1+ORDERS:D:96A:UN'BGM+220'DTM+137:20260101:102'UNT+4+1'UNZ+1+IC1'";

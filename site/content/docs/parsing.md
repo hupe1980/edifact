@@ -35,7 +35,7 @@ Collect with `.collect::<Result<Vec<_>, _>>()?`; take the first match with
 ## Zero-copy byte-slice parsing
 
 ```rust
-use edifact_rs::from_bytes;
+use edifact::from_bytes;
 
 let input: &[u8] = b"UNA:+.? 'BGM+220+PO-4711+9'NAD+BY+4000001::9'";
 
@@ -47,7 +47,7 @@ for result in from_bytes(input) {
     let seg = result?;
     println!("{}", seg.tag);
 }
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 `from_bytes` is the fastest path:
@@ -64,7 +64,7 @@ for result in from_bytes(input) {
 ### `element_str(n)` — the most common pattern
 
 ```rust
-# use edifact_rs::from_bytes;
+# use edifact::from_bytes;
 # let input: &[u8] = b"UNA:+.? 'BGM+220+PO-4711+9'NAD+BY+4000001::9'";
 # let segments: Vec<_> = from_bytes(input).collect::<Result<Vec<_>, _>>()?;
 let bgm = &segments[0];
@@ -72,13 +72,13 @@ let bgm = &segments[0];
 // component 0 of element n — covers the vast majority of EDIFACT fields
 assert_eq!(bgm.element_str(0), Some("220"));
 assert_eq!(bgm.element_str(99), None); // out-of-bounds → None
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ### `get_element(n)` + `get_component(c)` — composite fields
 
 ```rust
-# use edifact_rs::from_bytes;
+# use edifact::from_bytes;
 # let input: &[u8] = b"UNA:+.? 'BGM+220+PO-4711+9'NAD+BY+4000001::9'";
 # let segments: Vec<_> = from_bytes(input).collect::<Result<Vec<_>, _>>()?;
 // NAD element 1 is composite: party_id : qualifier : code_list_qual
@@ -93,20 +93,20 @@ let code = nad
     .unwrap_or("");
 assert_eq!(party_id, "4000001");
 assert_eq!(code, "9");
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ### `component_or_empty(n)` — avoid `Option` unwrapping
 
 ```rust
-# use edifact_rs::from_bytes;
+# use edifact::from_bytes;
 # let input: &[u8] = b"UNA:+.? 'BGM+220+PO-4711+9'NAD+BY+4000001::9'";
 # let segments: Vec<_> = from_bytes(input).collect::<Result<Vec<_>, _>>()?;
 # let seg = &segments[1];
 let elem = seg.get_element(1).unwrap();
 let val = elem.component_or_empty(0); // "" if absent, no panic
 assert_eq!(val, "4000001");
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ---
@@ -117,7 +117,7 @@ Every `Segment`, `Element`, and component carries a `Span { start, end }` pointi
 into the **original input slice**.
 
 ```rust
-# use edifact_rs::from_bytes;
+# use edifact::from_bytes;
 # let input: &[u8] = b"UNA:+.? 'BGM+220+PO-4711+9'NAD+BY+4000001::9'";
 # let segments: Vec<_> = from_bytes(input).collect::<Result<Vec<_>, _>>()?;
 let seg = &segments[0];
@@ -130,7 +130,7 @@ if let Some(span) = elem.component_span(0) {
     let raw = &input[span.start..span.end];
     assert_eq!(raw, b"220");
 }
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 Spans are stable across all parsing modes and are used by the `diagnostics` feature
@@ -147,7 +147,7 @@ to show source-annotated error messages.
 - **Malformed UNA**: parsing fails immediately with `EdifactError::InvalidUna`.
 
 ```rust
-# use edifact_rs::from_bytes;
+# use edifact::from_bytes;
 // Custom delimiters via UNA: `;` component, `|` element, `!` terminator.
 let custom = b"UNA;|.? !BGM|220|PO-4711|9!";
 //                ││   │└── segment terminator
@@ -158,7 +158,7 @@ let segs: Vec<_> = from_bytes(custom).collect::<Result<_, _>>()?;
 assert_eq!(segs[0].tag, "BGM");
 assert_eq!(segs[0].element_str(0), Some("220"));
 assert_eq!(segs[0].element_str(1), Some("PO-4711"));
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ---
@@ -168,7 +168,7 @@ assert_eq!(segs[0].element_str(1), Some("PO-4711"));
 ### `from_reader` — streaming, one segment at a time
 
 ```rust,no_run
-use edifact_rs::from_reader;
+use edifact::from_reader;
 use std::fs::File;
 
 let f = File::open("large_interchange.edi")?;
@@ -176,19 +176,19 @@ for result in from_reader(f) {
     let seg = result?;               // OwnedSegment
     println!("{}", seg.tag);
 }
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 `from_reader` holds one segment at a time, at most `max_segment_bytes`, plus its
 read buffer. Collect it when you do want everything in memory:
 
 ```rust,no_run
-use edifact_rs::from_reader;
+use edifact::from_reader;
 use std::fs::File;
 
 let f = File::open("message.edi")?;
 let segments: Vec<_> = from_reader(f).collect::<Result<Vec<_>, _>>()?;
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 If you already hold a `BufRead`, use `from_bufread` instead — `from_reader` wraps
@@ -215,7 +215,7 @@ The same config applies to every front end: `from_bytes_with_config`,
 variants.
 
 ```rust
-use edifact_rs::{EdifactError, ReaderConfig, from_bytes_with_config};
+use edifact::{EdifactError, ReaderConfig, from_bytes_with_config};
 
 let config = ReaderConfig::default()
     .max_segment_bytes(8_192)   // reject any single segment over 8 KiB
@@ -225,7 +225,7 @@ let config = ReaderConfig::default()
 let segments: Vec<_> = from_bytes_with_config(b"BGM+220+test'", config)
     .collect::<Result<_, _>>()?;
 assert_eq!(segments.len(), 1);
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ### Why the limits are errors and not a quiet stop
@@ -242,7 +242,7 @@ would treat a fragment as the whole message. Reporting the violation is the only
 outcome a caller cannot accidentally ignore:
 
 ```rust
-use edifact_rs::{EdifactError, ReaderConfig, from_bytes_with_config};
+use edifact::{EdifactError, ReaderConfig, from_bytes_with_config};
 
 let config = ReaderConfig::default().max_segments(1);
 let err = from_bytes_with_config(b"BGM+220'DTM+137'", config)
@@ -265,7 +265,7 @@ is never handed out at all.
 
 ## Parsing a fragment: `service_string_advice`
 
-`ReaderConfig` carries one non-budget field. By default `edifact-rs` discovers the
+`ReaderConfig` carries one non-budget field. By default `edifact` discovers the
 service characters the way a receiver should — from a leading `UNA` if there is
 one, otherwise the ISO 9735-1 §5.2 defaults with the repetition separator
 resolved from the syntax version in `UNB` S001 DE 0002.
@@ -276,7 +276,7 @@ declared — and parsing it with the defaults silently mis-splits every value.
 Supply them:
 
 ```rust
-use edifact_rs::{ReaderConfig, ServiceStringAdvice, from_bytes_with_config};
+use edifact::{ReaderConfig, ServiceStringAdvice, from_bytes_with_config};
 
 // The interchange this message came from declared `;` and `~`.
 let ssa = ServiceStringAdvice::from_bytes(b"UNA:;.? ~")?;
@@ -285,7 +285,7 @@ let config = ReaderConfig::default().with_service_string_advice(ssa);
 let segments: Vec<_> = from_bytes_with_config(b"BGM;220;PO-4711~", config)
     .collect::<Result<Vec<_>, _>>()?;
 assert_eq!(segments[0].element_str(1), Some("PO-4711"));
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 An explicit advice outranks a `UNA` in the input, so it doubles as the escape
@@ -301,7 +301,7 @@ Use `find_segment` and `find_qualified_segment` to locate specific segments with
 iterating manually:
 
 ```rust
-use edifact_rs::{find_segment, find_qualified_segment, from_bytes};
+use edifact::{find_segment, find_qualified_segment, from_bytes};
 
 let input = b"UNH+1+ORDERS:D:11A:UN'\
               BGM+220+PO-4711+9'\
@@ -320,7 +320,7 @@ assert_eq!(buyer_nad.element_str(1), Some("4000001"));
 
 // The very same calls work on the reader path — `&[OwnedSegment]` coerces to
 // `&[Segment<'_>]`, so there is no owned-specific variant to reach for.
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ---
@@ -330,7 +330,7 @@ assert_eq!(buyer_nad.element_str(1), Some("4000001"));
 All parse errors carry stable codes and byte offsets:
 
 ```rust
-use edifact_rs::{EdifactError, from_bytes};
+use edifact::{EdifactError, from_bytes};
 
 let bad_input = b"BGM+incomplete"; // no segment terminator
 let err = from_bytes(bad_input)
@@ -357,14 +357,14 @@ character, or a malformed `UNA` is an error on every path.) Use
 `validate_envelope` to enforce parity explicitly:
 
 ```rust
-use edifact_rs::{from_bytes, validate_envelope};
+use edifact::{from_bytes, validate_envelope};
 
 let input = b"UNB+UNOA:1+SENDER+RECEIVER+200101:0900+IC1'\
               UNH+1+ORDERS:D:96A:UN'BGM+220'UNT+3+1'\
               UNZ+1+IC1'";
 let segs: Vec<_> = from_bytes(input).collect::<Result<_, _>>()?;
 validate_envelope(&segs)?; // returns Err on the first parity violation
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 To collect **every** violation instead of stopping at the first, use
@@ -372,7 +372,7 @@ To collect **every** violation instead of stopping at the first, use
 parsed interchange (when it could be recovered) and the full error list:
 
 ```rust
-use edifact_rs::{from_bytes, validate_envelope_lenient};
+use edifact::{from_bytes, validate_envelope_lenient};
 
 // UNZ references a different control reference *and* UNT declares a wrong count.
 let input = b"UNB+UNOA:1+SENDER+RECEIVER+200101:0900+IC1'\
@@ -381,7 +381,7 @@ let input = b"UNB+UNOA:1+SENDER+RECEIVER+200101:0900+IC1'\
 let segs: Vec<_> = from_bytes(input).collect::<Result<_, _>>()?;
 let result = validate_envelope_lenient(&segs);
 assert!(result.errors.len() >= 2); // both problems reported
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ---

@@ -1,11 +1,11 @@
 #[path = "support.rs"]
 mod support;
 
-pub use support::edifact_rs::{EdifactError, EdifactEvent, EdifactSerialize, EventEmitter};
+pub use support::edifact::{EdifactError, EdifactEvent, EdifactSerialize, EventEmitter};
 
-extern crate self as edifact_rs;
+extern crate self as edifact;
 
-use edifact_rs_derive::EdifactSerialize as DeriveEdifactSerialize;
+use edifact_derive::EdifactSerialize as DeriveEdifactSerialize;
 
 // A repeated key silently took the last value; it must be an error.
 #[derive(DeriveEdifactSerialize)]

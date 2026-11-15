@@ -1,10 +1,10 @@
 +++
 title = "Async Integration"
-description = "Three patterns for using the synchronous edifact-rs parser from tokio without blocking the runtime."
+description = "Three patterns for using the synchronous edifact parser from tokio without blocking the runtime."
 weight = 100
 +++
 
-`edifact-rs` is intentionally **synchronous** — it exposes `std::io::Read`-based
+`edifact` is intentionally **synchronous** — it exposes `std::io::Read`-based
 APIs. This is the right design for EDIFACT:
 
 - **Parsing is CPU-bound** after the first read; async would add scheduling overhead
@@ -20,7 +20,7 @@ other runtimes (`async-std`, `smol`) with minor API substitutions.
 ## Dependencies
 
 ```bash
-cargo add edifact-rs
+cargo add edifact
 cargo add tokio --features rt-multi-thread,macros,fs,sync
 ```
 
@@ -31,7 +31,7 @@ cargo add tokio --features rt-multi-thread,macros,fs,sync
 **Best for**: payloads that fit comfortably in memory.
 
 ```rust,no_run
-use edifact_rs::{from_bytes, Segment};
+use edifact::{from_bytes, Segment};
 
 async fn process_edi_file(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     // Async I/O: read the file without blocking the runtime
@@ -59,7 +59,7 @@ does not stall the runtime.
 reader-based streaming.
 
 ```rust,no_run
-use edifact_rs::{OwnedMessageWindow, message_windows_from_reader};
+use edifact::{OwnedMessageWindow, message_windows_from_reader};
 
 async fn process_large_interchange(path: String)
     -> Result<Vec<OwnedMessageWindow>, Box<dyn std::error::Error>>
@@ -86,7 +86,7 @@ the async worker threads free.
 window on the async side as soon as it is parsed, without buffering all windows.
 
 ```rust,no_run
-use edifact_rs::{EdifactError, OwnedMessageWindow, message_windows_from_reader};
+use edifact::{EdifactError, OwnedMessageWindow, message_windows_from_reader};
 use tokio::sync::mpsc;
 
 async fn stream_interchange(
@@ -124,7 +124,7 @@ blocks until there is space in the channel buffer.
 Combine Pattern C with `deserialize_messages_from_reader` for typed output:
 
 ```rust,no_run
-use edifact_rs::{EdifactError, EdifactDeserialize, deserialize_messages_from_reader};
+use edifact::{EdifactError, EdifactDeserialize, deserialize_messages_from_reader};
 use tokio::sync::mpsc;
 
 # #[derive(Debug, EdifactDeserialize)]
@@ -163,7 +163,7 @@ into memory before parsing, or use `spawn_blocking` with a synchronous wrapper:
 
 ```rust,no_run
 use tokio::io::{AsyncReadExt};
-use edifact_rs::from_bytes;
+use edifact::from_bytes;
 
 async fn parse_from_async_reader<R: AsyncReadExt + Unpin>(
     mut reader: R,
@@ -177,7 +177,7 @@ async fn parse_from_async_reader<R: AsyncReadExt + Unpin>(
 }
 ```
 
-> **Why not `AsyncBufRead`?** `edifact-rs` exposes `std::io::BufRead` internally.
+> **Why not `AsyncBufRead`?** `edifact` exposes `std::io::BufRead` internally.
 > The simplest bridge is `read_to_end` into a `Vec<u8>`. For byte-by-byte bridging
 > see the `async-compat` crate or write an `std::io::Read` adapter.
 
@@ -201,11 +201,11 @@ async fn parse_from_async_reader<R: AsyncReadExt + Unpin>(
 own error type:
 
 ```rust,no_run
-use edifact_rs::EdifactError;
+use edifact::EdifactError;
 
 async fn safe_parse(bytes: Vec<u8>) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
     let count = tokio::task::spawn_blocking(move || {
-        edifact_rs::from_bytes(&bytes).count()
+        edifact::from_bytes(&bytes).count()
     })
     .await?;   // propagates JoinError if the worker thread panicked
     Ok(count)
@@ -217,10 +217,10 @@ async fn safe_parse(bytes: Vec<u8>) -> Result<usize, Box<dyn std::error::Error +
 ## Complete example
 
 ```bash
-cargo run -p edifact-rs --example cookbook_async_tokio_integration
+cargo run -p edifact --example cookbook_async_tokio_integration
 ```
 
-See [`cookbook_async_tokio_integration.rs`](https://github.com/hupe1980/edifact-rs/tree/main/crates/edifact-rs/examples/cookbook_async_tokio_integration.rs)
+See [`cookbook_async_tokio_integration.rs`](https://github.com/hupe1980/edifact/tree/main/crates/edifact/examples/cookbook_async_tokio_integration.rs)
 for a runnable example demonstrating Patterns A, B, and C.
 
 ---

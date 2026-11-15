@@ -19,20 +19,20 @@
 //! `&[Segment<'_>]` is expected: every API takes one shape and serves both.
 //!
 //! ```
-//! use edifact_rs::{OwnedSegment, Segment};
+//! use edifact::{OwnedSegment, Segment};
 //!
 //! fn count_bgm(segments: &[Segment<'_>]) -> usize {
 //!     segments.iter().filter(|s| s.tag == "BGM").count()
 //! }
 //!
 //! let borrowed: Vec<Segment<'_>> =
-//!     edifact_rs::from_bytes(b"BGM+220'").collect::<Result<_, _>>()?;
+//!     edifact::from_bytes(b"BGM+220'").collect::<Result<_, _>>()?;
 //! let owned: Vec<OwnedSegment> =
-//!     edifact_rs::from_reader(std::io::Cursor::new(b"BGM+220'")).collect::<Result<_, _>>()?;
+//!     edifact::from_reader(std::io::Cursor::new(b"BGM+220'")).collect::<Result<_, _>>()?;
 //!
 //! assert_eq!(count_bgm(&borrowed), 1);
 //! assert_eq!(count_bgm(&owned), 1); // the same function, no conversion
-//! # Ok::<(), edifact_rs::EdifactError>(())
+//! # Ok::<(), edifact::EdifactError>(())
 //! ```
 
 use crate::directory_validator::{ElementPath, SegmentLayout};
@@ -173,7 +173,7 @@ impl<'a> Element<'a> {
     /// and owned `String`s work:
     ///
     /// ```
-    /// use edifact_rs::{Element, OwnedElement};
+    /// use edifact::{Element, OwnedElement};
     ///
     /// let borrowed = Element::of(&["4000001000002", "", "9"]);
     /// let owned: OwnedElement = Element::of(&[String::from("BY")]);
@@ -240,7 +240,7 @@ impl<'a> Element<'a> {
     ///
     /// ```
     /// // `UNA` byte 7 declares `*` as the repetition separator.
-    /// let segments: Vec<_> = edifact_rs::from_bytes(b"UNA:+.?*'RFF+ON:1*ON:2'")
+    /// let segments: Vec<_> = edifact::from_bytes(b"UNA:+.?*'RFF+ON:1*ON:2'")
     ///     .collect::<Result<Vec<_>, _>>()?;
     /// let rff = segments[0].get_element(0).unwrap();
     ///
@@ -249,7 +249,7 @@ impl<'a> Element<'a> {
     ///     .map(|components| components[1].0.as_ref())
     ///     .collect();
     /// assert_eq!(refs, ["1", "2"]);
-    /// # Ok::<(), edifact_rs::EdifactError>(())
+    /// # Ok::<(), edifact::EdifactError>(())
     /// ```
     #[inline]
     pub fn repetitions(&self) -> impl Iterator<Item = &[(Cow<'a, str>, Span)]> {
@@ -372,11 +372,11 @@ impl<'a> Segment<'a> {
     /// # Example
     ///
     /// ```
-    /// use edifact_rs::{Element, Segment, segments_to_bytes};
+    /// use edifact::{Element, Segment, segments_to_bytes};
     ///
     /// let segment = Segment::new("BGM", vec![Element::of(&["220"])]);
     /// assert_eq!(segments_to_bytes(&[segment])?, b"BGM+220'".to_vec());
-    /// # Ok::<(), edifact_rs::EdifactError>(())
+    /// # Ok::<(), edifact::EdifactError>(())
     /// ```
     #[inline]
     pub fn new(tag: impl Into<Cow<'a, str>>, elements: Vec<Element<'a>>) -> Self {
@@ -439,12 +439,12 @@ impl<'a> Segment<'a> {
     ///
     /// ```
     /// // `UNA` position 050 declares `*` as the repetition separator.
-    /// let segments: Vec<_> = edifact_rs::from_bytes(b"UNA:+.?*'RFF+ON:1*ON:2*ON:3'")
+    /// let segments: Vec<_> = edifact::from_bytes(b"UNA:+.?*'RFF+ON:1*ON:2*ON:3'")
     ///     .collect::<Result<Vec<_>, _>>()?;
     ///
     /// let references: Vec<&str> = segments[0].repeated_component(0, 1).collect();
     /// assert_eq!(references, ["1", "2", "3"]);
-    /// # Ok::<(), edifact_rs::EdifactError>(())
+    /// # Ok::<(), edifact::EdifactError>(())
     /// ```
     #[inline]
     pub fn repeated_component(
@@ -602,7 +602,7 @@ impl<'a> Segment<'a> {
     /// # Example
     ///
     /// ```rust
-    /// use edifact_rs::{ComponentRef, ElementRef, SegmentDefinition, Status};
+    /// use edifact::{ComponentRef, ElementRef, SegmentDefinition, Status};
     ///
     /// static C507: &[ComponentRef] = &[
     ///     ComponentRef::new(1, "2005", Status::Mandatory),
@@ -614,7 +614,7 @@ impl<'a> Segment<'a> {
     /// static DTM: SegmentDefinition =
     ///     SegmentDefinition::new("DTM", "Date/time/period", DTM_ELEMENTS);
     ///
-    /// let segments: Vec<_> = edifact_rs::from_bytes(b"DTM+137:20260101:102'")
+    /// let segments: Vec<_> = edifact::from_bytes(b"DTM+137:20260101:102'")
     ///     .collect::<Result<Vec<_>, _>>()?;
     /// let dtm = &segments[0];
     ///
@@ -622,7 +622,7 @@ impl<'a> Segment<'a> {
     /// // A data element that this segment does not define is a hard error,
     /// // not a wrong-but-quiet read.
     /// assert!(dtm.value_by_code(&DTM, "3055").is_err());
-    /// # Ok::<(), edifact_rs::EdifactError>(())
+    /// # Ok::<(), edifact::EdifactError>(())
     /// ```
     ///
     /// # Errors

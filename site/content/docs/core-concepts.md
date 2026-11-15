@@ -5,7 +5,7 @@ weight = 20
 +++
 
 This guide explains the EDIFACT wire format and maps it to the Rust types exposed
-by `edifact-rs`. Understanding this makes every other guide easier to follow.
+by `edifact`. Understanding this makes every other guide easier to follow.
 
 ---
 
@@ -76,7 +76,7 @@ same six characters counted from the start of the input.
 | 7 | 050 | Repetition separator | `*` | yes, **when not a space** |
 | 8 | 060 | Segment terminator | `'` | yes |
 
-`edifact-rs` reads the UNA on the first call to `from_bytes` / `from_reader` and
+`edifact` reads the UNA on the first call to `from_bytes` / `from_reader` and
 applies those delimiters to everything that follows.
 
 **The decimal mark is ignored.** ISO 9735-1 Annex B keeps position 030 only for
@@ -84,14 +84,14 @@ upward compatibility with earlier syntax versions and says the character
 transferred there "shall be ignored by the recipient" — §10 instead allows the
 full stop *or* the comma per individual numeric value. It is therefore the one
 position where a space is legal, the one that need not be distinct from the
-others, and the only one `edifact-rs` does not validate. The value is still kept,
+others, and the only one `edifact` does not validate. The value is still kept,
 so a writer can round-trip the UNA it was handed and `DecimalFloat` has a house
 style to format with.
 
 **The repetition separator depends on the syntax version.** Version 4 introduced
 it and §5.2 makes `*` its default; versions 1–3 have no such service character at
 all, and their UNA carries a space in that position. With no UNA to say
-otherwise, `edifact-rs` reads the version from `UNB` S001 DE 0002 and activates
+otherwise, `edifact` reads the version from `UNB` S001 DE 0002 and activates
 `*` only for version 4 — splitting on `*` in a version 3 interchange would
 corrupt every value containing one, because there `*` is an ordinary level A
 character. See [Repeating data elements](#repeating-data-elements) below.
@@ -100,7 +100,7 @@ For a fragment that carries neither a UNA nor a UNB — a single message lifted 
 of an interchange — nothing records the delimiters, so supply them:
 
 ```rust
-use edifact_rs::{ReaderConfig, ServiceStringAdvice, from_bytes_with_config};
+use edifact::{ReaderConfig, ServiceStringAdvice, from_bytes_with_config};
 
 let ssa = ServiceStringAdvice::from_bytes(b"UNA:;.? ~")?;
 let config = ReaderConfig::default().with_service_string_advice(ssa);
@@ -108,10 +108,10 @@ let config = ReaderConfig::default().with_service_string_advice(ssa);
 let segments: Vec<_> = from_bytes_with_config(b"BGM;220;PO-4711~", config)
     .collect::<Result<Vec<_>, _>>()?;
 assert_eq!(segments[0].element_str(1), Some("PO-4711"));
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
-> **Security note**: `edifact-rs` fails hard on a malformed UNA — wrong byte
+> **Security note**: `edifact` fails hard on a malformed UNA — wrong byte
 > count, a duplicated *active* delimiter, an alphanumeric delimiter — and never
 > silently falls back to defaults. This prevents delimiter injection attacks.
 
@@ -145,7 +145,7 @@ The `::` is not a typo. Component 1 is *omitted*, and its position is held by th
 separator that would have followed it (ISO 9735-1 §8.8.3) — so the agency
 qualifier stays at component 2 rather than sliding into component 1.
 
-Element 0 of `NAD` is `BY` — this is the **qualifier**. `edifact-rs` derive macros
+Element 0 of `NAD` is `BY` — this is the **qualifier**. `edifact` derive macros
 use `qualifier_from = 0` to dispatch different Rust structs for `NAD+BY` vs `NAD+SU`.
 
 ---
@@ -161,7 +161,7 @@ BGM+Test?+value'
          '?+' means a literal '+', not an element separator
 ```
 
-`edifact-rs` resolves release sequences during parsing and stores the decoded value.
+`edifact` resolves release sequences during parsing and stores the decoded value.
 The raw escape is never visible to API consumers — you receive `"Test+value"` as a
 plain `&str`.
 
@@ -174,7 +174,7 @@ A trailing `?` at end-of-input (with no following byte) is **malformed** and cau
 
 ### One segment type, borrowed or owned
 
-`edifact-rs` has a **single** segment type. `Segment<'a>` holds its text as
+`edifact` has a **single** segment type. `Segment<'a>` holds its text as
 `Cow<'a, str>`, which covers both parsing modes:
 
 ```text
@@ -198,20 +198,20 @@ shape and works with both — there are no `_owned` twins to remember, and no
 conversion step between the two paths:
 
 ```rust
-use edifact_rs::{OwnedSegment, Segment};
+use edifact::{OwnedSegment, Segment};
 
 fn count_bgm(segments: &[Segment<'_>]) -> usize {
     segments.iter().filter(|s| s.tag == "BGM").count()
 }
 
 let borrowed: Vec<Segment<'_>> =
-    edifact_rs::from_bytes(b"BGM+220'").collect::<Result<_, _>>()?;
+    edifact::from_bytes(b"BGM+220'").collect::<Result<_, _>>()?;
 let owned: Vec<OwnedSegment> =
-    edifact_rs::from_reader(std::io::Cursor::new(b"BGM+220'")).collect::<Result<_, _>>()?;
+    edifact::from_reader(std::io::Cursor::new(b"BGM+220'")).collect::<Result<_, _>>()?;
 
 assert_eq!(count_bgm(&borrowed), 1);
 assert_eq!(count_bgm(&owned), 1);   // same function, no conversion
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 To keep a segment past the buffer it was parsed from, call
@@ -268,7 +268,7 @@ not use the feature. The remaining occurrences live in `repeats`:
 
 ```rust
 // `UNA` byte 7 declares `*` as the repetition separator.
-let segments: Vec<_> = edifact_rs::from_bytes(b"UNA:+.?*'RFF+ON:1*ON:2'")
+let segments: Vec<_> = edifact::from_bytes(b"UNA:+.?*'RFF+ON:1*ON:2'")
     .collect::<Result<Vec<_>, _>>()?;
 let rff = segments[0].get_element(0).unwrap();
 
@@ -279,7 +279,7 @@ assert_eq!(rff.repetition(1).unwrap()[1].0.as_ref(), "2");    // occurrence 1
 // Or read one component across every occurrence at once:
 let all: Vec<&str> = segments[0].repeated_component(0, 1).collect();
 assert_eq!(all, ["1", "2"]);
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 Without an active separator the byte is ordinary data: `RFF+ON:1*ON:2'` in a
@@ -313,7 +313,7 @@ EDIFACT distinguishes **envelope** segments from **body** segments:
 | `UNT` | Message trailer |
 | Everything else | Message body (`BGM`, `NAD`, `LIN`, …) |
 
-`edifact-rs` validates envelope reference parity (`UNB`↔`UNZ` and `UNH`↔`UNT`) and
+`edifact` validates envelope reference parity (`UNB`↔`UNZ` and `UNH`↔`UNT`) and
 rejects envelope control tags that appear in message body positions.
 
 ---
@@ -341,7 +341,7 @@ UNH + 1 + ORDERS : D : 96A : UN '
 
 ## Character set
 
-`edifact-rs` operates on **UTF-8** text throughout, and rejects invalid byte
+`edifact` operates on **UTF-8** text throughout, and rejects invalid byte
 sequences with `EdifactError::InvalidText` (`E003`).
 
 That is not the whole story, because **UTF-8 is not a superset of `UNOC`**. `UNB`
@@ -351,7 +351,7 @@ conformant German interchange therefore has to be decoded before it can be
 parsed:
 
 ```rust
-use edifact_rs::{decode_interchange, from_bytes};
+use edifact::{decode_interchange, from_bytes};
 
 let mut raw = b"UNB+UNOC:3+S+R+260101:0900+IC1'NAD+BY+M".to_vec();
 raw.push(0xFC);
@@ -360,7 +360,7 @@ raw.extend_from_slice(b"ller'UNZ+0+IC1'");
 let utf8 = decode_interchange(&raw)?;                     // reads UNB S001
 let segments: Vec<_> = from_bytes(&utf8).collect::<Result<Vec<_>, _>>()?;
 assert_eq!(segments[1].element_str(1), Some("Müller"));
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 `decode_interchange` copies nothing when the payload is already ASCII or `UNOY`,

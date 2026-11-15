@@ -9,10 +9,10 @@
 //!
 //! Run:
 //! ```text
-//! cargo run -p edifact-rs --example cookbook_parse_map_validate_write
+//! cargo run -p edifact --example cookbook_parse_map_validate_write
 //! ```
 
-use edifact_rs::{
+use edifact::{
     Segment, ValidationContext, ValidationLayer, ValidationReport, ValidationRuleContext,
     Validator, find_qualified_segment, from_bytes, segments_to_bytes, validate_each,
 };
@@ -39,7 +39,7 @@ impl Validator for SimpleValidator {
     fn set_message_type(&mut self, _msg_type: Option<&str>) {}
 }
 
-fn main() -> Result<(), edifact_rs::EdifactError> {
+fn main() -> Result<(), edifact::EdifactError> {
     // ── 1. Parse ──────────────────────────────────────────────────────────────
     // `from_bytes` returns a lazy iterator of `Segment<'_>`, each borrowing
     // directly from `input` — no heap allocation for segment data.
@@ -70,7 +70,7 @@ fn main() -> Result<(), edifact_rs::EdifactError> {
 
     let report = validation_context.validate(&segments);
     if !report.is_valid() {
-        return Err(edifact_rs::EdifactError::ValidationErrors {
+        return Err(edifact::EdifactError::ValidationErrors {
             error_count: report.errors().len(),
             report: Box::new(report),
         });
@@ -81,8 +81,7 @@ fn main() -> Result<(), edifact_rs::EdifactError> {
     // Because segments borrow from `input`, this effectively round-trips the
     // original payload through the parser and writer.
     let output = segments_to_bytes(&segments)?;
-    let output_text =
-        String::from_utf8(output).map_err(|_| edifact_rs::EdifactError::InvalidUtf8)?;
+    let output_text = String::from_utf8(output).map_err(|_| edifact::EdifactError::InvalidUtf8)?;
     println!("roundtrip={output_text}");
 
     Ok(())

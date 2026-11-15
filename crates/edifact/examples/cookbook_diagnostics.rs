@@ -1,22 +1,22 @@
 //! Cookbook: rich diagnostics with `miette`
 //!
 //! Demonstrates the optional `diagnostics` feature that adds
-//! [`miette::Diagnostic`] to [`edifact_rs::EdifactError`].  When enabled,
+//! [`miette::Diagnostic`] to [`edifact::EdifactError`].  When enabled,
 //! `miette::Report` renders errors with byte-precise source spans and help
 //! text — ideal for developer-facing CLIs.
 //!
 //! Run **without** the feature flag for plain `Display` output:
 //! ```text
-//! cargo run -p edifact-rs --example cookbook_diagnostics
+//! cargo run -p edifact --example cookbook_diagnostics
 //! ```
 //!
 //! Run **with** the feature flag for miette's annotated output:
 //! ```text
-//! cargo run -p edifact-rs --example cookbook_diagnostics --features diagnostics
+//! cargo run -p edifact --example cookbook_diagnostics --features diagnostics
 //! ```
 
-fn run_validation() -> Result<(), edifact_rs::EdifactError> {
-    use edifact_rs::{
+fn run_validation() -> Result<(), edifact::EdifactError> {
+    use edifact::{
         Segment, ValidationContext, ValidationLayer, ValidationReport, ValidationRuleContext,
         Validator, from_bytes, validate_each,
     };
@@ -37,7 +37,7 @@ fn run_validation() -> Result<(), edifact_rs::EdifactError> {
                     if let Some(elem) = segment.get_element(0) {
                         if let Some(code) = elem.get_component(0) {
                             if code == "999" {
-                                return Err(edifact_rs::EdifactError::InvalidCodeValue {
+                                return Err(edifact::EdifactError::InvalidCodeValue {
                                     tag: "BGM".to_owned(),
                                     element_index: 0,
                                     value: "999".to_owned(),
@@ -89,7 +89,7 @@ fn run_validation() -> Result<(), edifact_rs::EdifactError> {
     Ok(())
 }
 
-fn main() -> Result<(), edifact_rs::EdifactError> {
+fn main() -> Result<(), edifact::EdifactError> {
     #[cfg(feature = "diagnostics")]
     {
         if let Err(err) = run_validation() {

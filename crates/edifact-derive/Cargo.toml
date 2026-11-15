@@ -1,15 +1,15 @@
 [package]
-name        = "edifact-rs-derive"
+name        = "edifact-derive"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Derive macros for EdifactSerialize / EdifactDeserialize (from edifact-rs)"
+description = "Derive macros for EdifactSerialize / EdifactDeserialize (from edifact)"
 readme = "../../README.md"
-repository = "https://github.com/hupe1980/edifact-rs"
-homepage = "https://hupe1980.github.io/edifact-rs/"
-documentation = "https://docs.rs/edifact-rs-derive"
+repository = "https://github.com/hupe1980/edifact"
+homepage = "https://hupe1980.github.io/edifact/"
+documentation = "https://docs.rs/edifact-derive"
 keywords = ["edifact", "edi", "derive", "proc-macro", "unedifact"]
 categories = ["encoding", "development-tools::procedural-macro-helpers"]
 

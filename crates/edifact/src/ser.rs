@@ -13,7 +13,7 @@ use std::io::Write;
 /// Types that can serialize themselves to an EDIFACT event stream.
 ///
 /// Implement manually or derive with `#[derive(EdifactSerialize)]` from the
-/// `edifact-rs-derive` crate.
+/// `edifact-derive` crate.
 pub trait EdifactSerialize {
     /// Serialize `self` by emitting events into `emitter`.
     fn edifact_serialize<E: EventEmitter>(&self, emitter: &mut E) -> Result<(), EdifactError>;
@@ -135,17 +135,17 @@ impl_serialize_int!(
 ///
 /// # Required for float serialization
 ///
-/// `edifact-rs` deliberately provides **no** blanket `EdifactSerialize` impl for
+/// `edifact` deliberately provides **no** blanket `EdifactSerialize` impl for
 /// `f32`/`f64`, so that the decimal-mark intent is always explicit at the call
 /// site rather than silently defaulted:
 ///
 /// ```
-/// use edifact_rs::{DecimalFloat, EdifactEvent, EdifactSerialize, VecEmitter};
+/// use edifact::{DecimalFloat, EdifactEvent, EdifactSerialize, VecEmitter};
 ///
 /// let mut emitter = VecEmitter::default();
 /// DecimalFloat(12.5_f64).edifact_serialize(&mut emitter)?;
 /// assert!(matches!(&emitter.events[0], EdifactEvent::Element { value } if value == "12.5"));
-/// # Ok::<(), edifact_rs::EdifactError>(())
+/// # Ok::<(), edifact::EdifactError>(())
 /// ```
 ///
 /// When the emitter's [`EventEmitter::decimal_mark`] is `b','`, the same value
@@ -165,7 +165,7 @@ impl_serialize_int!(
 /// parse:
 ///
 /// ```
-/// use edifact_rs::{DecimalFloat, EdifactError, EdifactSerialize, VecEmitter};
+/// use edifact::{DecimalFloat, EdifactError, EdifactSerialize, VecEmitter};
 ///
 /// let mut emitter = VecEmitter::default();
 /// let err = DecimalFloat(f64::NAN).edifact_serialize(&mut emitter).unwrap_err();
@@ -269,7 +269,7 @@ impl<T: std::fmt::Display> EdifactSerialize for DecimalFloat<T> {
 /// # Example
 ///
 /// ```rust
-/// use edifact_rs::{VecEmitter, emit_sparse_segment};
+/// use edifact::{VecEmitter, emit_sparse_segment};
 /// use std::borrow::Cow;
 ///
 /// let mut parts = vec![
@@ -282,7 +282,7 @@ impl<T: std::fmt::Display> EdifactSerialize for DecimalFloat<T> {
 /// // Slot (1, 1) was never supplied, so it is emitted as an empty component:
 /// // NAD+MS+9900112233445::293'
 /// assert_eq!(emitter.events.len(), 6);
-/// # Ok::<(), edifact_rs::EdifactError>(())
+/// # Ok::<(), edifact::EdifactError>(())
 /// ```
 ///
 /// # Errors

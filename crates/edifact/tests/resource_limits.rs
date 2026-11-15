@@ -22,7 +22,7 @@
 #[path = "support/counting_alloc.rs"]
 mod counting_alloc;
 
-use edifact_rs::{
+use edifact::{
     EdifactError, OwnedSegment, ReaderConfig, from_bufread_with_config, from_bytes_with_config,
 };
 
@@ -245,21 +245,21 @@ fn default_max_segment_bytes_is_64_kib() {
     let at_limit = long_segment_msg(LIMIT - 4);
     let over_limit = long_segment_msg(LIMIT - 3);
 
-    let slice: Vec<_> = edifact_rs::from_bytes(&at_limit)
+    let slice: Vec<_> = edifact::from_bytes(&at_limit)
         .collect::<Result<_, _>>()
         .expect("a segment of exactly the default limit parses on the slice path");
     assert_eq!(slice.len(), 3);
-    let owned: Vec<_> = edifact_rs::from_reader(&at_limit[..])
+    let owned: Vec<_> = edifact::from_reader(&at_limit[..])
         .collect::<Result<_, _>>()
         .expect("a segment of exactly the default limit parses on the reader path");
     assert_eq!(owned.len(), 3);
 
     let errors = [
-        edifact_rs::from_bytes(&over_limit)
+        edifact::from_bytes(&over_limit)
             .collect::<Result<Vec<_>, _>>()
             .map(|_| ())
             .expect_err("one byte over the default limit fails on the slice path"),
-        edifact_rs::from_reader(&over_limit[..])
+        edifact::from_reader(&over_limit[..])
             .collect::<Result<Vec<_>, _>>()
             .map(|_| ())
             .expect_err("one byte over the default limit fails on the reader path"),
@@ -291,8 +291,8 @@ fn the_tighter_of_two_limits_is_the_one_reported() {
 // the same limits plus a fault budget, and it must end with the same error
 // kind the strict parser gives when a limit trips.
 
-use edifact_rs::recover::{Fault, Scanned};
-use edifact_rs::{RecoveryConfig, scan_recovering};
+use edifact::recover::{Fault, Scanned};
+use edifact::{RecoveryConfig, scan_recovering};
 
 /// Scan `input`, returning every item.
 fn recover(input: &[u8], config: RecoveryConfig) -> Vec<Scanned<'_>> {
@@ -412,7 +412,7 @@ use std::fmt::Debug;
 use std::io::{BufReader, Read};
 use std::rc::Rc;
 
-use edifact_rs::{
+use edifact::{
     EdifactDeserialize, EdifactSegmentTag, Segment, deserialize_each, deserialize_each_from_reader,
     deserialize_each_from_reader_with_config, deserialize_each_with_config, deserialize_messages,
     deserialize_messages_from_reader, deserialize_messages_from_reader_with_config,
@@ -682,7 +682,7 @@ fn conveniences_match_default_config_variants_within_limits() {
         .max_segments_per_message(100)
         .max_input_bytes(1 << 20);
     let defaults = Outcomes {
-        segments: outcome(edifact_rs::from_bytes(&input).map(|r| r.map(Segment::into_owned))),
+        segments: outcome(edifact::from_bytes(&input).map(|r| r.map(Segment::into_owned))),
         windows: outcome(message_windows(&input)),
         messages: outcome(deserialize_messages::<Tags>(&input)),
         each: outcome(deserialize_each::<Ftx>(&input)),
@@ -694,7 +694,7 @@ fn conveniences_match_default_config_variants_within_limits() {
         assert_eq!(assert_same_on_both_paths(&input, config), defaults);
     }
     let reader_defaults = Outcomes {
-        segments: outcome(edifact_rs::from_reader(&input[..])),
+        segments: outcome(edifact::from_reader(&input[..])),
         windows: outcome(message_windows_from_reader(&input[..])),
         messages: outcome(deserialize_messages_from_reader::<Tags, _>(&input[..])),
         each: outcome(deserialize_each_from_reader::<Ftx, _>(&input[..])),
@@ -958,9 +958,7 @@ fn endless_whitespace_reader_stops() {
     let items = check_ahead(
         4_096 + READ_BUFFER,
         &served,
-        outcome(edifact_rs::from_reader_decoded_with_config(
-            generator, config,
-        )),
+        outcome(edifact::from_reader_decoded_with_config(generator, config)),
     );
     assert_eq!(items.len(), 1);
 }

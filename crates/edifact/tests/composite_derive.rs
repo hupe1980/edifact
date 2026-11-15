@@ -7,7 +7,7 @@
 
 #![cfg(feature = "derive")]
 
-use edifact_rs::{
+use edifact::{
     CompositeElement, EdifactCompositeDeserialize, EdifactCompositeSerialize, EdifactDeserialize,
     EdifactError, EdifactSerialize, from_bytes, to_edifact_string,
 };

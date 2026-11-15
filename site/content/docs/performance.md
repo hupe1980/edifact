@@ -12,7 +12,7 @@ is allocated:
 ```rust
 let input: &[u8] = b"BGM+220+PO-4711+9'";
 // One allocation (the element vector); text is borrowed.
-let seg = edifact_rs::from_bytes(input).next().unwrap().unwrap();
+let seg = edifact::from_bytes(input).next().unwrap().unwrap();
 assert_eq!(seg.tag, "BGM");
 ```
 
@@ -52,7 +52,7 @@ For a stream from an untrusted source, set the budgets described in
 [Parsing → DoS hardening](@/docs/parsing.md#dos-hardening-with-readerconfig):
 
 ```rust
-use edifact_rs::{ReaderConfig, message_windows_from_reader_with_config};
+use edifact::{ReaderConfig, message_windows_from_reader_with_config};
 
 let config = ReaderConfig::default()
     .max_segments_per_message(10_000) // bounds each window
@@ -62,13 +62,13 @@ for window in message_windows_from_reader_with_config(input, config) {
     let window = window?;
     assert_eq!(window.segments.len(), 3);
 }
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 `WriterEmitter` writes EDIFACT to any `std::io::Write` one event at a time:
 
 ```rust
-use edifact_rs::{EdifactEvent, EventEmitter, WriterEmitter};
+use edifact::{EdifactEvent, EventEmitter, WriterEmitter};
 
 let mut out = Vec::<u8>::new();
 let mut emitter = WriterEmitter::new(&mut out);
@@ -77,7 +77,7 @@ emitter.emit(EdifactEvent::element("220"))?;
 emitter.emit(EdifactEvent::element("PO-4711"))?;
 emitter.emit(EdifactEvent::EndSegment)?;
 assert_eq!(out, b"BGM+220+PO-4711'");
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ---
@@ -111,8 +111,8 @@ constants in `allocation_budget`.
 **divan** for quick micro-benchmarks, **Criterion** for statistics and baselines:
 
 ```bash
-cargo bench -p edifact-rs --bench bench_core
-cargo bench -p edifact-rs --bench bench_criterion
+cargo bench -p edifact --bench bench_core
+cargo bench -p edifact --bench bench_criterion
 ```
 
 Criterion writes its reports to `target/criterion/report/index.html`.
@@ -131,7 +131,7 @@ Criterion writes its reports to `target/criterion/report/index.html`.
 | `grouping/direct_indices/*`, `grouping/resolve_ordered/*` | Group traversal and ordered resolution at 10 k / 20 k / 40 k child groups |
 
 How CI runs and compares them is described in
-[`benches/README.md`](https://github.com/hupe1980/edifact-rs/tree/main/crates/edifact-rs/benches/README.md).
+[`benches/README.md`](https://github.com/hupe1980/edifact/tree/main/crates/edifact/benches/README.md).
 
 ---
 
@@ -142,8 +142,8 @@ grouping and CONTRL invariants. `cargo test` runs it in random-exploration
 mode; with `cargo-bolero` it runs under a coverage-guided engine:
 
 ```bash
-cargo bolero test -p edifact-rs bolero_harness
-cargo +nightly bolero test -p edifact-rs bolero_harness --engine libfuzzer
+cargo bolero test -p edifact bolero_harness
+cargo +nightly bolero test -p edifact bolero_harness --engine libfuzzer
 ```
 
 ---
@@ -152,11 +152,11 @@ cargo +nightly bolero test -p edifact-rs bolero_harness --engine libfuzzer
 
 ```bash
 # flamegraph
-cargo flamegraph -p edifact-rs --bench bench_criterion -- \
+cargo flamegraph -p edifact --bench bench_criterion -- \
   --bench --profile-time=10 parser/1mb
 
 # heap profile of the large-message probe
-cargo build --release -p edifact-rs --example bench_large_message_memory
+cargo build --release -p edifact --example bench_large_message_memory
 heaptrack ./target/release/examples/bench_large_message_memory
 ```
 
@@ -165,7 +165,7 @@ heaptrack ./target/release/examples/bench_large_message_memory
 ## Tuning `ReaderConfig`
 
 ```rust
-use edifact_rs::{ReaderConfig, from_bufread_with_config};
+use edifact::{ReaderConfig, from_bufread_with_config};
 
 // Budgets you do not name keep their defaults.
 let config = ReaderConfig::default().max_segment_bytes(256 * 1024);

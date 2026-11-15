@@ -8,9 +8,9 @@
 //! dangling release character, missing elements and components, and input
 //! with no readable `UNB` at all.
 
-use edifact_rs::contrl::{ReportingLevel, SyntaxError};
-use edifact_rs::recover::Scanned;
-use edifact_rs::{
+use edifact::contrl::{ReportingLevel, SyntaxError};
+use edifact::recover::Scanned;
+use edifact::{
     EdifactError, ReaderConfig, RecoveredInterchange, RecoveryConfig, from_bytes,
     from_bytes_with_config, scan_recovering,
 };

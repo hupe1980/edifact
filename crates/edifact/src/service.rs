@@ -14,7 +14,7 @@
 //! hand-authoring `UNB` first.
 //!
 //! ```
-//! use edifact_rs::{from_bytes, service};
+//! use edifact::{from_bytes, service};
 //!
 //! let segments: Vec<_> =
 //!     from_bytes(b"UNB+UNOC:3+SENDER+RECEIVER+260101:0900+IC4711'UNZ+0+IC4711'")
@@ -24,7 +24,7 @@
 //! assert_eq!(segments[0].value_by_code(&service::UNB, "0020")?, Some("IC4711"));
 //! // Reaching into a composite works the same way: S004 component 1.
 //! assert_eq!(segments[0].value_by_code(&service::UNB, "0017")?, Some("260101"));
-//! # Ok::<(), edifact_rs::EdifactError>(())
+//! # Ok::<(), edifact::EdifactError>(())
 //! ```
 //!
 //! # Scope
@@ -461,7 +461,7 @@ pub const UCD: SegmentDefinition =
 /// # Example
 ///
 /// ```
-/// use edifact_rs::service;
+/// use edifact::service;
 ///
 /// assert_eq!(service::lookup("UNB").map(|d| d.tag), Some("UNB"));
 /// assert!(service::lookup("BGM").is_none()); // a directory segment, not a service one
@@ -494,7 +494,7 @@ pub fn lookup(tag: &str) -> Option<&'static SegmentDefinition> {
 /// # Example
 ///
 /// ```
-/// use edifact_rs::service;
+/// use edifact::service;
 ///
 /// assert_eq!(
 ///     service::ENVELOPE.iter().map(|d| d.tag).collect::<Vec<_>>(),
@@ -510,7 +510,7 @@ pub const ENVELOPE: &[&SegmentDefinition] = &[
 /// # Example
 ///
 /// ```
-/// use edifact_rs::service;
+/// use edifact::service;
 ///
 /// assert_eq!(
 ///     service::CONTRL.iter().map(|d| d.tag).collect::<Vec<_>>(),
@@ -528,7 +528,7 @@ pub const CONTRL: &[&SegmentDefinition] = &[&UCI, &UCF, &UCM, &UCS, &UCD];
 /// # Example
 ///
 /// ```
-/// use edifact_rs::service;
+/// use edifact::service;
 ///
 /// assert_eq!(service::ALL.len(), service::ENVELOPE.len() + service::CONTRL.len());
 /// assert!(service::ALL.iter().any(|d| d.tag == "UCI"));

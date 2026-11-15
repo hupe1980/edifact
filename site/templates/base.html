@@ -57,7 +57,7 @@
 {
   "@context": "https://schema.org",
   "@type": "SoftwareSourceCode",
-  "name": "edifact-rs",
+  "name": "edifact",
   "description": {{ config.description | json_encode | safe }},
   "url": {{ config.base_url | json_encode | safe }},
   "codeRepository": {{ config.extra.repository | json_encode | safe }},
@@ -76,7 +76,7 @@
   <div class="wrap header-inner">
     <a class="brand" href="{{ get_url(path='@/_index.md') }}">
       <span class="brand-mark" aria-hidden="true">⚡</span>
-      <span class="brand-name">edifact-rs</span>
+      <span class="brand-name">edifact</span>
     </a>
     <nav class="site-nav" aria-label="Main">
       <a href="{{ get_url(path='@/docs/_index.md') }}">Docs</a>
@@ -94,7 +94,7 @@
 <footer class="site-footer">
   <div class="wrap footer-inner">
     <p>
-      <strong>edifact-rs</strong> — EDIFACT (ISO 9735) for Rust.
+      <strong>edifact</strong> — EDIFACT (ISO 9735) for Rust.
       Dual-licensed <a href="{{ config.extra.repository }}/blob/main/LICENSE-MIT">MIT</a> or
       <a href="{{ config.extra.repository }}/blob/main/LICENSE-APACHE">Apache-2.0</a>.
     </p>

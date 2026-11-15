@@ -3,12 +3,12 @@
 # overrides the edition default.
 resolver = "3"
 members = [
-    "crates/edifact-rs",
-    "crates/edifact-rs-derive",
+    "crates/edifact",
+    "crates/edifact-derive",
 ]
 
 [workspace.package]
-version = "0.18.0"
+version = "0.19.0"
 edition = "2024"
 rust-version = "1.85"
 authors = ["hupe1980"]

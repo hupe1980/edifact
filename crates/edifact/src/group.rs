@@ -61,7 +61,7 @@
 //! members and step 1 places the `RFF` (and the `CCI` after it) in SG8:
 //!
 //! ```
-//! use edifact_rs::group::{GroupDef, SegmentPlace, group_segments_indexed};
+//! use edifact::group::{GroupDef, SegmentPlace, group_segments_indexed};
 //!
 //! let sg8 = GroupDef::builder("SG8", SegmentPlace::new("SEQ"))
 //!     .segment(SegmentPlace::new("RFF"))
@@ -74,7 +74,7 @@
 //!     .build()?;
 //! let schema = [sg4];
 //!
-//! let segments: Vec<_> = edifact_rs::from_bytes(
+//! let segments: Vec<_> = edifact::from_bytes(
 //!     b"IDE+24+X'RFF+Z13:1'SEQ+Z01'RFF+Z19:ABC'CCI+Z30'SEQ+Z02'QTY+1:1'",
 //! )
 //! .collect::<Result<_, _>>()?;
@@ -87,7 +87,7 @@
 //!     .map(|g| (g.definition, g.occurrence_index, g.total_span.len()))
 //!     .collect();
 //! assert_eq!(shape, [("SG6", 0, 1), ("SG8", 0, 3), ("SG8", 1, 2)]);
-//! # Ok::<(), edifact_rs::EdifactError>(())
+//! # Ok::<(), edifact::EdifactError>(())
 //! ```
 //!
 //! # What a group spans
@@ -101,7 +101,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use edifact_rs::group::{GroupDef, group_segments_indexed};
+//! use edifact::group::{GroupDef, group_segments_indexed};
 //!
 //! static SG32: &[GroupDef] = &[GroupDef::new("SG32", "PRI")];
 //! static ORDERS_GROUPS: &[GroupDef] = &[
@@ -179,7 +179,7 @@ enum Rule {
 /// # Example
 ///
 /// ```
-/// use edifact_rs::group::{Discriminator, SegmentPlace};
+/// use edifact::group::{Discriminator, SegmentPlace};
 ///
 /// // `LOC+Z16` — the Marktlokation place.
 /// let malo = SegmentPlace::new("LOC").when(Discriminator::one_of(0, 0, ["Z16"]));
@@ -334,7 +334,7 @@ impl Discriminator {
 /// # Example
 ///
 /// ```
-/// use edifact_rs::group::{Discriminator, SegmentPlace};
+/// use edifact::group::{Discriminator, SegmentPlace};
 ///
 /// let place = SegmentPlace::owned(String::from("DTM"))
 ///     .with_id("00020")
@@ -474,7 +474,7 @@ enum Body {
 /// groups over `'static` data, so a schema table costs no allocation:
 ///
 /// ```
-/// use edifact_rs::group::GroupDef;
+/// use edifact::group::GroupDef;
 ///
 /// static SG32: &[GroupDef] = &[GroupDef::new("SG32", "PRI")];
 /// static SCHEMA: &[GroupDef] = &[
@@ -873,17 +873,17 @@ impl<'a> SegmentGroupIndexed<'a> {
     /// # Example
     ///
     /// ```
-    /// use edifact_rs::group::{GroupDef, group_segments_indexed};
+    /// use edifact::group::{GroupDef, group_segments_indexed};
     ///
     /// static SCHEMA: &[GroupDef] = &[GroupDef::new("SG2", "NAD")];
     ///
-    /// let segments: Vec<_> = edifact_rs::from_bytes(b"BGM+220'NAD+BY+1'DTM+137:1:102'")
+    /// let segments: Vec<_> = edifact::from_bytes(b"BGM+220'NAD+BY+1'DTM+137:1:102'")
     ///     .collect::<Result<Vec<_>, _>>()?;
     /// let tree = group_segments_indexed(&segments, SCHEMA, "ROOT");
     ///
     /// let sg2 = tree.children[0].segments(&segments);
-    /// assert_eq!(sg2.iter().map(edifact_rs::Segment::tag).collect::<Vec<_>>(), ["NAD", "DTM"]);
-    /// # Ok::<(), edifact_rs::EdifactError>(())
+    /// assert_eq!(sg2.iter().map(edifact::Segment::tag).collect::<Vec<_>>(), ["NAD", "DTM"]);
+    /// # Ok::<(), edifact::EdifactError>(())
     /// ```
     #[must_use]
     pub fn segments<'s, 'd>(&self, all: &'s [Segment<'d>]) -> &'s [Segment<'d>] {
@@ -907,7 +907,7 @@ impl<'a> SegmentGroupIndexed<'a> {
     /// # Example
     ///
     /// ```
-    /// use edifact_rs::group::{GroupDef, group_segments_indexed};
+    /// use edifact::group::{GroupDef, group_segments_indexed};
     ///
     /// static SG12: &[GroupDef] = &[GroupDef::new("SG12", "NAD")];
     /// static SCHEMA: &[GroupDef] = &[
@@ -915,7 +915,7 @@ impl<'a> SegmentGroupIndexed<'a> {
     ///     GroupDef::with_children("SG4", "IDE", SG12),
     /// ];
     ///
-    /// let segments: Vec<_> = edifact_rs::from_bytes(
+    /// let segments: Vec<_> = edifact::from_bytes(
     ///     b"NAD+MS+SENDER'IDE+24+V1'NAD+Z09+KUNDE'IDE+24+V2'NAD+VY+PARTY'",
     /// )
     /// .collect::<Result<Vec<_>, _>>()?;
@@ -928,7 +928,7 @@ impl<'a> SegmentGroupIndexed<'a> {
     ///     .filter_map(|nad| nad.element_str(0))
     ///     .collect();
     /// assert_eq!(parties, ["Z09", "VY"]);
-    /// # Ok::<(), edifact_rs::EdifactError>(())
+    /// # Ok::<(), edifact::EdifactError>(())
     /// ```
     pub fn find<'q>(
         &'q self,
@@ -1021,8 +1021,8 @@ impl<'t, 'a> Iterator for Descendants<'t, 'a> {
 /// Consider a simplified 3-level multi-level schema:
 ///
 /// ```rust
-/// use edifact_rs::group::{GroupDef, group_segments_indexed};
-/// use edifact_rs::from_bytes;
+/// use edifact::group::{GroupDef, group_segments_indexed};
+/// use edifact::from_bytes;
 ///
 /// // Schema: ROOT → SG1 (trigger: RFF) → SG5 (trigger: LOC) → SG6 (trigger: QTY)
 /// static SG6: &[GroupDef] = &[GroupDef::new("SG6", "QTY")];
@@ -1072,7 +1072,7 @@ impl<'t, 'a> Iterator for Descendants<'t, 'a> {
 /// [`ValidationContext::validate_grouped`][crate::ValidationContext::validate_grouped] to enforce group-presence rules:
 ///
 /// ```rust,ignore
-/// use edifact_rs::{ProfileRulePack, ValidationContext};
+/// use edifact::{ProfileRulePack, ValidationContext};
 ///
 /// let pack = ProfileRulePack::new("MY-PROFILE")
 ///     .require_segment_in_group("SG5", "DTM", "SG5-DTM-M")
@@ -1130,7 +1130,7 @@ struct SchemaInner {
 /// # Example
 ///
 /// ```
-/// use edifact_rs::group::{Discriminator, Entry, GroupDef, GroupSchema, SegmentPlace};
+/// use edifact::group::{Discriminator, Entry, GroupDef, GroupSchema, SegmentPlace};
 ///
 /// let loc = |code: &str| {
 ///     GroupDef::builder("SG5", SegmentPlace::new("LOC").when(Discriminator::one_of(0, 0, [code])))
@@ -1147,7 +1147,7 @@ struct SchemaInner {
 ///     [Entry::Segment(SegmentPlace::new("UNH")), Entry::Group(sg4), Entry::Segment(SegmentPlace::new("UNT"))],
 /// )?;
 ///
-/// let segments: Vec<_> = edifact_rs::from_bytes(b"UNH+1+UTILMD:D:11A:UN'IDE+24+V1'LOC+Z17+2'LOC+Z16+1'UNT+5+1'")
+/// let segments: Vec<_> = edifact::from_bytes(b"UNH+1+UTILMD:D:11A:UN'IDE+24+V1'LOC+Z17+2'LOC+Z16+1'UNT+5+1'")
 ///     .collect::<Result<_, _>>()?;
 /// let resolution = schema.resolve(&segments);
 ///
@@ -1156,7 +1156,7 @@ struct SchemaInner {
 /// assert_eq!(resolution.unplaced()[0].index, 3);
 /// assert_eq!(resolution.group_path(2).unwrap().to_string(), "SG4[0]/SG5[0]");
 /// assert!(resolution.placement(4).is_some(), "UNT still finds its place");
-/// # Ok::<(), edifact_rs::EdifactError>(())
+/// # Ok::<(), edifact::EdifactError>(())
 /// ```
 #[derive(Debug, Clone)]
 pub struct GroupSchema {

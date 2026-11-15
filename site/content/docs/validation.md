@@ -4,7 +4,7 @@ description = "The Validator trait, ValidationContext, and the layered envelope 
 weight = 70
 +++
 
-`edifact-rs` provides a layered, composable validation pipeline that separates
+`edifact` provides a layered, composable validation pipeline that separates
 structural, code-list, and profile-level checks — each pluggable independently.
 
 ---
@@ -31,7 +31,7 @@ structural, code-list, and profile-level checks — each pluggable independently
 Implement `Validator` to encapsulate validation logic:
 
 ```rust
-use edifact_rs::{Validator, ValidationReport, ValidationRuleContext, Segment, validate_each, EdifactError};
+use edifact::{Validator, ValidationReport, ValidationRuleContext, Segment, validate_each, EdifactError};
 
 struct BgmCodeValidator;
 
@@ -84,7 +84,7 @@ Validators are registered per layer. Layers run in order:
 3. **`Profile`** — check business/MIG rules (see [Profile Packs](@/docs/profile-packs.md))
 
 ```rust
-use edifact_rs::{
+use edifact::{
     ValidationContext, ValidationLayer, Validator, ValidationReport,
     ValidationRuleContext, Segment, from_bytes,
 };
@@ -103,13 +103,13 @@ let ctx = ValidationContext::builder()
     .build();
 
 let report = ctx.validate(&segs);
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ### Disabling layers
 
 ```rust
-use edifact_rs::{ValidationContext, ValidationLayer};
+use edifact::{ValidationContext, ValidationLayer};
 
 let ctx = ValidationContext::builder()
     .code_list(false)    // skip code list checks
@@ -125,7 +125,7 @@ When the same pack is used across many `ValidationContext` instances (e.g. in a
 server hot-path), share it via `Arc` to avoid cloning the rule closures:
 
 ```rust
-use edifact_rs::{ValidationContext, ProfileRulePack};
+use edifact::{ValidationContext, ProfileRulePack};
 use std::sync::Arc;
 
 let pack = Arc::new(
@@ -147,7 +147,7 @@ let ctx2 = ValidationContext::builder()
 ### Early abort on first critical issue
 
 ```rust
-use edifact_rs::ValidationContext;
+use edifact::ValidationContext;
 
 let ctx = ValidationContext::builder()
     .bail_on_first_critical(true)  // skip later validators once a Critical appears
@@ -162,14 +162,14 @@ that tie each pair together, and the three control counts. Enable it with
 `with_envelope_validation()`:
 
 ```rust
-use edifact_rs::{ValidationContext, from_bytes};
+use edifact::{ValidationContext, from_bytes};
 
 # let segs: Vec<_> = from_bytes(b"UNB+UNOA:1+SENDER:1+RECEIVER:1+200101:1000+1'UNH+1+ORDERS:D:96A:UN'BGM+220+PO-1'UNT+3+1'UNZ+1+1'").collect::<Result<_,_>>()?;
 let ctx = ValidationContext::builder()
     .with_envelope_validation()  // adds UNB/UNG/UNH/UNT/UNE/UNZ structure checks
     .build();
 let report = ctx.validate(&segs);
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 Groups (`UNG`/`UNE`) are parsed and validated natively: nesting is rejected, the
@@ -205,7 +205,7 @@ and is not reported; and `BGM+'` is how §8.5 spells a mandatory segment with no
 data to carry. Only a separator with nothing after it at all is a fault.
 
 ```rust
-use edifact_rs::{ValidationContext, from_bytes};
+use edifact::{ValidationContext, from_bytes};
 
 let segments: Vec<_> = from_bytes(b"FTX+   'DTM'").collect::<Result<Vec<_>, _>>()?;
 
@@ -216,7 +216,7 @@ let report = ValidationContext::builder()
 
 assert_eq!(report.errors()[0].error_code(), Some("E046"));   // DTM has no data element
 assert_eq!(report.warnings()[0].error_code(), Some("E045")); // FTX value is only spaces
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 Syntax findings carry `layer() == Some(ValidationLayer::Syntax)`; charset findings
@@ -235,7 +235,7 @@ reference (DE 0062).  This makes it easy to map issues back to the originating
 message:
 
 ```rust
-use edifact_rs::{ValidationContext, from_bytes};
+use edifact::{ValidationContext, from_bytes};
 
 # let segs: Vec<_> = from_bytes(b"UNH+MSG-42+ORDERS:D:96A:UN'BGM+220+PO-1'UNT+3+MSG-42'").collect::<Result<_,_>>()?;
 let ctx = ValidationContext::builder()
@@ -244,7 +244,7 @@ let ctx = ValidationContext::builder()
     .build();
 let report = ctx.validate(&segs);
 // Every issue in `report` will have `issue.message_ref == Some("MSG-42")`
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ---
@@ -267,7 +267,7 @@ Both parsing paths go into the same call: `&[OwnedSegment]` coerces to
 conversion.
 
 ```rust
-# use edifact_rs::{ValidationContext, from_bytes};
+# use edifact::{ValidationContext, from_bytes};
 # let segs: Vec<_> = from_bytes(b"BGM+220+PO-4711+9'").collect::<Result<_,_>>()?;
 # let ctx = ValidationContext::builder().build();
 
@@ -291,7 +291,7 @@ match ctx.validate(&segs).result() {
         }
     }
 }
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ---
@@ -299,7 +299,7 @@ match ctx.validate(&segs).result() {
 ## `ValidationReport` — working with results
 
 ```rust
-# use edifact_rs::{ValidationContext, from_bytes};
+# use edifact::{ValidationContext, from_bytes};
 # let segs: Vec<_> = from_bytes(b"BGM+220+PO-4711+9'").collect::<Result<_,_>>()?;
 # let ctx = ValidationContext::builder().build();
 let report = ctx.validate(&segs);
@@ -322,7 +322,7 @@ println!("{} ORDERS-DEMO issues", profile_issues.total_issues());
 // Get issues for a specific rule (lazy iterator; collect or count as needed)
 let count = report.issues_for_rule_id("ORDERS-P001").count();
 println!("ORDERS-P001 findings: {count}");
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ---
@@ -333,7 +333,7 @@ Within a `Validator` or `ProfileRulePack` rule, construct `ValidationIssue` with
 builder API:
 
 ```rust
-use edifact_rs::{Span, ValidationIssue, ValidationSeverity};
+use edifact::{Span, ValidationIssue, ValidationSeverity};
 
 let issue = ValidationIssue::new(
     ValidationSeverity::Error,
@@ -374,7 +374,7 @@ different coordinates — the 70 000th `QTY` of an `MSCONS` is occurrence `69_99
 and if it follows `UNH`, `BGM` and `LIN` its position is `70_003`:
 
 ```rust
-use edifact_rs::{FindingKind, ValidationIssue, ValidationLayer, ValidationSeverity};
+use edifact::{FindingKind, ValidationIssue, ValidationLayer, ValidationSeverity};
 
 let index_in_message: usize = 70_002; // zero-based index into a slice starting at UNH
 let issue = ValidationIssue::new(ValidationSeverity::Error, "QTY qualifier must be 220")
@@ -410,7 +410,7 @@ The built-in classification:
 | `ProfileRulePack` helpers | `Profile` (from the context) | `require_segment*` → `Missing`, `forbid_segment*` → `NotPermitted`, `require_qualifier*` → `Code` |
 
 ```rust
-use edifact_rs::{FindingKind, ProfileRulePack, ValidationContext, ValidationLayer, from_bytes};
+use edifact::{FindingKind, ProfileRulePack, ValidationContext, ValidationLayer, from_bytes};
 
 let segs: Vec<_> = from_bytes(b"UNH+1+ORDERS:D:96A:UN'BGM+220'DTM+137:20240101:102'UNT+4+1'")
     .collect::<Result<_, _>>()?;
@@ -433,7 +433,7 @@ let for_contrl = report.iter_issues().filter(|i| {
     )
 });
 assert_eq!(for_contrl.count(), 0);
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 With the `serde` feature, optional fields serialise only when set and read back
@@ -466,7 +466,7 @@ assert_eq!(scope, Some("4711"));
 For arbitrary domain metadata use `with_context_entry` instead:
 
 ```rust
-use edifact_rs::{Span, ValidationIssue, ValidationSeverity};
+use edifact::{Span, ValidationIssue, ValidationSeverity};
 
 let issue = ValidationIssue::new(ValidationSeverity::Error, "BGM code invalid")
     .with_rule_id("PROFILE-4711-BGM-M")
@@ -484,7 +484,7 @@ For complex validation that needs shared state across segments (e.g. reference
 counting, cross-segment consistency), implement `Validator` as a struct:
 
 ```rust
-use edifact_rs::{Validator, ValidationReport, ValidationRuleContext, ValidationIssue, ValidationSeverity, Segment};
+use edifact::{Validator, ValidationReport, ValidationRuleContext, ValidationIssue, ValidationSeverity, Segment};
 
 struct ReferenceConsistencyValidator;
 
@@ -524,7 +524,7 @@ impl Validator for ReferenceConsistencyValidator {
 }
 ```
 
-See [`cookbook_fixture_validation.rs`](https://github.com/hupe1980/edifact-rs/tree/main/crates/edifact-rs/examples/cookbook_fixture_validation.rs)
+See [`cookbook_fixture_validation.rs`](https://github.com/hupe1980/edifact/tree/main/crates/edifact/examples/cookbook_fixture_validation.rs)
 for a complete validator with fixture-based test data.
 
 ---
@@ -534,7 +534,7 @@ for a complete validator with fixture-based test data.
 Validate each `UNH..UNT` window as it arrives from the reader:
 
 ```rust
-use edifact_rs::{
+use edifact::{
     ValidationContext, ProfileRulePack, ValidationIssue, ValidationSeverity,
     message_windows_from_reader,
 };
@@ -569,10 +569,10 @@ for result in message_windows_from_reader(input) {
         report.errors().len()
     );
 }
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
-See [`cookbook_streamed_progressive_validation.rs`](https://github.com/hupe1980/edifact-rs/tree/main/crates/edifact-rs/examples/cookbook_streamed_progressive_validation.rs)
+See [`cookbook_streamed_progressive_validation.rs`](https://github.com/hupe1980/edifact/tree/main/crates/edifact/examples/cookbook_streamed_progressive_validation.rs)
 for a complete example.
 
 ---
@@ -585,7 +585,7 @@ message. First define a `[GroupDef]` schema, build a `SegmentGroupIndexed` tree
 with `group_segments_indexed`, then pass the tree to `validate_grouped`:
 
 ```rust
-use edifact_rs::{
+use edifact::{
     ValidationContext, ProfileRulePack,
     group::{GroupDef, group_segments_indexed},
     from_bytes,
@@ -622,7 +622,7 @@ println!("{} error(s)", report.errors().len());
 let issue = &report.errors()[0];
 assert_eq!(issue.segment_group(), Some("SG5"));
 assert_eq!(issue.group_path().map(|p| p.to_string()).as_deref(), Some("SG5[1]"));
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 Group-rule issues carry a `group_path` (see
@@ -640,8 +640,8 @@ through `GroupDef::builder`, which owns its strings (shared behind `Arc`, so
 cloning a group is O(1)) — no borrowed arena, no `Box::leak`:
 
 ```rust
-use edifact_rs::group::{GroupDef, SegmentPlace, group_segments_indexed};
-use edifact_rs::from_bytes;
+use edifact::group::{GroupDef, SegmentPlace, group_segments_indexed};
+use edifact::from_bytes;
 
 // Stand-in for names read out of a MIG file at startup.
 let names: Vec<String> = vec!["SG5".into(), "LIN".into()];
@@ -653,7 +653,7 @@ let segs: Vec<_> = from_bytes(b"UNH+1+ORDERS:D:96A:UN'LIN+1'UNT+3+1'")
 let tree = group_segments_indexed(&segs, &schema, "ROOT");
 
 assert_eq!(tree.children[0].definition, "SG5");
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 A nested child slice in a `static` must be a named `static` of its own
@@ -695,7 +695,7 @@ otherwise, and open schemas build that tree. Declaring `SG8`'s members
 fixes it:
 
 ```rust
-use edifact_rs::group::{GroupDef, SegmentPlace, group_segments_indexed};
+use edifact::group::{GroupDef, SegmentPlace, group_segments_indexed};
 
 let sg8 = GroupDef::builder("SG8", SegmentPlace::new("SEQ"))
     .segment(SegmentPlace::new("RFF"))
@@ -706,7 +706,7 @@ let schema = [GroupDef::builder("SG4", SegmentPlace::new("IDE"))
     .group(sg8)
     .build()?];
 
-let segments: Vec<_> = edifact_rs::from_bytes(b"IDE+24+X'RFF+Z13:1'SEQ+Z01'RFF+Z19:ABC'CCI+Z30'")
+let segments: Vec<_> = edifact::from_bytes(b"IDE+24+X'RFF+Z13:1'SEQ+Z01'RFF+Z19:ABC'CCI+Z30'")
     .collect::<Result<_, _>>()?;
 let tree = group_segments_indexed(&segments, &schema, "ROOT");
 let sg4 = &tree.children[0];
@@ -714,7 +714,7 @@ assert_eq!(
     sg4.children.iter().map(|g| (g.definition, g.total_span.clone())).collect::<Vec<_>>(),
     [("SG6", 1..2), ("SG8", 2..5)],
 );
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ### Placements and findings: `GroupSchema`
@@ -741,8 +741,8 @@ resolution inside a `ValidationContext`:
 
 ```rust
 use std::sync::Arc;
-use edifact_rs::group::{Discriminator, Entry, GroupDef, GroupSchema, SegmentPlace};
-use edifact_rs::{FindingKind, PlacementValidator, ValidationContext, ValidationLayer};
+use edifact::group::{Discriminator, Entry, GroupDef, GroupSchema, SegmentPlace};
+use edifact::{FindingKind, PlacementValidator, ValidationContext, ValidationLayer};
 
 let malo = |code: &str, id: &str| {
     GroupDef::builder("SG5", SegmentPlace::new("LOC").with_id(id).when(Discriminator::one_of(0, 0, [code])))
@@ -763,7 +763,7 @@ let schema = GroupSchema::ordered(
     ],
 )?;
 
-let segments: Vec<_> = edifact_rs::from_bytes(
+let segments: Vec<_> = edifact::from_bytes(
     b"UNH+1+UTILMD:D:11A:UN'IDE+24+V1'LOC+Z22+1'LOC+Z16+2'UNT+5+1'",
 )
 .collect::<Result<_, _>>()?;
@@ -780,7 +780,7 @@ let issue = &report.errors()[0];
 assert_eq!(issue.kind(), Some(FindingKind::Placement));
 assert_eq!(issue.error_code(), Some("E068"));
 assert_eq!(issue.segment_position(), Some(4));
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 Resolution is `O(n × reachable places)` time and `O(n)` extra memory, with no
@@ -806,7 +806,7 @@ one level. `UTILMD` names its message-level parties in SG2 and a Vorgang's
 parties in SG12 inside SG4 — both triggered by `NAD`:
 
 ```rust
-use edifact_rs::group::{GroupDef, group_segments_indexed};
+use edifact::group::{GroupDef, group_segments_indexed};
 
 static SG12: &[GroupDef] = &[GroupDef::new("SG12", "NAD")];
 static SCHEMA: &[GroupDef] = &[
@@ -814,7 +814,7 @@ static SCHEMA: &[GroupDef] = &[
     GroupDef::with_children("SG4", "IDE", SG12),
 ];
 
-let segments: Vec<_> = edifact_rs::from_bytes(
+let segments: Vec<_> = edifact::from_bytes(
     b"BGM+E01'NAD+MS+SENDER'NAD+MR+RECEIVER'IDE+24+V1'NAD+Z09+KUNDE'DTM+92:20260101:102'",
 )
 .collect::<Result<Vec<_>, _>>()?;
@@ -829,7 +829,7 @@ assert_eq!(
 // … and the party inside the Vorgang nests as SG12, rather than reopening SG2.
 let sg4 = tree.children.last().unwrap();
 assert_eq!(sg4.children[0].definition, "SG12");
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 A group ends at the first segment the current branch cannot consume, never at
@@ -847,7 +847,7 @@ document order, and `find(name)` yields every group with a given name at any
 depth:
 
 ```rust
-use edifact_rs::group::{GroupDef, group_segments_indexed};
+use edifact::group::{GroupDef, group_segments_indexed};
 
 static SG12: &[GroupDef] = &[GroupDef::new("SG12", "NAD")];
 static SCHEMA: &[GroupDef] = &[
@@ -855,7 +855,7 @@ static SCHEMA: &[GroupDef] = &[
     GroupDef::with_children("SG4", "IDE", SG12),
 ];
 
-let segments: Vec<_> = edifact_rs::from_bytes(
+let segments: Vec<_> = edifact::from_bytes(
     b"NAD+MS+SENDER'IDE+24+V1'NAD+Z09+KUNDE'IDE+24+V2'NAD+VY+PARTY'",
 )
 .collect::<Result<Vec<_>, _>>()?;
@@ -868,7 +868,7 @@ let parties: Vec<&str> = tree
     .filter_map(|nad| nad.element_str(0))
     .collect();
 assert_eq!(parties, ["Z09", "VY"]);
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 ### What a group actually spans
@@ -892,7 +892,7 @@ how to build group rules.
 definition dictionary:
 
 ```rust
-use edifact_rs::{DirectoryValidatorBuilder, OwnedSegmentDef, OwnedElementRef, Status};
+use edifact::{DirectoryValidatorBuilder, OwnedSegmentDef, OwnedElementRef, Status};
 
 let validator = DirectoryValidatorBuilder::new("CUSTOM-D96A")
     .add_segment(
@@ -934,7 +934,7 @@ where the standard says `an..35` is refused at the far end, long after it was
 sent. Attach it with `with_repr` and `DirectoryValidator` checks it:
 
 ```rust
-use edifact_rs::{ComponentRef, ElementRef, Repr, SegmentDefinition, Status};
+use edifact::{ComponentRef, ElementRef, Repr, SegmentDefinition, Status};
 
 static C507: &[ComponentRef] = &[
     ComponentRef::new(1, "2005", Status::Mandatory).with_repr(Repr::an_up_to(3)),
@@ -979,7 +979,7 @@ are numeric; `1.`, `.`, `+1` and `1 2` are not.
 
 ### The shipped service tables carry theirs
 
-`edifact_rs::service` declares the representations from ISO 9735-1 Annex C, so
+`edifact::service` declares the representations from ISO 9735-1 Annex C, so
 `UNZ+abc+IC1'` (DE 0036 is `n..6`) and a 20-character `UNB` DE 0020 (`an..14`)
 are rejected with no directory involved.
 
@@ -995,7 +995,7 @@ would pass in a version 4 interchange, and a seven-digit one in either. So the
 table declares both, and the checker picks by the version in `UNB` S001 DE 0002:
 
 ```rust
-use edifact_rs::{ComponentRef, Repr, Status};
+use edifact::{ComponentRef, Repr, Status};
 
 const DATE: ComponentRef = ComponentRef::new(1, "0017", Status::Mandatory)
     .with_repr_by_syntax_version(Repr::n(6), Repr::n(8));
@@ -1040,7 +1040,7 @@ the program can contradict it.
 messages:
 
 ```rust
-use edifact_rs::{ComponentRef, ElementRef, SegmentDefinition, SegmentLayout, Status, from_bytes};
+use edifact::{ComponentRef, ElementRef, SegmentDefinition, SegmentLayout, Status, from_bytes};
 
 // A hand-authored C507 that stops one component short of the directory.
 static C507: &[ComponentRef] = &[
@@ -1056,7 +1056,7 @@ let audit = DTM.audit(&corpus);
 
 // The format qualifier `102` has nowhere to go — the layout is short.
 assert!(audit.has_contradictions());
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 Three kinds of finding come back, and the distinction between them is the point:
@@ -1073,7 +1073,7 @@ fixtures are too thin to say, and it names exactly which positions still need a
 human to check them against the directory — or a fixture that reaches them:
 
 ```rust
-# use edifact_rs::{ComponentRef, ElementRef, SegmentDefinition, SegmentLayout, Status, from_bytes};
+# use edifact::{ComponentRef, ElementRef, SegmentDefinition, SegmentLayout, Status, from_bytes};
 # static C507: &[ComponentRef] = &[
 #     ComponentRef::new(1, "2005", Status::Mandatory),
 #     ComponentRef::new(2, "2380", Status::Conditional),
@@ -1089,7 +1089,7 @@ let audit = DTM.audit(&corpus);
 assert!(!audit.has_contradictions());          // nothing is disproved …
 let pending: Vec<&str> = audit.unconfirmed().map(|s| s.data_element.as_str()).collect();
 assert_eq!(pending, ["2379"]);                 // … but 2379 is still unverified
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 The assertion to put in a test is `!audit.has_contradictions()`, together with
@@ -1108,7 +1108,7 @@ reports each disagreement once rather than once per message.
 to?* — in one call:
 
 ```rust
-use edifact_rs::{audit_directory, from_bytes, service};
+use edifact::{audit_directory, from_bytes, service};
 
 let corpus: Vec<_> = from_bytes(
     b"UNB+UNOC:3+S+R+260101:0900+IC1'UNH+M1+ORDERS:D:96A:UN'UNT+2+M1'UNZ+1+IC1'",
@@ -1118,7 +1118,7 @@ let corpus: Vec<_> = from_bytes(
 for audit in audit_directory(service::lookup, &corpus) {
     assert!(!audit.has_contradictions(), "{audit}");
 }
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 Only tags the corpus contains are audited. A definition the fixtures never
@@ -1149,7 +1149,7 @@ definitions) — the same data can be addressed by its UN/EDIFACT identifier
 instead, and a wrong reference becomes a directory lookup error:
 
 ```rust
-use edifact_rs::{ComponentRef, ElementRef, SegmentDefinition, Status, from_bytes};
+use edifact::{ComponentRef, ElementRef, SegmentDefinition, Status, from_bytes};
 
 static C082: &[ComponentRef] = &[
     ComponentRef::new(1, "3039", Status::Mandatory),
@@ -1171,7 +1171,7 @@ assert_eq!(nad.value_by_code(&NAD, "3055")?, Some("293"));
 
 // DE 2380 belongs to DTM, not NAD — an error, not a wrong-but-quiet read.
 assert!(nad.value_by_code(&NAD, "2380").is_err());
-# Ok::<(), edifact_rs::EdifactError>(())
+# Ok::<(), edifact::EdifactError>(())
 ```
 
 | Method | On | Returns |

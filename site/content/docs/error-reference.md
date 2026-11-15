@@ -4,7 +4,7 @@ description = "Every EdifactError variant with its stable code E001-E053 and E06
 weight = 110
 +++
 
-All errors returned by `edifact-rs` are variants of `EdifactError`. Every variant
+All errors returned by `edifact` are variants of `EdifactError`. Every variant
 carries a stable, semver-protected code (`E001`–`E053`, `E066`–`E071`) accessible via
 `err.stable_code()`. The enum is `#[non_exhaustive]`, so variants can be added without a breaking
 change.
@@ -536,7 +536,7 @@ report rather than an error.
 Because `EdifactError` is `#[non_exhaustive]`, always include a wildcard arm:
 
 ```rust
-use edifact_rs::EdifactError;
+use edifact::EdifactError;
 
 fn handle(err: EdifactError) {
     match err {
@@ -563,7 +563,7 @@ fn handle(err: EdifactError) {
 Use `err.stable_code()` to emit a stable, searchable error code in structured logs:
 
 ```rust,ignore
-use edifact_rs::from_bytes;
+use edifact::from_bytes;
 
 match from_bytes(b"BAD").collect::<Result<Vec<_>, _>>() {
     Ok(_) => {}
@@ -713,7 +713,7 @@ that would have exceeded it, for `max_input_bytes` the budget itself (the first
 byte outside it).
 
 ```rust
-use edifact_rs::{EdifactError, ReaderConfig, from_bytes_with_config};
+use edifact::{EdifactError, ReaderConfig, from_bytes_with_config};
 
 let config = ReaderConfig::default().max_input_bytes(8);
 let err = from_bytes_with_config(b"BGM+220'   \n", config)
@@ -795,7 +795,7 @@ sequence would be mistaken for an element separator. Mis-decoding silently is
 worse than refusing.
 
 **Fix**: Ask the partner for `UNOC` or `UNOY`, or transcode the interchange with
-a dedicated codec before handing it to `edifact-rs`.
+a dedicated codec before handing it to `edifact`.
 
 ---
 

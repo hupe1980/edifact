@@ -48,7 +48,7 @@ pub(super) struct LayeredValidator {
 ///
 /// ```rust,ignore
 /// use std::sync::{Arc, LazyLock};
-/// use edifact_rs::{ProfileRulePack, ValidationContext, ValidationLayer};
+/// use edifact::{ProfileRulePack, ValidationContext, ValidationLayer};
 ///
 /// static ORDERS_PACK: LazyLock<Arc<ProfileRulePack>> = LazyLock::new(|| {
 ///     Arc::new(
@@ -282,7 +282,7 @@ impl ValidationContextBuilder {
     ///
     /// ```rust,ignore
     /// use std::sync::{Arc, LazyLock};
-    /// use edifact_rs::{ProfileRulePack, ValidationContext};
+    /// use edifact::{ProfileRulePack, ValidationContext};
     ///
     /// static PACK: LazyLock<Arc<ProfileRulePack>> = LazyLock::new(|| {
     ///     Arc::new(ProfileRulePack::new("MIG").require_segment("BGM", "MIG-BGM-M"))
@@ -349,8 +349,8 @@ impl ValidationContext {
     /// # Example
     ///
     /// ```rust,ignore
-    /// use edifact_rs::{group_segments_indexed, ValidationContext};
-    /// use edifact_rs::group::GroupDef;
+    /// use edifact::{group_segments_indexed, ValidationContext};
+    /// use edifact::group::GroupDef;
     ///
     /// static SCHEMA: &[GroupDef] = &[GroupDef::new("SG5", "LOC")];
     ///
@@ -599,7 +599,7 @@ impl ValidationContext {
                          group-pass) will not run for this message",
                     ),
                 )
-                .with_rule_id("edifact-rs::fork::excluded-validator")
+                .with_rule_id("edifact::fork::excluded-validator")
                 // A note about the context, not about the message: no layer.
                 .with_kind(crate::FindingKind::Other),
             );

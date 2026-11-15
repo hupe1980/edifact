@@ -1,10 +1,10 @@
 +++
 title = "Getting Started"
-description = "Install edifact-rs, parse your first EDIFACT interchange, and choose the feature flags you need."
+description = "Install edifact, parse your first EDIFACT interchange, and choose the feature flags you need."
 weight = 10
 +++
 
-This guide walks you from zero to a working `edifact-rs` integration in under five minutes.
+This guide walks you from zero to a working `edifact` integration in under five minutes.
 
 ---
 
@@ -25,13 +25,13 @@ rustup update      # upgrade to latest stable
 ## 1. Add the dependency
 
 ```bash
-cargo add edifact-rs
+cargo add edifact
 ```
 
 The `derive` feature is enabled by default, which re-exports the
 `EdifactDeserialize` / `EdifactSerialize` derive macros — and their
 `EdifactCompositeDeserialize` / `EdifactCompositeSerialize` counterparts — from
-`edifact-rs-derive`.
+`edifact-derive`.
 
 ### Optional features
 
@@ -43,13 +43,13 @@ The `derive` feature is enabled by default, which re-exports the
 Enable diagnostics:
 
 ```bash
-cargo add edifact-rs --features diagnostics
+cargo add edifact --features diagnostics
 ```
 
 Disable derive macros (core parsing only):
 
 ```bash
-cargo add edifact-rs --no-default-features
+cargo add edifact --no-default-features
 ```
 
 ---
@@ -57,9 +57,9 @@ cargo add edifact-rs --no-default-features
 ## 2. Parse your first EDIFACT message
 
 ```rust
-use edifact_rs::from_bytes;
+use edifact::from_bytes;
 
-fn main() -> Result<(), edifact_rs::EdifactError> {
+fn main() -> Result<(), edifact::EdifactError> {
     // Minimal ORDERS interchange (UNA is optional)
     let input = b"UNA:+.? '\
                   UNH+1+ORDERS:D:11A:UN'\
@@ -89,9 +89,9 @@ Each `Segment` borrows its tag and element text from `input`.
 ## 3. Access segment data
 
 ```rust
-use edifact_rs::from_bytes;
+use edifact::from_bytes;
 
-fn main() -> Result<(), edifact_rs::EdifactError> {
+fn main() -> Result<(), edifact::EdifactError> {
     let input = b"BGM+220+PO-4711+9'";
     let segs: Vec<_> = from_bytes(input).collect::<Result<_, _>>()?;
     let bgm = &segs[0];
@@ -118,7 +118,7 @@ fn main() -> Result<(), edifact_rs::EdifactError> {
 Instead of accessing elements by index, declare a struct:
 
 ```rust
-use edifact_rs::{EdifactDeserialize, EdifactSerialize, from_bytes};
+use edifact::{EdifactDeserialize, EdifactSerialize, from_bytes};
 
 #[derive(Debug, EdifactDeserialize, EdifactSerialize)]
 #[edifact(segment = "BGM")]
@@ -131,7 +131,7 @@ struct Bgm {
     function_code: Option<String>,
 }
 
-fn main() -> Result<(), edifact_rs::EdifactError> {
+fn main() -> Result<(), edifact::EdifactError> {
     let input = b"BGM+220+PO-4711+9'";
     let segs: Vec<_> = from_bytes(input).collect::<Result<_, _>>()?;
     let bgm = Bgm::edifact_deserialize(&segs)?;
@@ -149,7 +149,7 @@ fn main() -> Result<(), edifact_rs::EdifactError> {
 ## 5. Validate a message
 
 ```rust
-use edifact_rs::{
+use edifact::{
     ValidationContext, ValidationLayer, Validator, ValidationReport, ValidationRuleContext,
     Segment, from_bytes,
 };
@@ -167,7 +167,7 @@ impl Validator for MyValidator {
     }
 }
 
-fn main() -> Result<(), edifact_rs::EdifactError> {
+fn main() -> Result<(), edifact::EdifactError> {
     let input = b"UNH+1+ORDERS:D:11A:UN'BGM+220+PO-4711+9'UNT+3+1'";
     let segs: Vec<_> = from_bytes(input).collect::<Result<_, _>>()?;
 
@@ -195,10 +195,10 @@ fn main() -> Result<(), edifact_rs::EdifactError> {
 ## 6. Process a reader (large files)
 
 ```rust,no_run
-use edifact_rs::from_reader;
+use edifact::from_reader;
 use std::fs::File;
 
-fn main() -> Result<(), edifact_rs::EdifactError> {
+fn main() -> Result<(), edifact::EdifactError> {
     let f = File::open("interchange.edi")?;
     for result in from_reader(f) {
         let segment = result?;

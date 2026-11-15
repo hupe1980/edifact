@@ -8,7 +8,7 @@
 //!   either parsing path.
 //! - Honour `max_issues_per_rule` across the whole tree walk, not per group.
 
-use edifact_rs::{
+use edifact::{
     ProfileRulePack, ValidationContext, ValidationIssue, ValidationSeverity,
     group::{GroupDef, group_segments_indexed},
 };
@@ -33,17 +33,17 @@ static SCHEMA: &[GroupDef] = &[
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Parse ASCII EDIFACT snippet into owned segments.
-fn owned_segs(input: &[u8]) -> Vec<edifact_rs::OwnedSegment> {
-    edifact_rs::from_reader(std::io::Cursor::new(input))
+fn owned_segs(input: &[u8]) -> Vec<edifact::OwnedSegment> {
+    edifact::from_reader(std::io::Cursor::new(input))
         .collect::<Result<_, _>>()
         .expect("fixture should parse")
 }
 
 /// Parse ASCII EDIFACT snippet into borrowed segments (from a String so we own the buffer).
-fn parse_segs(input: &str) -> Vec<edifact_rs::Segment<'static>> {
+fn parse_segs(input: &str) -> Vec<edifact::Segment<'static>> {
     // Leak the string so we get 'static lifetime — acceptable in tests only.
     let s: &'static str = Box::leak(input.to_owned().into_boxed_str());
-    edifact_rs::from_bytes(s.as_bytes())
+    edifact::from_bytes(s.as_bytes())
         .collect::<Result<_, _>>()
         .expect("fixture should parse")
 }
@@ -413,9 +413,8 @@ fn a_schema_built_at_runtime_groups_identically_to_a_static_one() {
         "SG6".to_owned(),
         "QTY".to_owned(),
     ];
-    let owned = |name: &str, trigger: &str| {
-        GroupDef::builder(name, edifact_rs::SegmentPlace::owned(trigger))
-    };
+    let owned =
+        |name: &str, trigger: &str| GroupDef::builder(name, edifact::SegmentPlace::owned(trigger));
     let runtime_schema = vec![
         owned(&names[0], &names[1]).build().expect("valid group"),
         owned(&names[2], &names[3])
@@ -427,14 +426,14 @@ fn a_schema_built_at_runtime_groups_identically_to_a_static_one() {
 
     let input =
         b"UNH+1+ORDERS:D:96A:UN'RFF+ON:1'LOC+172+DE1'DTM+163:20260101:102'QTY+220:5'UNT+6+1'";
-    let segs: Vec<_> = edifact_rs::from_bytes(input)
+    let segs: Vec<_> = edifact::from_bytes(input)
         .collect::<Result<Vec<_>, _>>()
         .expect("parse");
 
     let from_static = group_segments_indexed(&segs, SCHEMA, "ROOT");
     let from_runtime = group_segments_indexed(&segs, &runtime_schema, "ROOT");
 
-    fn shape(g: &edifact_rs::SegmentGroupIndexed<'_>) -> Vec<(String, std::ops::Range<usize>)> {
+    fn shape(g: &edifact::SegmentGroupIndexed<'_>) -> Vec<(String, std::ops::Range<usize>)> {
         let mut out = vec![(g.definition.to_owned(), g.total_span.clone())];
         for child in &g.children {
             out.extend(shape(child));
@@ -587,7 +586,7 @@ static PATH_SCHEMA: &[GroupDef] = &[GroupDef::with_children("SG4", "IDE", SG8)];
 
 #[test]
 fn group_path_is_stamped() {
-    use edifact_rs::{FindingKind, GroupPath, GroupStep};
+    use edifact::{FindingKind, GroupPath, GroupStep};
 
     let segs = parse_segs(
         "UNH+1+UTILMD:D:11A:UN'BGM+E01'IDE+24+A'SEQ+Z01'SEQ+Z02'IDE+24+B'SEQ+Z01'UNT+8+1'",
@@ -649,8 +648,8 @@ fn group_path_is_stamped() {
 
 mod placement_findings {
     use super::parse_segs;
-    use edifact_rs::group::{Discriminator, Entry, GroupDef, GroupSchema, SegmentPlace};
-    use edifact_rs::{
+    use edifact::group::{Discriminator, Entry, GroupDef, GroupSchema, SegmentPlace};
+    use edifact::{
         FindingKind, PlacementValidator, ValidationContext, ValidationIssue, ValidationLayer,
     };
     use std::sync::Arc;

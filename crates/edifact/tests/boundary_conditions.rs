@@ -5,12 +5,12 @@
 //! UTF-8, and segments at exactly the configured size limit.  The behaviour is
 //! correct today; these tests pin it so it stays that way.
 
-use edifact_rs::{
+use edifact::{
     EdifactError, ReaderConfig, ServiceStringAdvice, Writer, from_bytes, from_bytes_with_config,
     segments_to_bytes, validate_envelope,
 };
 
-fn parse(input: &[u8]) -> Result<Vec<edifact_rs::Segment<'_>>, EdifactError> {
+fn parse(input: &[u8]) -> Result<Vec<edifact::Segment<'_>>, EdifactError> {
     from_bytes(input).collect()
 }
 
@@ -20,7 +20,7 @@ fn parse(input: &[u8]) -> Result<Vec<edifact_rs::Segment<'_>>, EdifactError> {
 fn empty_input_yields_no_segments() {
     assert_eq!(parse(b"").expect("empty input is not an error").len(), 0);
     assert_eq!(
-        edifact_rs::from_reader(std::io::Cursor::new(b"".as_slice()))
+        edifact::from_reader(std::io::Cursor::new(b"".as_slice()))
             .collect::<Result<Vec<_>, _>>()
             .expect("empty reader is not an error")
             .len(),
@@ -130,7 +130,7 @@ fn nested_release_sequences_resolve_pairwise() {
 #[test]
 fn release_escaping_every_service_character_round_trips() {
     for value in ["a+b", "a:b", "a?b", "a'b", "?", "??", "+:?'"] {
-        let seg = edifact_rs::Segment::new("FTX", vec![edifact_rs::Element::of(&[value])]);
+        let seg = edifact::Segment::new("FTX", vec![edifact::Element::of(&[value])]);
         let bytes = segments_to_bytes(std::slice::from_ref(&seg)).expect("write");
         let back = parse(&bytes).expect("re-parse own output");
         assert_eq!(
@@ -169,7 +169,7 @@ fn multibyte_utf8_values_round_trip() {
     // The writer inserts single ASCII release bytes into a UTF-8 buffer; a
     // multi-byte value must survive that untouched.
     let value = "Grüße — 北京 🌍";
-    let seg = edifact_rs::Segment::new("FTX", vec![edifact_rs::Element::of(&[value])]);
+    let seg = edifact::Segment::new("FTX", vec![edifact::Element::of(&[value])]);
     let bytes = segments_to_bytes(std::slice::from_ref(&seg)).expect("write");
     let back = parse(&bytes).expect("re-parse");
     assert_eq!(back[0].element_str(0), Some(value));
@@ -178,7 +178,7 @@ fn multibyte_utf8_values_round_trip() {
 #[test]
 fn multibyte_utf8_next_to_an_escaped_delimiter_round_trips() {
     let value = "ü+ß:é?ñ'ö";
-    let seg = edifact_rs::Segment::new("FTX", vec![edifact_rs::Element::of(&[value])]);
+    let seg = edifact::Segment::new("FTX", vec![edifact::Element::of(&[value])]);
     let bytes = segments_to_bytes(std::slice::from_ref(&seg)).expect("write");
     assert_eq!(
         parse(&bytes).expect("re-parse")[0].element_str(0),
@@ -204,7 +204,7 @@ fn utf8_split_across_a_reader_chunk_boundary_is_handled() {
     let input = "FTX+Grüße北京'".as_bytes();
     for capacity in 1..=input.len() {
         let reader = std::io::BufReader::with_capacity(capacity, std::io::Cursor::new(input));
-        let segs = edifact_rs::from_reader(reader)
+        let segs = edifact::from_reader(reader)
             .collect::<Result<Vec<_>, _>>()
             .unwrap_or_else(|e| panic!("failed at buffer capacity {capacity}: {e}"));
         assert_eq!(segs[0].elements[0].components[0].0, "Grüße北京");
@@ -254,7 +254,7 @@ fn slice_and_reader_paths_agree_at_the_limit_boundary() {
         let slice_ok = from_bytes_with_config(&input, cfg)
             .collect::<Result<Vec<_>, _>>()
             .is_ok();
-        let reader_ok = edifact_rs::from_bufread_with_config(
+        let reader_ok = edifact::from_bufread_with_config(
             std::io::BufReader::with_capacity(64, std::io::Cursor::new(&input)),
             cfg,
         )
