@@ -1,0 +1,77 @@
+name: Release
+
+# Publishes edifact-derive and edifact for a `v*` tag through crates.io
+# trusted publishing (GitHub OIDC); no long-lived registry token is stored.
+# Versions already on crates.io are skipped, so a tag for a release published
+# by hand passes.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    name: release
+    environment: crates-io
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Verify tag and crate versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          read_version() {
+            cargo metadata --no-deps --format-version 1 \
+              | python3 -c "import sys,json; print(next(p['version'] for p in json.load(sys.stdin)['packages'] if p['name']=='$1'))"
+          }
+          tag="${GITHUB_REF_NAME#v}"
+          main_ver=$(read_version edifact)
+          derive_ver=$(read_version edifact-derive)
+          echo "tag=${tag}  edifact=${main_ver}  edifact-derive=${derive_ver}"
+          if [[ "${tag}" != "${main_ver}" || "${derive_ver}" != "${main_ver}" ]]; then
+            echo "Tag and crate versions must all match." >&2
+            exit 1
+          fi
+          echo "VERSION=${main_ver}" >> "$GITHUB_ENV"
+
+      - name: Find unpublished crates
+        id: pending
+        shell: bash
+        run: |
+          set -euo pipefail
+          pending=""
+          for crate in edifact-derive edifact; do
+            if curl -sf -o /dev/null -H "User-Agent: edifact-release-ci/github-actions" \
+                "https://crates.io/api/v1/crates/${crate}/${VERSION}"; then
+              echo "${crate} ${VERSION} is already on crates.io, skipping."
+            else
+              pending="${pending} ${crate}"
+            fi
+          done
+          echo "crates=${pending# }" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate with crates.io
+        if: steps.pending.outputs.crates != ''
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+
+      # The derive crate goes first; cargo waits until it is indexed.
+      - name: Publish
+        if: steps.pending.outputs.crates != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          for crate in ${{ steps.pending.outputs.crates }}; do
+            cargo publish -p "${crate}" --locked
+          done
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

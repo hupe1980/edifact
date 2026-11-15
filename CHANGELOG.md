@@ -19,8 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `edifact_derive::…`. The fork-validation report ID is now
   `edifact::fork::excluded-validator`. The repository moved to
   `hupe1980/edifact` and the guides to <https://hupe1980.github.io/edifact/>.
-  `edifact-rs` 0.19.0 only re-exports `edifact` and receives no further
-  releases.
+  `edifact-rs` and `edifact-rs-derive` receive no further releases.
 
 ## [0.18.0] — 2026-10-18
 
