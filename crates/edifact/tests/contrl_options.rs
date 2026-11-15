@@ -671,17 +671,18 @@ fn a_fault_in_an_unnamed_message_rejects_the_uci() {
 }
 
 #[test]
-fn an_unsupported_charset_from_a_validation_run_names_unb_and_its_s011() {
-    // Through `from_report`: the span-less E039 is anchored on UNB S001.
+fn an_unsupported_charset_has_no_typed_header_so_the_reply_comes_from_the_scan() {
+    // `UNOX` cannot be typed as a `Charset`: the lenient envelope carries no
+    // interchange, and the reply is built from the recovering scan
+    // (`an_unsupported_charset_names_unb_and_its_s011`).
     let raw = interchange(
         "UNB+UNOX:3+4012345000023:500+9900357000004:500+261001:0700+IC9'",
         MSG_1,
         1,
     );
-    assert_eq!(
-        report_default(&raw),
-        format!("UNH+ACK1+CONTRL:D:3:UN'{UCI}+4+46+UNB+2:1'UNT+3+ACK1'")
-    );
+    let lenient = validate_envelope_lenient(&parse(&raw));
+    assert!(lenient.interchange.is_none());
+    assert!(lenient.errors.iter().any(|e| e.stable_code() == "E039"));
 }
 
 // ── reply interchange addressing ─────────────────────────────────────────────
@@ -717,4 +718,100 @@ fn reply_unb_without_qualifiers_is_unchanged() {
         wire.starts_with("UNB+UNOC:3+RECEIVER+SENDER+261001:0800+R1'"),
         "{wire}"
     );
+}
+
+// ── reply envelope validity ──────────────────────────────────────────────────
+
+/// A reply is rendered only through a valid header: an empty party is a typed
+/// error and no bytes.
+#[test]
+fn reply_with_an_empty_party_is_refused() {
+    let raw = interchange(UNB_3, MSG_1, 1);
+    for (side, expected) in [("sender", "E008"), ("recipient", "E021")] {
+        let (_, mut validated, _) = subject(&raw);
+        match side {
+            // S002 gone entirely.
+            "sender" => {
+                validated.interchange.header.sender.id.clear();
+                validated.interchange.header.sender.qualifier = None;
+            }
+            // Qualifier kept, id empty.
+            _ => validated.interchange.header.recipient.id.clear(),
+        }
+        let result = Contrl::acknowledgement(&validated)
+            .to_interchange_bytes("UNOC", "3", "261001", "0800", "R1");
+        // The subject's sender is the reply's recipient (S003), and vice versa.
+        assert_eq!(result.unwrap_err().stable_code(), expected, "{side}");
+    }
+}
+
+/// An over-long party is the header's length finding, with no bytes.
+#[test]
+fn reply_with_an_over_long_party_is_refused() {
+    let raw = interchange(UNB_3, MSG_1, 1);
+    let (_, mut validated, _) = subject(&raw);
+    validated.interchange.header.sender.id = "9".repeat(36);
+    let result = Contrl::acknowledgement(&validated)
+        .to_interchange_bytes("UNOC", "3", "261001", "0800", "R1");
+    assert_eq!(result.unwrap_err().stable_code(), "E049");
+}
+
+/// Every reply built from these subjects passes `validate_envelope`.
+#[test]
+fn replies_pass_validate_envelope() {
+    for unb in [
+        UNB_3,
+        "UNB+UNOC:3+4012345000023+9900357000004+261001:0700+IC9'",
+    ] {
+        let raw = interchange(unb, MSG_1, 1);
+        let (segments, validated, report) = subject(&raw);
+        for contrl in [
+            Contrl::acknowledgement(&validated),
+            Contrl::receipt(&validated.interchange),
+            Contrl::from_report(&validated, &segments, &report),
+        ] {
+            let bytes = contrl
+                .to_interchange_bytes("UNOC", "3", "261001", "0800", "R1")
+                .expect("renders");
+            let reply: Vec<_> = from_bytes(&bytes)
+                .collect::<Result<_, _>>()
+                .expect("reparses");
+            validate_envelope(&reply).expect("valid reply");
+        }
+    }
+}
+
+/// Identity values with service characters are copied value-identically,
+/// escaped exactly once.
+#[test]
+fn reply_identity_values_round_trip_through_escaping() {
+    let raw = interchange(
+        "UNB+UNOC:3+S?+1?:X:500+R?:2:500+261001:0700+IC?'1'",
+        "UNH+1+UTILMD:D:11A:UN:S2.1'BGM+E03+X'UNT+3+1'",
+        1,
+    )
+    .replace("UNZ+1+IC9'", "UNZ+1+IC?'1'");
+    let (_, validated, _) = subject(&raw);
+    assert_eq!(validated.interchange.header.control_ref, "IC'1");
+    let bytes = Contrl::acknowledgement(&validated)
+        .with_message_reference("ACK1")
+        .to_interchange_bytes("UNOC", "3", "261001", "0800", "R1")
+        .expect("renders");
+    let text = String::from_utf8(bytes.clone()).unwrap();
+    assert!(
+        text.starts_with("UNB+UNOC:3+R?:2:500+S?+1?:X:500+261001:0800+R1'"),
+        "{text}"
+    );
+    assert!(text.contains("UCI+IC?'1+S?+1?:X:500+R?:2:500+7'"), "{text}");
+    let reply: Vec<_> = from_bytes(&bytes)
+        .collect::<Result<_, _>>()
+        .expect("reparses");
+    let header = edifact::InterchangeHeader::parse(&reply[0]).expect("valid UNB");
+    assert_eq!(header.sender.id, "R:2");
+    assert_eq!(header.recipient.id, "S+1:X");
+    let uci = reply.iter().find(|s| s.tag == "UCI").expect("UCI");
+    assert_eq!(uci.element_str(0), Some("IC'1"));
+    assert_eq!(uci.component_str(1, 0), Some("S+1:X"));
+    assert_eq!(uci.component_str(2, 0), Some("R:2"));
+    validate_envelope(&reply).expect("valid reply");
 }

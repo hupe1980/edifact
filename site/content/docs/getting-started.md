@@ -4,21 +4,7 @@ description = "Install edifact, parse your first EDIFACT interchange, and choose
 weight = 10
 +++
 
-This guide walks you from zero to a working `edifact` integration in under five minutes.
-
----
-
-## Prerequisites
-
-- **Rust 1.85 or later** (edition 2024)
-- A Cargo workspace or binary / library project
-
-Check your toolchain:
-
-```bash
-rustup show        # active toolchain
-rustup update      # upgrade to latest stable
-```
+Requires **Rust 1.88 or later** (edition 2024).
 
 ---
 
@@ -28,10 +14,9 @@ rustup update      # upgrade to latest stable
 cargo add edifact
 ```
 
-The `derive` feature is enabled by default, which re-exports the
-`EdifactDeserialize` / `EdifactSerialize` derive macros — and their
-`EdifactCompositeDeserialize` / `EdifactCompositeSerialize` counterparts — from
-`edifact-derive`.
+The default `derive` feature re-exports the `EdifactDeserialize`,
+`EdifactSerialize`, `EdifactCompositeDeserialize` and
+`EdifactCompositeSerialize` macros from `edifact-derive`.
 
 ### Optional features
 
@@ -39,17 +24,13 @@ The `derive` feature is enabled by default, which re-exports the
 |---|---|---|
 | `derive` | ✅ yes | Proc-macro derive for typed structs |
 | `diagnostics` | ❌ no | `miette::Diagnostic` on `EdifactError` — human-friendly output |
-
-Enable diagnostics:
-
-```bash
-cargo add edifact --features diagnostics
-```
-
-Disable derive macros (core parsing only):
+| `serde` | ❌ no | `Serialize` / `Deserialize` on `ValidationReport`, `ValidationIssue` and the envelope types |
+| `dtm` | ❌ no | `DTM` date/time codec for UNCL 2379 codes, no dependencies ([Dates and times](@/docs/dates-and-times.md)) |
+| `dtm-time` | ❌ no | `dtm` plus conversions to and from the `time` crate |
 
 ```bash
-cargo add edifact --no-default-features
+cargo add edifact --features diagnostics   # enable diagnostics
+cargo add edifact --no-default-features    # core parse + write only
 ```
 
 ---
@@ -178,10 +159,10 @@ fn main() -> Result<(), edifact::EdifactError> {
 
     let report = ctx.validate(&segs);
     if report.is_valid() {
-        println!("✅ valid");
+        println!("valid");
     } else {
         for issue in report.errors() {
-            eprintln!("❌ {}", issue.message);
+            eprintln!("{}", issue.message);
         }
     }
     Ok(())
@@ -208,9 +189,9 @@ fn main() -> Result<(), edifact::EdifactError> {
 }
 ```
 
-`from_reader` parses one `OwnedSegment` at a time without buffering the whole
-file. `OwnedSegment` is just `Segment<'static>` — the same type `from_bytes`
-yields, so every function you have already seen accepts it unchanged.
+`from_reader` yields one `OwnedSegment` (`Segment<'static>`) at a time without
+buffering the file. Every entry point is bounded by default: 64 KiB per
+segment, 16 MiB per message, 256 MiB of input (`E036` beyond).
 
 → Full streaming guide: [Streaming](@/docs/streaming.md)
 
@@ -222,9 +203,13 @@ yields, so every function you have already seen accepts it unchanged.
 |---|---|
 | Understand UNA, delimiters, release chars | [Core Concepts](@/docs/core-concepts.md) |
 | Parse byte slices efficiently | [Parsing](@/docs/parsing.md) |
-| Write EDIFACT output | [Writing](@/docs/writing.md) |
+| Write EDIFACT output, build an interchange | [Writing](@/docs/writing.md) |
 | Derive typed structs for segments and messages | [Typed Derive](@/docs/typed-derive.md) |
 | Stream multi-message interchanges | [Streaming](@/docs/streaming.md) |
+| Validate envelope, syntax and structure | [Validation](@/docs/validation.md) |
+| Validate segment-group structure | [Segment Groups](@/docs/segment-groups.md) |
+| Decode and compare `DTM` values | [Dates and times](@/docs/dates-and-times.md) |
 | Add business-rule validation | [Profile Packs](@/docs/profile-packs.md) |
+| Acknowledge with `CONTRL` | [CONTRL](@/docs/contrl.md) |
 | Pretty-print errors in a CLI | [Diagnostics](@/docs/diagnostics.md) |
 | Integrate with async / tokio | [Async Integration](@/docs/async-integration.md) |

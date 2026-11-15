@@ -373,7 +373,7 @@ mod typed {
             rff.edifact_serialize(&mut emitter).expect("serialize");
             emitter.finish().expect("finish");
         }
-        assert_eq!(String::from_utf8(buf).unwrap(), "UNA:+.?*'RFF+ON:'");
+        assert_eq!(String::from_utf8(buf).unwrap(), "UNA:+.?*'RFF+ON'");
     }
 
     #[test]

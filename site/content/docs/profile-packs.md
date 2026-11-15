@@ -4,40 +4,26 @@ description = "Author, compose, merge, and filter business-rule packs with Profi
 weight = 80
 +++
 
-`ProfileRulePack` is the primary extension point for downstream MIG/profile crates
-and trading-partner–specific validation logic. Packs are authored using only public
-APIs, can be composed from multiple sources, and plugged into any `ValidationContext`.
-
----
-
-## What is a profile pack?
-
-A **profile rule pack** is a named collection of validation rules scoped to one or
-more EDIFACT message types. Each rule is a closure that receives a segment slice and
-a `&mut Vec<ValidationIssue>` into which it pushes violations. The closure pushes
-nothing when the segments pass.
-
-Packs can be:
-- **Authored** in downstream crates (your application or a MIG library)
-- **Merged** from multiple sources into a combined pack
-- **Filtered** by rule ID prefix for fine-grained reporting
-- **Scoped** to specific message types (`ORDERS`, `INVOIC`, …)
+A `ProfileRulePack` is a named set of business rules — a MIG, an implementation
+guide, a partner's requirements — plugged into a `ValidationContext`. Each rule
+receives a message's segments and pushes a `ValidationIssue` per violation;
+passing pushes nothing. Packs are built from public APIs only, scoped to message
+types and releases, composed, and filtered by rule ID.
 
 ---
 
 ## Creating a pack
 
 ```rust
-use edifact::{ProfileRulePack, ValidationIssue, ValidationSeverity};
+use edifact::{ProfileRulePack, SegmentSliceExt, ValidationIssue, ValidationSeverity};
 
 let pack = ProfileRulePack::new("ORDERS-RULES")
     .for_message_type("ORDERS")
     .with_rule_fn(|segments, issues| {
-        // Find the BGM segment; skip if absent
-        let Some(bgm) = segments.iter().find(|s| s.tag == "BGM") else { return };
-        let Some(code) = bgm.get_element(0).and_then(|e| e.get_component(0)) else { return };
-
-        // Rule: only codes 220 (original) and 231 (quote) are accepted
+        let Some(code) = segments.first_tag("BGM").and_then(|s| s.element_str(0)) else {
+            return;
+        };
+        // Only 220 (order) and 231 (purchase order response) are accepted.
         if !matches!(code, "220" | "231") {
             issues.push(
                 ValidationIssue::new(
@@ -47,17 +33,13 @@ let pack = ProfileRulePack::new("ORDERS-RULES")
                 .with_rule_id("ORDERS-BGM-P001")
                 .with_segment("BGM")
                 .with_element_index(0)
-                .with_suggestion("Use document code 220 (original order) or 231 (quotation)"),
+                .with_suggestion("Use document code 220 or 231"),
             );
         }
     })
     .with_rule_fn(|segments, issues| {
-        // Rule: a buyer NAD is mandatory
-        let has_buyer = segments
-            .iter()
-            .filter(|s| s.tag == "NAD")
-            .any(|s| s.element_str(0) == Some("BY"));
-        if !has_buyer {
+        // A buyer NAD is mandatory.
+        if segments.qualified("NAD", "BY").is_none() {
             issues.push(
                 ValidationIssue::new(ValidationSeverity::Error, "buyer NAD+BY is required")
                     .with_rule_id("ORDERS-NAD-P001")
@@ -93,10 +75,7 @@ println!("{} error(s)", report.errors().len());
 
 ## Merging packs
 
-Two composition strategies are available depending on whether you want to layer rules
-or override specific ones:
-
-### `extend_from` — inherit a base pack, then append specialisations
+### `extend_from` — base rules first, then your own
 
 ```rust
 use edifact::{ProfileRulePack, ValidationIssue, ValidationSeverity};
@@ -107,20 +86,18 @@ let base_pack = ProfileRulePack::new("ORDERS-BASE")
         // shared baseline rules …
     });
 
-// Partner-specific pack that prepends the base rules before its own:
 let partner_pack = ProfileRulePack::new("ORDERS-ACME")
     .for_message_type("ORDERS")
     .with_rule_fn(|_segs, _issues| {
-        // ACME-specific rules — appended after base rules …
+        // ACME-specific rules …
     })
     .extend_from(&base_pack)?;  // base rules run first
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-### `merge_with_override` — delta upgrades (override specific rules by ID)
+### `merge_with_override` — replace rules by ID
 
-When you have a versioned base and want to ship a delta that replaces only changed
-rules (identified by their stable rule ID):
+A delta pack replaces the base rules with the same rule ID:
 
 ```rust
 use edifact::{ProfileRulePack, ValidationIssue, ValidationSeverity};
@@ -136,42 +113,24 @@ let delta = ProfileRulePack::new("ORDERS-5.5-delta")
         // updated 5.5 BGM rule — replaces the 5.4 version
     });
 
-// Result has rule_count() == 1 (the 5.4 rule is replaced, not duplicated)
 let result = base.merge_with_override(delta)?;
 assert_eq!(result.rule_count(), 1);
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-> Both methods return `Result<ProfileRulePack, EdifactError>` and fail with
-> `EdifactError::IncompatibleReleaseScopes` when the two packs carry different
-> release values.
+Both return `EdifactError::IncompatibleReleaseScopes` when the packs are bound
+to different releases (`for_release`).
 
 ---
 
-## Scoping by message type
+## Scoping
 
-Use `.for_message_type("TYPE")` to restrict a pack to a specific message type.
-Packs check the `UNH` segment element 1 component 0 (the message identifier):
-
-```rust
-# use edifact::{ProfileRulePack, ValidationIssue, ValidationSeverity};
-
-// This pack's rules run ONLY when the message type is "INVOIC"
-let invoic_pack = ProfileRulePack::new("INVOIC-RULES")
-    .for_message_type("INVOIC")
-    .with_rule_fn(|_segs, _issues| {
-        // Will not run for ORDERS, ORDERS, etc.
-    });
-
-// Without for_message_type, rules run for all message types:
-let universal_pack = ProfileRulePack::new("UNIVERSAL")
-    .with_rule_fn(|_segs, _issues| {});
-```
-
-Call `.for_message_type` multiple times to include multiple types:
+`for_message_type` restricts a pack to messages whose `UNH` S009 DE 0065 matches;
+call it once per type. `for_release` restricts it to an association assigned
+code (DE 0057). An unscoped pack runs for every message.
 
 ```rust
-# use edifact::{ProfileRulePack, ValidationIssue, ValidationSeverity};
+# use edifact::ProfileRulePack;
 let multi_pack = ProfileRulePack::new("TRADE-DOCS")
     .for_message_type("ORDERS")
     .for_message_type("ORDRSP")
@@ -183,7 +142,7 @@ let multi_pack = ProfileRulePack::new("TRADE-DOCS")
 
 ## Filtering reports by rule ID prefix
 
-Assign stable, namespaced rule IDs and filter them independently:
+Give rules stable, namespaced IDs and filter on them:
 
 ```rust
 # use edifact::{ProfileRulePack, ValidationContext, ValidationIssue, ValidationSeverity, from_bytes};
@@ -210,20 +169,9 @@ let report = ValidationContext::builder()
     .build()
     .validate(&segs);
 
-// All findings:
-println!("total: {}", report.total_issues());
-
-// Only document-level findings:
-let doc_issues = report.filter_by_rule_prefix("ORDERS-DOC-");
-println!("document issues: {}", doc_issues.total_issues());
-
-// Only reference-level findings:
-let ref_issues = report.filter_by_rule_prefix("ORDERS-REF-");
-println!("reference issues: {}", ref_issues.total_issues());
-
-// Exact rule ID lookup (returns a lazy iterator; use count() or collect()):
-let p001_count = report.issues_for_rule_id("ORDERS-DOC-P001").count();
-println!("ORDERS-DOC-P001 findings: {p001_count}");
+assert_eq!(report.total_issues(), 2);
+assert_eq!(report.filter_by_rule_prefix("ORDERS-DOC-").total_issues(), 1);
+assert_eq!(report.issues_for_rule_id("ORDERS-REF-P001").count(), 1);
 # Ok::<(), edifact::EdifactError>(())
 ```
 
@@ -231,11 +179,13 @@ println!("ORDERS-DOC-P001 findings: {p001_count}");
 
 ## Mapping violations to application errors
 
-Instead of returning `ValidationIssue` to your application layer, map rule IDs to
-your own domain error type:
+Map rule IDs to your own error type:
 
 ```rust
-use edifact::{ProfileRulePack, ValidationContext, ValidationIssue, ValidationSeverity, from_bytes};
+use edifact::{
+    ProfileRulePack, SegmentSliceExt, ValidationContext, ValidationIssue, ValidationSeverity,
+    from_bytes,
+};
 
 #[derive(Debug)]
 enum TradeError {
@@ -251,10 +201,9 @@ fn validate_orders(input: &[u8]) -> Result<(), Vec<TradeError>> {
     let pack = ProfileRulePack::new("ORDERS")
         .for_message_type("ORDERS")
         .with_rule_fn(|segs, issues| {
-            let Some(code) = segs.iter()
-                .find(|s| s.tag == "BGM")
-                .and_then(|s| s.element_str(0))
-            else { return };
+            let Some(code) = segs.first_tag("BGM").and_then(|s| s.element_str(0)) else {
+                return;
+            };
             if !matches!(code, "220" | "231") {
                 issues.push(
                     ValidationIssue::new(ValidationSeverity::Error, format!("code {code}"))
@@ -263,10 +212,7 @@ fn validate_orders(input: &[u8]) -> Result<(), Vec<TradeError>> {
             }
         })
         .with_rule_fn(|segs, issues| {
-            let has_buyer = segs.iter()
-                .filter(|s| s.tag == "NAD")
-                .any(|s| s.element_str(0) == Some("BY"));
-            if !has_buyer {
+            if segs.qualified("NAD", "BY").is_none() {
                 issues.push(
                     ValidationIssue::new(ValidationSeverity::Error, "missing NAD+BY")
                         .with_rule_id("ORDERS-NAD-P001"),
@@ -300,19 +246,18 @@ fn validate_orders(input: &[u8]) -> Result<(), Vec<TradeError>> {
 ```
 
 See [`cookbook_profile_error_mapping.rs`](https://github.com/hupe1980/edifact/tree/main/crates/edifact/examples/cookbook_profile_error_mapping.rs)
-for a complete example with a custom `Validator` implementation alongside profile packs.
+combines this with a custom `Validator`.
 
 ---
 
 ## Implementing `ProfileRule` as a struct
 
-For rules with shared state or complex initialization, implement the `ProfileRule`
-trait directly:
+For a rule with state, implement `ProfileRule`:
 
 ```rust
 use edifact::{
-    ProfileRule, ProfileRulePack, ValidationIssue, ValidationRuleContext,
-    ValidationSeverity, Segment,
+    ProfileRule, ProfileRulePack, Segment, SegmentSliceExt, ValidationIssue,
+    ValidationRuleContext, ValidationSeverity,
 };
 
 struct AllowedCodesRule {
@@ -326,8 +271,9 @@ impl ProfileRule for AllowedCodesRule {
         _context: &ValidationRuleContext<'_>,
         issues: &mut Vec<ValidationIssue>,
     ) {
-        let Some(bgm) = segments.iter().find(|s| s.tag == "BGM") else { return };
-        let Some(code) = bgm.element_str(0) else { return };
+        let Some(code) = segments.first_tag("BGM").and_then(|s| s.element_str(0)) else {
+            return;
+        };
         if !self.allowed.iter().any(|a| a == code) {
             issues.push(
                 ValidationIssue::new(
@@ -346,23 +292,17 @@ let pack = ProfileRulePack::new("ORDERS")
     });
 ```
 
-`ProfileRule` requires `Send + Sync` so packs can be shared across threads (e.g.
-when validating in a `spawn_blocking` worker).
+`ProfileRule` is `Send + Sync`, so a pack can be shared across threads.
 
 ---
 
 ## Group-scoped rules
 
-Group-scoped rules fire once per occurrence of a named segment group, giving each
-group instance its own isolated segment list. This lets you enforce intra-group
-invariants (e.g. every `SG5` must contain at least one `LIN`) without writing manual
-tree-walking code.
+A group-scoped rule fires once per occurrence of a named segment group and sees
+only that occurrence's segments — for invariants such as "every `SG5` holds a
+`LIN`". The schema is a `GroupDef` tree; see [Segment Groups](@/docs/segment-groups.md).
 
-> **`GroupDef`**: `const` over `'static` data, or `GroupDef::builder` for
-> run-time and ordered groups — see
-> [Validation › Open and ordered groups](@/docs/validation.md#open-and-ordered-groups).
-
-### Convenience builders
+### Helpers
 
 ```rust
 use edifact::{ProfileRulePack, group::GroupDef};
@@ -381,13 +321,13 @@ let pack = ProfileRulePack::new("ORDERS-GROUPS")
     .require_qualifier_in_group("SG5", "LIN", 0, 0, "1", "ORDERS-SG5-LIN-Q1");
 ```
 
-Use `group::group_segments_indexed` to build the tree, then pass it to
+Build the tree with `group::group_segments_indexed` and run
 `ctx.validate_grouped(&tree, &segs)`.
 
-### Custom group rule closure
+### Custom group rules
 
-For full control, supply a closure via `with_scoped_group_rule_fn(group_scope, rule_id, closure)`.
-The closure receives `(group: &SegmentGroupIndexed, segs: &[Segment], ctx: &ValidationRuleContext, issues: &mut Vec<ValidationIssue>)`:
+`with_scoped_group_rule_fn(group, rule_id, closure)` takes the group occurrence,
+its segments, the rule context and the issue list:
 
 ```rust
 use edifact::{
@@ -420,14 +360,10 @@ let pack = ProfileRulePack::new("ORDERS-GROUPS")
     );
 ```
 
-Group rules are run via `validate_grouped` on
-`ValidationContext`. See [Validation](@/docs/validation.md) for how to supply a `GroupDef`
-schema and run the group pass.
-
 Every issue a group rule emits is stamped with the `segment_group` and the
-`group_path` of the instance being evaluated — `SG4[0]/SG8[1]`, zero-based and
-counted per group name among siblings — unless the rule set them itself. A rule
-at the tree root gets no path.
+`group_path` of the occurrence — `SG4[0]/SG8[1]`, zero-based and counted per
+group name among siblings — unless the rule set them. A rule at the tree root
+gets no path.
 
 ---
 
@@ -444,9 +380,9 @@ issue without a `layer`. The helper rules set their own `kind`:
 | `require_qualifier`, `require_qualifier_in_group` | `FindingKind::Code` |
 
 `forbid_segment*` and `require_qualifier*` also set `segment_occurrence` and, when
-the slice they see starts at `UNH`, `segment_position` (`UNH` = 1). So a consumer
-running a guide pack and an application pack side by side tells their findings
-apart by `pack()`, and missing from not-permitted by `kind()`:
+the slice they see holds the segment's `UNH`, `segment_position` (`UNH` = 1).
+Findings of packs registered side by side are told apart by `pack()`, missing
+from not-permitted by `kind()`:
 
 ```rust
 use edifact::{FindingKind, ProfileRulePack, ValidationContext, from_bytes};
@@ -475,9 +411,8 @@ packs separately when their findings must stay apart.
 
 ## Capping a noisy rule
 
-A rule that sweeps every segment can produce one issue per segment, and a
-*group* rule fires once per group occurrence on top of that. `with_max_issues_per_rule`
-bounds the damage:
+A rule that sweeps every segment can emit one issue per segment, and a group
+rule fires once per occurrence. `with_max_issues_per_rule` caps it:
 
 ```rust
 use edifact::{ProfileRulePack, ValidationContext, ValidationIssue, ValidationSeverity, from_bytes};
@@ -504,9 +439,9 @@ assert_eq!(report.total_issues(), 2); // four segments, capped at two
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-The cap is **per rule per call** — not per group. A group rule's budget is spent
-across the whole tree walk rather than reset at each occurrence, and once spent
-the rule is not called again on that pass.
+The cap is per rule per call, not per group occurrence: a group rule's budget
+covers the whole tree walk, and once spent the rule is not called again on that
+pass.
 
 ---
 
@@ -520,34 +455,22 @@ let pack = ProfileRulePack::new("MY-PACK")
     .with_rule_fn(|_segs, _issues| {})
     .require_segment_in_group("SG5", "LIN", "SG5-LIN-M");
 
-println!("name:        {}", pack.name());              // "MY-PACK"
-println!("rule count:  {}", pack.rule_count());        // 2
-println!("group rules: {}", pack.group_rule_count()); // 1
-println!("types:       {:?}", pack.message_types().collect::<Vec<_>>()); // ["ORDERS"]
+assert_eq!(pack.name(), "MY-PACK");
+assert_eq!(pack.rule_count(), 2);
+assert_eq!(pack.group_rule_count(), 1);
+assert_eq!(pack.message_types().collect::<Vec<_>>(), ["ORDERS"]);
 ```
 
 ---
 
 ## Best practices
 
-1. **Use stable rule IDs** — prefix with your pack name: `"ORDERS-DOC-P001"`, not `"P001"`.
-   This allows downstream code to filter and map rules independently.
-2. **Push nothing for passing rules** — rules receive a `&mut Vec<ValidationIssue>`;
-   simply not pushing is the zero-cost pass path.
-3. **Scope packs to message types** — unscoped packs run for every message, even
-   when the logic is type-specific.
-4. **Compose with `extend_from` / `merge_with_override`** — `extend_from` prepends a
-   shared base pack (base rules run first); `merge_with_override` replaces rules by
-   stable ID for versioned delta upgrades. Both are cleaner than registering many
-   loose packs separately.
-5. **Keep rules small and focused** — one rule per concern makes reporting and
-   debugging easier.
-6. **Reach for `with_rule_fn` first** — it is the everyday form. Use
-   `with_contextual_rule_fn` only when the rule needs the per-call
-   `ValidationRuleContext` (message reference, message type, injected metadata).
-7. **Cap sweeping rules** — set `with_max_issues_per_rule` on any pack whose
-   rules iterate segments, so one bad interchange cannot produce a report larger
-   than the message.
+1. **Namespace rule IDs** with the pack: `ORDERS-DOC-P001`, not `P001`.
+2. **Scope packs** to the message types their logic assumes.
+3. **One rule per concern**: reports and filters stay precise.
+4. **Use `with_rule_fn`**; `with_contextual_rule_fn` only when the rule needs
+   the `ValidationRuleContext` (message reference, type, metadata).
+5. **Cap sweeping rules** with `with_max_issues_per_rule`.
 
 ---
 

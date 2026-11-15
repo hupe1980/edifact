@@ -2,9 +2,11 @@
 //!
 //! The batch-EDI service segments — `UNB`, `UNZ`, `UNG`, `UNE`, `UNH`, `UNT`,
 //! `UNS`, `UNO`, `UNP`, `UGH`, and `UGT` — are defined by the ISO 9735 service
-//! segment specifications (the ISO 9735-10 service directory), not by a
-//! UN/EDIFACT directory release. Their structure does not change between D.96A
-//! and D.24A and is not licensed directory data, so it ships here.
+//! directory, ISO 9735-10:2002 (segments §5.1.5, composites §5.2.5, simple data
+//! elements §5.3.5), not by a UN/EDIFACT directory release. They are not
+//! licensed directory data, so they ship here. Every position matches the
+//! JWG1 publication of syntax 4 release 3 (pinned by the `service_conformance`
+//! test).
 //!
 //! # Why this exists
 //!
@@ -46,9 +48,13 @@
 //! generating them.
 //!
 //! Not here: the interactive-EDI segments `UIB`/`UIH`/`UIR`/`UIT`/`UIZ`
-//! (ISO 9735-3) and the security segments
-//! `USH`/`USA`/`USC`/`USB`/`USX`/`USY`/`UST`/`USR` (ISO 9735-5/-7) — this crate
-//! implements batch EDI.
+//! (ISO 9735-3) and the security segments `USA`…`USY` (ISO 9735-5/-7/-9) — this
+//! crate implements batch EDI. Envelope validation refuses them by name:
+//! [`InteractiveSegmentNotSupported`](EdifactError::InteractiveSegmentNotSupported)
+//! (`E055`), [`SecuritySegmentNotSupported`](EdifactError::SecuritySegmentNotSupported)
+//! (`E056`), and any other tag starting with `U` is
+//! [`ReservedServiceSegmentTag`](EdifactError::ReservedServiceSegmentTag)
+//! (`E057`, ISO 9735-1:2002 §7.7).
 //!
 //! # Codes that genuinely repeat
 //!
@@ -74,17 +80,43 @@
 //!
 //! # Representations
 //!
-//! Each position carries the representation ISO 9735-1 Annex C states for it, so
-//! [`DirectoryValidator`] checks length and character
-//! class as well as presence — `UNZ+abc+IC1'` is rejected because DE 0036 is
-//! `n..6`, with no directory involved.
+//! Each position carries the representation ISO 9735-10:2002 §5.3.5 states for
+//! it. [`validate_envelope`] checks presence, class
+//! and length of every `UNB`, `UNZ`, `UNG`, `UNE`, `UNH` and `UNT` position
+//! against these tables by default; [`DirectoryValidator`] with [`service::lookup`]
+//! applies them to every service segment and adds the `E053` warning for
+//! unsuppressed leading zeroes and trailing spaces.
+//!
+//! ```
+//! use edifact::{from_bytes, validate_envelope_lenient};
+//!
+//! // DE 0036 is n..6: `abc` is no count.
+//! let segs: Vec<_> = from_bytes(b"UNB+UNOC:3+S+R+260101:0900+1'UNH+1+X:D:96A:UN'BGM+1'UNT+3+1'UNZ+abc+1'")
+//!     .collect::<Result<_, _>>()?;
+//! let codes: Vec<_> = validate_envelope_lenient(&segs).errors.iter().map(|e| e.stable_code()).collect();
+//! assert_eq!(codes, ["E048"]);
+//! # Ok::<(), edifact::EdifactError>(())
+//! ```
 //!
 //! # Syntax versions
 //!
-//! The definitions follow **syntax version 4**, which is a superset of version 3
-//! for every service segment: the extra components are all conditional. A
-//! version 3 interchange therefore validates cleanly against them, and a version
-//! 4 one is not rejected for carrying components version 3 lacked.
+//! The definitions follow **syntax version 4**; its extra components are all
+//! conditional, so a version 3 interchange is not rejected for lacking them.
+//! Where the versions disagree, a position declares both forms
+//! ([`ComponentRef::with_repr_by_syntax_version`]):
+//!
+//! | Data element | Versions 1–3 | Version 4 |
+//! |---|---|---|
+//! | 0008, 0014 | `an..14` | `an..35` |
+//! | 0017 | `n6` (`YYMMDD`) | `n8` (`CCYYMMDD`) |
+//! | 0051 | `an..2` | `an..3` |
+//! | 0074 | `n..6` | `n..10` |
+//! | 0135 | `a3` | `an..3` |
+//!
+//! Versions 1 and 2 use the version 3 forms. `UNB` S001 DE 0002 selects the
+//! form; any value other than `1`–`4` (syntax `X` included) is refused by the
+//! envelope with [`UnsupportedSyntaxVersion`](EdifactError::UnsupportedSyntaxVersion)
+//! (`E059`), and either form is then accepted.
 
 use crate::directory_validator::{ComponentRef, ElementRef, Repr, SegmentDefinition, Status};
 // Names the module docs link to. Rustdoc versions differ on whether a module's
@@ -94,133 +126,136 @@ use crate::directory_validator::{ComponentRef, ElementRef, Repr, SegmentDefiniti
 use crate::{
     DirectoryValidator, EdifactError, Segment, contrl,
     directory_validator::{DirectoryValidatorBuilder, SegmentLayout},
-    service,
+    service, validate_envelope,
 };
 
 use Status::{Conditional as C, Mandatory as M};
 
 // ── composite data elements ───────────────────────────────────────────────────
 
-/// S001 — syntax identifier (`UNB`).
+/// S001 — syntax identifier (`UNB`). ISO 9735-10:2002 §5.2.5.
 pub const S001: &[ComponentRef] = &[
     ComponentRef::new(1, "0001", M).with_repr(Repr::a(4)), // Syntax identifier
     ComponentRef::new(2, "0002", M).with_repr(Repr::an(1)), // Syntax version number
     ComponentRef::new(3, "0080", C).with_repr(Repr::an_up_to(6)), // Service code list directory version number
     ComponentRef::new(4, "0133", C).with_repr(Repr::an_up_to(3)), // Character encoding, coded
+    ComponentRef::new(5, "0076", C).with_repr(Repr::an(2)), // Syntax release number (ISO 9735-1:2002 Annex D)
 ];
 
-/// S002 — interchange sender (`UNB`).
+/// DE 0008/0014: versions 1–3 `an..14` (address for reverse routing), version 4 `an..35`.
+const INTERNAL_ID: (Repr, Repr) = (Repr::an_up_to(14), Repr::an_up_to(35));
+/// DE 0051 controlling agency: versions 1–3 `an..2`, version 4 `an..3`.
+const AGENCY: (Repr, Repr) = (Repr::an_up_to(2), Repr::an_up_to(3));
+/// DE 0135 service segment tag: versions 1–3 `a3` (as DE 0013), version 4 `an..3`.
+const SERVICE_TAG: (Repr, Repr) = (Repr::a(3), Repr::an_up_to(3));
+
+/// S002 — interchange sender (`UNB`). ISO 9735-10:2002 §5.2.5.
 pub const S002: &[ComponentRef] = &[
     ComponentRef::new(1, "0004", M).with_repr(Repr::an_up_to(35)), // Interchange sender identification
     ComponentRef::new(2, "0007", C).with_repr(Repr::an_up_to(4)),  // Identification code qualifier
-    ComponentRef::new(3, "0008", C).with_repr(Repr::an_up_to(35)), // Interchange sender internal identification
+    ComponentRef::new(3, "0008", C).with_repr_by_syntax_version(INTERNAL_ID.0, INTERNAL_ID.1), // Interchange sender internal identification
     ComponentRef::new(4, "0042", C).with_repr(Repr::an_up_to(35)), // Interchange sender internal sub-identification
 ];
 
-/// S003 — interchange recipient (`UNB`).
+/// S003 — interchange recipient (`UNB`). ISO 9735-10:2002 §5.2.5.
 pub const S003: &[ComponentRef] = &[
     ComponentRef::new(1, "0010", M).with_repr(Repr::an_up_to(35)), // Interchange recipient identification
     ComponentRef::new(2, "0007", C).with_repr(Repr::an_up_to(4)),  // Identification code qualifier
-    ComponentRef::new(3, "0014", C).with_repr(Repr::an_up_to(35)), // Interchange recipient internal identification
+    ComponentRef::new(3, "0014", C).with_repr_by_syntax_version(INTERNAL_ID.0, INTERNAL_ID.1), // Interchange recipient internal identification
     ComponentRef::new(4, "0046", C).with_repr(Repr::an_up_to(35)), // Interchange recipient internal sub-identification
 ];
 
-/// S004 — date and time of preparation (`UNB`, `UNG`).
+/// S004 — date and time of preparation (`UNB`, `UNG`). ISO 9735-10:2002 §5.2.5.
 ///
-/// DE 0017 is the **only** position in the service directory where syntax
-/// version 4 is not a superset of version 3: version 3 transfers `YYMMDD`
-/// (`n6`), and version 4 widened it to `CCYYMMDD` (`n8`) to be year-2000
-/// correct. It is declared with both, so each version is checked exactly rather
-/// than being collapsed into an `n..8` that would validate neither.
+/// Version 3 transfers DE 0017 as `YYMMDD` (`n6`), version 4 as `CCYYMMDD`
+/// (`n8`); DE 0019 is `HHMM` (`n4`) in every version. The envelope also checks
+/// that both are a real date and time (`E060`).
 pub const S004: &[ComponentRef] = &[
-    // Version 3 transfers YYMMDD; version 4 widened it to CCYYMMDD.  Declaring
-    // both keeps each version checked exactly — `n..8` would have accepted a
-    // six-digit date in a version 4 interchange and a seven-digit one in either.
     ComponentRef::new(1, "0017", M).with_repr_by_syntax_version(Repr::n(6), Repr::n(8)), // Date
-    ComponentRef::new(2, "0019", M).with_repr(Repr::n_up_to(4)),                         // Time
+    ComponentRef::new(2, "0019", M).with_repr(Repr::n(4)),                               // Time
 ];
 
-/// S005 — recipient reference / password details (`UNB`).
+/// S005 — recipient reference / password details (`UNB`). ISO 9735-10:2002 §5.2.5.
 pub const S005: &[ComponentRef] = &[
     ComponentRef::new(1, "0022", M).with_repr(Repr::an_up_to(14)), // Recipient reference/password
     ComponentRef::new(2, "0025", C).with_repr(Repr::an(2)), // Recipient reference/password qualifier
 ];
 
-/// S006 — application sender identification (`UNG`).
+/// S006 — application sender identification (`UNG`). ISO 9735-10:2002 §5.2.5.
 pub const S006: &[ComponentRef] = &[
     ComponentRef::new(1, "0040", M).with_repr(Repr::an_up_to(35)), // Application sender identification
     ComponentRef::new(2, "0007", C).with_repr(Repr::an_up_to(4)),  // Identification code qualifier
 ];
 
-/// S007 — application recipient identification (`UNG`).
+/// S007 — application recipient identification (`UNG`). ISO 9735-10:2002 §5.2.5.
 pub const S007: &[ComponentRef] = &[
     ComponentRef::new(1, "0044", M).with_repr(Repr::an_up_to(35)), // Application recipient identification
     ComponentRef::new(2, "0007", C).with_repr(Repr::an_up_to(4)),  // Identification code qualifier
 ];
 
-/// S008 — message version (`UNG`).
+/// S008 — message version (`UNG`). ISO 9735-10:2002 §5.2.5.
 pub const S008: &[ComponentRef] = &[
     ComponentRef::new(1, "0052", M).with_repr(Repr::an_up_to(3)), // Message version number
     ComponentRef::new(2, "0054", M).with_repr(Repr::an_up_to(3)), // Message release number
     ComponentRef::new(3, "0057", C).with_repr(Repr::an_up_to(6)), // Association assigned code
 ];
 
-/// S009 — message identifier (`UNH`).
+/// S009 — message identifier (`UNH`). ISO 9735-10:2002 §5.2.5.
 pub const S009: &[ComponentRef] = &[
     ComponentRef::new(1, "0065", M).with_repr(Repr::an_up_to(6)), // Message type
     ComponentRef::new(2, "0052", M).with_repr(Repr::an_up_to(3)), // Message version number
     ComponentRef::new(3, "0054", M).with_repr(Repr::an_up_to(3)), // Message release number
-    ComponentRef::new(4, "0051", M).with_repr(Repr::an_up_to(3)), // Controlling agency, coded
+    ComponentRef::new(4, "0051", M).with_repr_by_syntax_version(AGENCY.0, AGENCY.1), // Controlling agency, coded
     ComponentRef::new(5, "0057", C).with_repr(Repr::an_up_to(6)), // Association assigned code
     ComponentRef::new(6, "0110", C).with_repr(Repr::an_up_to(6)), // Code list directory version number
     ComponentRef::new(7, "0113", C).with_repr(Repr::an_up_to(6)), // Message type sub-function identification
 ];
 
-/// S010 — status of the transfer (`UNH`).
+/// S010 — status of the transfer (`UNH`). ISO 9735-10:2002 §5.2.5.
 pub const S010: &[ComponentRef] = &[
     ComponentRef::new(1, "0070", M).with_repr(Repr::n_up_to(2)), // Sequence of transfers
     ComponentRef::new(2, "0073", C).with_repr(Repr::a(1)),       // First and last transfer
 ];
 
-/// S016 — message subset identification (`UNH`).
+/// S016 — message subset identification (`UNH`). ISO 9735-10:2002 §5.2.5.
 pub const S016: &[ComponentRef] = &[
     ComponentRef::new(1, "0115", M).with_repr(Repr::an_up_to(14)), // Message subset identification
     ComponentRef::new(2, "0116", C).with_repr(Repr::an_up_to(3)),  // Message subset version number
     ComponentRef::new(3, "0118", C).with_repr(Repr::an_up_to(3)),  // Message subset release number
-    ComponentRef::new(4, "0051", C).with_repr(Repr::an_up_to(3)),  // Controlling agency, coded
+    ComponentRef::new(4, "0051", C).with_repr_by_syntax_version(AGENCY.0, AGENCY.1), // Controlling agency, coded
 ];
 
-/// S017 — message implementation guideline identification (`UNH`).
+/// S017 — message implementation guideline identification (`UNH`). ISO 9735-10:2002 §5.2.5.
 pub const S017: &[ComponentRef] = &[
     ComponentRef::new(1, "0121", M).with_repr(Repr::an_up_to(14)), // Message implementation guideline identification
     ComponentRef::new(2, "0122", C).with_repr(Repr::an_up_to(3)), // Message implementation guideline version number
     ComponentRef::new(3, "0124", C).with_repr(Repr::an_up_to(3)), // Message implementation guideline release number
-    ComponentRef::new(4, "0051", C).with_repr(Repr::an_up_to(3)), // Controlling agency, coded
+    ComponentRef::new(4, "0051", C).with_repr_by_syntax_version(AGENCY.0, AGENCY.1), // Controlling agency, coded
 ];
 
-/// S018 — scenario identification (`UNH`).
+/// S018 — scenario identification (`UNH`). ISO 9735-10:2002 §5.2.5.
 pub const S018: &[ComponentRef] = &[
     ComponentRef::new(1, "0127", M).with_repr(Repr::an_up_to(14)), // Scenario identification
     ComponentRef::new(2, "0128", C).with_repr(Repr::an_up_to(3)),  // Scenario version number
     ComponentRef::new(3, "0130", C).with_repr(Repr::an_up_to(3)),  // Scenario release number
-    ComponentRef::new(4, "0051", C).with_repr(Repr::an_up_to(3)),  // Controlling agency, coded
+    ComponentRef::new(4, "0051", C).with_repr_by_syntax_version(AGENCY.0, AGENCY.1), // Controlling agency, coded
 ];
 
-/// S020 — reference identification (`UNO`).
+/// S020 — reference identification (`UNO`). ISO 9735-10:2002 §5.2.5.
 pub const S020: &[ComponentRef] = &[
     ComponentRef::new(1, "0813", M).with_repr(Repr::an_up_to(3)), // Reference qualifier
     ComponentRef::new(2, "0802", M).with_repr(Repr::an_up_to(35)), // Reference identification number
 ];
 
-/// S021 — object type identification (`UNO`).
+/// S021 — object type identification (`UNO`). ISO 9735-10:2002 §5.2.5.
 pub const S021: &[ComponentRef] = &[
     ComponentRef::new(1, "0805", M).with_repr(Repr::an_up_to(3)), // Object type qualifier
     ComponentRef::new(2, "0809", C).with_repr(Repr::an_up_to(256)), // Object type attribute identification
     ComponentRef::new(3, "0808", C).with_repr(Repr::an_up_to(256)), // Object type attribute
-    ComponentRef::new(4, "0051", C).with_repr(Repr::an_up_to(3)),   // Controlling agency, coded
+    ComponentRef::new(4, "0051", C).with_repr_by_syntax_version(AGENCY.0, AGENCY.1), // Controlling agency, coded
 ];
 
-/// S022 — status of the object (`UNO`).
+/// S022 — status of the object (`UNO`). ISO 9735-10:2002 §5.2.5.
 pub const S022: &[ComponentRef] = &[
     ComponentRef::new(1, "0810", M).with_repr(Repr::n_up_to(18)), // Length of object in octets of bits
     ComponentRef::new(2, "0814", C).with_repr(Repr::n_up_to(3)), // Number of segments before object
@@ -229,6 +264,7 @@ pub const S022: &[ComponentRef] = &[
 ];
 
 /// S011 — data element identification (`UCI`, `UCF`, `UCM`, `UCD`).
+/// ISO 9735-10:2002 §5.2.5.
 ///
 /// Pinpoints the erroneous data element inside the segment a `CONTRL` reporting
 /// level names. Both counts are **one-based**: DE 0098 counts the segment tag as
@@ -256,7 +292,7 @@ const UNB_ELEMENTS: &[ElementRef] = &[
     ElementRef::new(11, "0035", C, 1).with_repr(Repr::n(1)),         // Test indicator
 ];
 
-/// `UNB` — interchange header.
+/// `UNB` — interchange header. ISO 9735-10:2002 §5.1.5; ISO 9735-1:2002 §7.2.
 pub const UNB: SegmentDefinition =
     SegmentDefinition::new("UNB", "Interchange header", UNB_ELEMENTS);
 
@@ -265,28 +301,25 @@ const UNZ_ELEMENTS: &[ElementRef] = &[
     ElementRef::new(2, "0020", M, 1).with_repr(Repr::an_up_to(14)), // Interchange control reference
 ];
 
-/// `UNZ` — interchange trailer.
+/// `UNZ` — interchange trailer. ISO 9735-10:2002 §5.1.5; ISO 9735-1:2002 §7.2.
 pub const UNZ: SegmentDefinition =
     SegmentDefinition::new("UNZ", "Interchange trailer", UNZ_ELEMENTS);
 
-// Every element of `UNG` except the group reference number is **conditional**
-// (ISO 9735-1:2002 Annex C.1.5).  Marking them mandatory made the directory
-// validator demand an application sender, an application recipient, a date, a
-// controlling agency, and a message version from every conformant group header
-// that omits them — which is most of them, since the standard's own dependency
-// note D2 ties 0038/0051/S008 together as "all or none".
+// Every element of `UNG` except the group reference number is conditional
+// (ISO 9735-10:2002 §5.1.5, UNG); dependency note D2 ties 0038/0051/S008
+// together as "all or none".
 const UNG_ELEMENTS: &[ElementRef] = &[
     ElementRef::new(1, "0038", C, 1).with_repr(Repr::an_up_to(6)), // Message group identification
     ElementRef::composite(2, "S006", C, 1, S006),
     ElementRef::composite(3, "S007", C, 1, S007),
     ElementRef::composite(4, "S004", C, 1, S004),
     ElementRef::new(5, "0048", M, 1).with_repr(Repr::an_up_to(14)), // Group reference number
-    ElementRef::new(6, "0051", C, 1).with_repr(Repr::an_up_to(3)),  // Controlling agency, coded
+    ElementRef::new(6, "0051", C, 1).with_repr_by_syntax_version(AGENCY.0, AGENCY.1), // Controlling agency, coded
     ElementRef::composite(7, "S008", C, 1, S008),
     ElementRef::new(8, "0058", C, 1).with_repr(Repr::an_up_to(14)), // Application password
 ];
 
-/// `UNG` — group header.
+/// `UNG` — group header. ISO 9735-10:2002 §5.1.5; ISO 9735-1:2002 §7.3.
 pub const UNG: SegmentDefinition = SegmentDefinition::new("UNG", "Group header", UNG_ELEMENTS);
 
 const UNE_ELEMENTS: &[ElementRef] = &[
@@ -294,7 +327,7 @@ const UNE_ELEMENTS: &[ElementRef] = &[
     ElementRef::new(2, "0048", M, 1).with_repr(Repr::an_up_to(14)), // Group reference number
 ];
 
-/// `UNE` — group trailer.
+/// `UNE` — group trailer. ISO 9735-10:2002 §5.1.5; ISO 9735-1:2002 §7.3.
 pub const UNE: SegmentDefinition = SegmentDefinition::new("UNE", "Group trailer", UNE_ELEMENTS);
 
 const UNH_ELEMENTS: &[ElementRef] = &[
@@ -307,22 +340,23 @@ const UNH_ELEMENTS: &[ElementRef] = &[
     ElementRef::composite(7, "S018", C, 1, S018),
 ];
 
-/// `UNH` — message header.
+/// `UNH` — message header. ISO 9735-10:2002 §5.1.5; ISO 9735-1:2002 §7.4.
 pub const UNH: SegmentDefinition = SegmentDefinition::new("UNH", "Message header", UNH_ELEMENTS);
 
 const UNT_ELEMENTS: &[ElementRef] = &[
-    ElementRef::new(1, "0074", M, 1).with_repr(Repr::n_up_to(10)), // Number of segments in the message
+    ElementRef::new(1, "0074", M, 1)
+        .with_repr_by_syntax_version(Repr::n_up_to(6), Repr::n_up_to(10)), // Number of segments in the message
     ElementRef::new(2, "0062", M, 1).with_repr(Repr::an_up_to(14)), // Message reference number
 ];
 
-/// `UNT` — message trailer.
+/// `UNT` — message trailer. ISO 9735-10:2002 §5.1.5; ISO 9735-1:2002 §7.4.
 pub const UNT: SegmentDefinition = SegmentDefinition::new("UNT", "Message trailer", UNT_ELEMENTS);
 
 const UNS_ELEMENTS: &[ElementRef] = &[
     ElementRef::new(1, "0081", M, 1).with_repr(Repr::a(1)), // Section identification
 ];
 
-/// `UNS` — section control.
+/// `UNS` — section control. ISO 9735-10:2002 §5.1.5; ISO 9735-1:2002 §7.4.
 pub const UNS: SegmentDefinition = SegmentDefinition::new("UNS", "Section control", UNS_ELEMENTS);
 
 const UNO_ELEMENTS: &[ElementRef] = &[
@@ -330,15 +364,15 @@ const UNO_ELEMENTS: &[ElementRef] = &[
     ElementRef::composite(2, "S020", M, 99, S020),
     ElementRef::composite(3, "S021", M, 99, S021),
     ElementRef::composite(4, "S022", M, 1, S022),
-    // S302, S301, S300 and 0035 are interactive-EDI only (Annex C.1.5 note 4);
+    // S302, S301, S300 and 0035 are interactive-EDI only (ISO 9735-10:2002 UNO note 4);
     // they are legal in a batch `UNO` only in the sense that they are absent.
 ];
 
 /// `UNO` — object header, the opening segment of a package.
+/// ISO 9735-10:2002 §5.1.5; ISO 9735-1:2002 §7.10.
 ///
 /// A package carries an arbitrary object — a PDF, an image, an encrypted blob —
-/// through an interchange alongside or instead of messages
-/// (ISO 9735-1 §7.9). The object itself is *not* EDIFACT-encoded and is not
+/// through an interchange alongside or instead of messages. The object itself is *not* EDIFACT-encoded and is not
 /// tokenized by this crate; `UNO` S022 DE 0810 states its length in octets so a
 /// receiver can lift it out of the byte stream.
 pub const UNO: SegmentDefinition = SegmentDefinition::new("UNO", "Object header", UNO_ELEMENTS);
@@ -349,17 +383,19 @@ const UNP_ELEMENTS: &[ElementRef] = &[
 ];
 
 /// `UNP` — object trailer, closing the package opened by [`UNO`].
+/// ISO 9735-10:2002 §5.1.5; ISO 9735-1:2002 §7.10.
 pub const UNP: SegmentDefinition = SegmentDefinition::new("UNP", "Object trailer", UNP_ELEMENTS);
 
 const UGH_ELEMENTS: &[ElementRef] = &[
     ElementRef::new(1, "0087", M, 1).with_repr(Repr::an_up_to(4)), // Anti-collision segment group identification
 ];
 
-/// `UGH` — anti-collision segment group header (ISO 9735-1 Annex F).
+/// `UGH` — anti-collision segment group header.
+/// ISO 9735-10:2002 §5.1.5; ISO 9735-1:2002 §12 and Annex C.
 ///
 /// Wraps a segment group whose trigger segment would otherwise be ambiguous with
 /// a neighbouring one, so a receiver can tell which group a segment belongs to
-/// from the tag alone (§7.3).
+/// from the tag alone.
 pub const UGH: SegmentDefinition =
     SegmentDefinition::new("UGH", "Anti-collision segment group header", UGH_ELEMENTS);
 
@@ -368,6 +404,7 @@ const UGT_ELEMENTS: &[ElementRef] = &[
 ];
 
 /// `UGT` — anti-collision segment group trailer; DE 0087 repeats the [`UGH`] value.
+/// ISO 9735-10:2002 §5.1.5; ISO 9735-1:2002 §12 and Annex C.
 pub const UGT: SegmentDefinition =
     SegmentDefinition::new("UGT", "Anti-collision segment group trailer", UGT_ELEMENTS);
 
@@ -379,13 +416,14 @@ const UCI_ELEMENTS: &[ElementRef] = &[
     ElementRef::composite(3, "S003", M, 1, S003),
     ElementRef::new(4, "0083", M, 1).with_repr(Repr::an_up_to(3)), // Action, coded
     ElementRef::new(5, "0085", C, 1).with_repr(Repr::an_up_to(3)), // Syntax error, coded
-    ElementRef::new(6, "0135", C, 1).with_repr(Repr::an_up_to(3)), // Service segment tag, coded
+    ElementRef::new(6, "0135", C, 1).with_repr_by_syntax_version(SERVICE_TAG.0, SERVICE_TAG.1), // Service segment tag, coded
     ElementRef::composite(7, "S011", C, 1, S011),
     ElementRef::new(8, "0534", C, 1).with_repr(Repr::an_up_to(14)), // Security reference number
     ElementRef::new(9, "0138", C, 1).with_repr(Repr::n_up_to(6)),   // Security segment position
 ];
 
 /// `UCI` — interchange response: the `CONTRL` reporting level for `UNB`/`UNZ`.
+/// ISO 9735-10:2002 §5.1.5; ISO 9735-4:2002 §5.
 pub const UCI: SegmentDefinition =
     SegmentDefinition::new("UCI", "Interchange response", UCI_ELEMENTS);
 
@@ -395,13 +433,14 @@ const UCF_ELEMENTS: &[ElementRef] = &[
     ElementRef::composite(3, "S007", C, 1, S007),
     ElementRef::new(4, "0083", M, 1).with_repr(Repr::an_up_to(3)), // Action, coded
     ElementRef::new(5, "0085", C, 1).with_repr(Repr::an_up_to(3)), // Syntax error, coded
-    ElementRef::new(6, "0135", C, 1).with_repr(Repr::an_up_to(3)), // Service segment tag, coded
+    ElementRef::new(6, "0135", C, 1).with_repr_by_syntax_version(SERVICE_TAG.0, SERVICE_TAG.1), // Service segment tag, coded
     ElementRef::composite(7, "S011", C, 1, S011),
     ElementRef::new(8, "0534", C, 1).with_repr(Repr::an_up_to(14)), // Security reference number
     ElementRef::new(9, "0138", C, 1).with_repr(Repr::n_up_to(6)),   // Security segment position
 ];
 
 /// `UCF` — group response: the `CONTRL` reporting level for `UNG`/`UNE`.
+/// ISO 9735-10:2002 §5.1.5; ISO 9735-4:2002 §5.
 pub const UCF: SegmentDefinition = SegmentDefinition::new("UCF", "Group response", UCF_ELEMENTS);
 
 const UCM_ELEMENTS: &[ElementRef] = &[
@@ -409,16 +448,16 @@ const UCM_ELEMENTS: &[ElementRef] = &[
     ElementRef::composite(2, "S009", C, 1, S009),
     ElementRef::new(3, "0083", M, 1).with_repr(Repr::an_up_to(3)), // Action, coded
     ElementRef::new(4, "0085", C, 1).with_repr(Repr::an_up_to(3)), // Syntax error, coded
-    ElementRef::new(5, "0135", C, 1).with_repr(Repr::an_up_to(3)), // Service segment tag, coded
+    ElementRef::new(5, "0135", C, 1).with_repr_by_syntax_version(SERVICE_TAG.0, SERVICE_TAG.1), // Service segment tag, coded
     ElementRef::composite(6, "S011", C, 1, S011),
     ElementRef::new(7, "0800", C, 1).with_repr(Repr::an_up_to(35)), // Package reference number
-    ElementRef::composite(8, "S020", C, 1, S020),
+    ElementRef::composite(8, "S020", C, 99, S020),
     ElementRef::new(9, "0534", C, 1).with_repr(Repr::an_up_to(14)), // Security reference number
     ElementRef::new(10, "0138", C, 1).with_repr(Repr::n_up_to(6)),  // Security segment position
 ];
 
 /// `UCM` — message/package response: the `CONTRL` reporting level for
-/// `UNH`/`UNT` and `UNO`/`UNP`.
+/// `UNH`/`UNT` and `UNO`/`UNP`. ISO 9735-10:2002 §5.1.5; ISO 9735-4:2002 §5.
 ///
 /// DE 0062 and DE 0800 are mutually exclusive (dependency note D1): a `UCM`
 /// reports on a message *or* a package, never both.
@@ -431,7 +470,7 @@ const UCS_ELEMENTS: &[ElementRef] = &[
 ];
 
 /// `UCS` — segment error indication: the `CONTRL` reporting level for one
-/// segment of a message body.
+/// segment of a message body. ISO 9735-10:2002 §5.1.5; ISO 9735-4:2002 §5.
 ///
 /// DE 0096 counts from the `UNH`, which is segment 1. A *missing* segment is
 /// reported at the position of the last segment processed before it was
@@ -446,6 +485,7 @@ const UCD_ELEMENTS: &[ElementRef] = &[
 
 /// `UCD` — data element error indication: the deepest `CONTRL` reporting level,
 /// naming one erroneous data element inside the segment its `UCS` identifies.
+/// ISO 9735-10:2002 §5.1.5; ISO 9735-4:2002 §5.
 pub const UCD: SegmentDefinition =
     SegmentDefinition::new("UCD", "Data element error indication", UCD_ELEMENTS);
 
@@ -580,10 +620,10 @@ mod tests {
     }
 
     #[test]
-    fn ung_matches_annex_c_statuses() {
+    fn ung_matches_the_part_10_statuses() {
         use crate::directory_validator::Status;
 
-        // Annex C.1.5: only the group reference number is mandatory.  Everything
+        // ISO 9735-10 UNG: only the group reference number is mandatory.  Everything
         // else is conditional — including the pieces dependency note D2 ties
         // together as "all or none" (0038, 0051, S008).
         let statuses: Vec<_> = UNG

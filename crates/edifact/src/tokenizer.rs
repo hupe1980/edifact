@@ -89,16 +89,45 @@ impl ServiceStringAdvice {
     ///    resolved from the syntax version in `UNB` S001 DE 0002 — see
     ///    [`for_syntax_version`][Self::for_syntax_version].
     ///
+    /// Input whose first three bytes after the prologue (byte order mark and
+    /// whitespace) are `UNA` carries a service string advice: ISO 9735-1
+    /// Annex A has those three letters "immediately followed by six
+    /// characters".
+    ///
     /// # Errors
     ///
-    /// [`EdifactError::InvalidUna`] when a `UNA` is present but its active
-    /// service characters are not mutually distinct printable non-alphanumeric
-    /// ASCII.  See [`is_valid`][Self::is_valid] for the exact rule.
+    /// - [`EdifactError::UnexpectedEof`] at the input length when a `UNA` is
+    ///   cut short — fewer than six bytes follow the three letters.
+    /// - [`EdifactError::InvalidUna`] when a `UNA` is present but its active
+    ///   service characters are not mutually distinct printable
+    ///   non-alphanumeric ASCII. See [`is_valid`][Self::is_valid] for the exact
+    ///   rule.
     ///
     /// This is the **safe, default constructor** — always use this for input from
     /// an external source.  For trusted or internal use where delimiter uniqueness
     /// is already guaranteed, use [`from_bytes_unchecked`](Self::from_bytes_unchecked).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use edifact::{EdifactError, ServiceStringAdvice};
+    ///
+    /// assert!(ServiceStringAdvice::from_bytes(b"UNA:;.? 'BGM;220'")?.element_sep == b';');
+    /// assert_eq!(
+    ///     ServiceStringAdvice::from_bytes(b"UNA:+"),
+    ///     Err(EdifactError::UnexpectedEof { offset: 5 }),
+    /// );
+    /// # Ok::<(), EdifactError>(())
+    /// ```
+    ///
+    /// [`EdifactError::UnexpectedEof`]: crate::EdifactError::UnexpectedEof
+    /// [`EdifactError::InvalidUna`]: crate::EdifactError::InvalidUna
     pub fn from_bytes(input: &[u8]) -> Result<Self, crate::error::EdifactError> {
+        if let (_, Head::TruncatedUna) = classify_head(input) {
+            return Err(crate::error::EdifactError::UnexpectedEof {
+                offset: input.len(),
+            });
+        }
         let ssa = Self::from_bytes_unchecked(input);
         if !ssa.is_valid() {
             return Err(crate::error::EdifactError::InvalidUna);
@@ -106,11 +135,33 @@ impl ServiceStringAdvice {
         Ok(ssa)
     }
 
+    /// [`from_bytes`](Self::from_bytes) as the parse entry points apply it,
+    /// under a `max_segment_bytes` budget.
+    ///
+    /// Without a `UNA`, the syntax version is read only from the first
+    /// `max_segment_bytes + 1` bytes of the head segment — what a reader holds
+    /// of it — so a version beyond the segment budget never changes how the
+    /// bytes before it are split, on either parse path.
+    pub(crate) fn discover(input: &[u8], max_segment_bytes: usize) -> Result<Self, EdifactError> {
+        match classify_head(input) {
+            (start, Head::NoUna) => {
+                let end = start
+                    .saturating_add(max_segment_bytes)
+                    .saturating_add(1)
+                    .min(input.len());
+                Self::from_bytes(&input[..end])
+            }
+            _ => Self::from_bytes(input),
+        }
+    }
+
     /// Parse a UNA header from the beginning of an EDIFACT interchange **without**
     /// validating delimiter uniqueness or printability.
     ///
     /// When no `UNA` is present the §5.1 defaults apply, with the repetition
     /// separator taken from the syntax version declared in `UNB` S001 DE 0002.
+    /// A `UNA` cut short (fewer than six bytes after the three letters) also
+    /// yields the defaults; [`from_bytes`](Self::from_bytes) reports it.
     ///
     /// # When to use
     ///
@@ -125,19 +176,23 @@ impl ServiceStringAdvice {
         // files that have been through a Windows editor or an FTP hop; ISO 9735
         // says nothing about them, and refusing to look past them would reject
         // interchanges that are otherwise perfectly conformant.
-        let input = &input[prologue_len(input)..];
-        // UNA is 9 bytes: "UNA" + 6 service chars
-        if input.len() >= 9 && &input[..3] == b"UNA" {
-            Self {
-                component_sep: input[3],
-                element_sep: input[4],
-                decimal_mark: input[5],
-                release_char: input[6],
-                repetition_sep: input[7],
-                segment_term: input[8],
-            }
-        } else {
-            Self::for_syntax_version(sniff_syntax_version(input))
+        match classify_head(input) {
+            (_, Head::Una(una)) => Self::from_una(una),
+            (_, Head::TruncatedUna) => Self::default(),
+            (start, Head::NoUna) => Self::for_syntax_version(sniff_syntax_version(&input[start..])),
+        }
+    }
+
+    /// The advice the six service characters of a `UNA` state, in Annex A
+    /// order: component, element, decimal mark, release, repetition, terminator.
+    pub(crate) const fn from_una(una: [u8; 6]) -> Self {
+        Self {
+            component_sep: una[0],
+            element_sep: una[1],
+            decimal_mark: una[2],
+            release_char: una[3],
+            repetition_sep: una[4],
+            segment_term: una[5],
         }
     }
 
@@ -271,6 +326,36 @@ pub(crate) fn prologue_len(input: &[u8]) -> usize {
     pos
 }
 
+/// What follows the prologue at the head of an interchange.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Head {
+    /// Not a service string advice: the head is the first segment (or nothing).
+    NoUna,
+    /// `UNA` and the six service characters it states.
+    Una([u8; 6]),
+    /// `UNA` with fewer than six bytes after it: the input ends inside the
+    /// service string advice (ISO 9735-1 Annex A).
+    TruncatedUna,
+}
+
+/// Classify the head of `input`: the prologue length and whether a `UNA`
+/// follows it.
+///
+/// The one place both parse paths decide what a leading `UNA` is: the head is
+/// a service string advice iff its first three bytes are `UNA`, whatever comes
+/// after them — so the answer never depends on how long the input is.
+pub(crate) fn classify_head(input: &[u8]) -> (usize, Head) {
+    let start = prologue_len(input);
+    let head = &input[start..];
+    if !head.starts_with(b"UNA") {
+        return (start, Head::NoUna);
+    }
+    match head.get(3..9) {
+        Some(&[a, b, c, d, e, f]) => (start, Head::Una([a, b, c, d, e, f])),
+        _ => (start, Head::TruncatedUna),
+    }
+}
+
 /// Whether `tag` is a syntactically valid segment tag.
 ///
 /// Exactly three ASCII uppercase letters. Both the tokenizer and the writer
@@ -292,7 +377,10 @@ pub(crate) fn is_valid_segment_tag(tag: &str) -> bool {
 /// otherwise.
 ///
 /// Returns `None` for input with no readable `UNB` S001.
-fn sniff_syntax_version(input: &[u8]) -> Option<u8> {
+///
+/// The reader path calls this on the bytes of the first segment, which is what
+/// makes both paths take the repetition separator from the head `UNB` only.
+pub(crate) fn sniff_syntax_version(input: &[u8]) -> Option<u8> {
     let pos = prologue_len(input);
     // `UNB+` — the element separator is the §5.1 default, because a UNA that
     // changed it would have been used instead of this function.
@@ -356,12 +444,6 @@ pub enum Token<'a> {
     },
 }
 
-#[derive(Debug)]
-pub(crate) struct RawSegment {
-    pub(crate) bytes: Vec<u8>,
-    pub(crate) start_offset: usize,
-}
-
 /// Zero-copy tokenizer over a byte slice.
 ///
 /// Yields `Token` values, each borrowing from the original input.
@@ -407,11 +489,9 @@ impl<'a> Tokenizer<'a> {
     /// segment tag and skipping nine bytes of it corrupts the parse.
     #[inline]
     fn una_start_pos(input: &[u8]) -> usize {
-        let start = prologue_len(input);
-        if input.len() >= start + 9 && &input[start..start + 3] == b"UNA" {
-            start + 9
-        } else {
-            start
+        match classify_head(input) {
+            (start, Head::Una(_)) => start + 9,
+            (start, _) => start,
         }
     }
 
@@ -420,11 +500,10 @@ impl<'a> Tokenizer<'a> {
     ///
     /// The whole-interchange constructors treat a leading `b"UNA"` as the
     /// service string advice and jump nine bytes past it.  The reader paths
-    /// re-tokenize each segment from its own slice, where that heuristic is
-    /// wrong: `UNA` is three ASCII uppercase letters and therefore a legal
-    /// segment tag, so `UNA+XXXXXX'` parsed cleanly from a byte slice but was
-    /// rejected as `InvalidSegmentTag` when the identical bytes arrived through
-    /// a reader.
+    /// re-tokenize each segment from its own slice, where that skip is wrong:
+    /// a segment starting with `UNA` after the head opens another interchange
+    /// and is [`EdifactError::DataAfterInterchangeTrailer`] (`E058`) on the
+    /// slice and the reader path alike.
     #[must_use]
     pub fn for_segment(
         input: &'a [u8],
@@ -700,6 +779,23 @@ impl<'a> Tokenizer<'a> {
         let tag_bytes = &self.input[start..start + end];
         // Always advance pos so errors cannot cause an infinite retry loop.
         self.pos = start + end;
+        // A `UNA` is a service string advice only at the head of the input
+        // (skipped before the first tag); anywhere else it starts another
+        // interchange, which ISO 9735-2:2002 §5 scopes it to.
+        if tag_bytes.starts_with(b"UNA") {
+            return Err(EdifactError::DataAfterInterchangeTrailer {
+                tag: "UNA".to_owned(),
+                span: Span::new(start, start + 3),
+            });
+        }
+        // The input ends inside a tag that is still a valid prefix of one —
+        // one or two uppercase letters: the fault is the missing remainder,
+        // not the letters present.
+        if end == input_remaining.len() && end < 3 && tag_bytes.iter().all(u8::is_ascii_uppercase) {
+            return Err(EdifactError::UnexpectedEof {
+                offset: self.input.len(),
+            });
+        }
         // Record segment start for the size-limit check in read_value.
         self.segment_start = start;
         let tag = std::str::from_utf8(tag_bytes)
@@ -934,6 +1030,54 @@ mod tests {
         let input = b"UNB+UNOA:1"; // no terminator
         let _: Vec<_> = Tokenizer::new(input, ServiceStringAdvice::default()).collect();
         // must not panic regardless of result
+    }
+
+    #[test]
+    fn a_tag_prefix_cut_by_the_end_of_input_is_unexpected_eof() {
+        for (input, offset) in [(&b"U"[..], 1), (b"UN", 2), (b"BGM+1'U", 7), (b" UN", 3)] {
+            let result = Tokenizer::new(input, ServiceStringAdvice::default())
+                .collect::<Result<Vec<_>, _>>();
+            assert_eq!(
+                result,
+                Err(EdifactError::UnexpectedEof { offset }),
+                "{input:?}"
+            );
+        }
+        // Not a valid prefix: the tag itself is the fault.
+        for (input, tag) in [(&b"u"[..], "u"), (b"U1", "U1"), (b"U'", "U")] {
+            let result = Tokenizer::new(input, ServiceStringAdvice::default())
+                .collect::<Result<Vec<_>, _>>();
+            assert_eq!(
+                result,
+                Err(EdifactError::InvalidSegmentTag(tag.to_owned())),
+                "{input:?}"
+            );
+        }
+        // Three letters are a tag; what is missing is the terminator.
+        let tokens = Tokenizer::new(b"BGM", ServiceStringAdvice::default())
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(tokens.len(), 1);
+    }
+
+    #[test]
+    fn the_head_is_a_una_by_its_three_letters_alone() {
+        assert_eq!(classify_head(b"BGM+1'"), (0, Head::NoUna));
+        assert_eq!(classify_head(b"UN"), (0, Head::NoUna));
+        assert_eq!(classify_head(b" UNA:+"), (1, Head::TruncatedUna));
+        assert_eq!(classify_head(b"UNA"), (0, Head::TruncatedUna));
+        assert_eq!(
+            classify_head(b"\xEF\xBB\xBFUNA:+.? 'BGM'"),
+            (3, Head::Una(*b":+.? '"))
+        );
+        assert_eq!(
+            ServiceStringAdvice::from_bytes(b"\nUNA:+.?"),
+            Err(EdifactError::UnexpectedEof { offset: 8 })
+        );
+        assert_eq!(
+            ServiceStringAdvice::from_bytes_unchecked(b"UNA:+"),
+            ServiceStringAdvice::default()
+        );
     }
 
     #[test]

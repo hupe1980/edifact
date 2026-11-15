@@ -1,5 +1,56 @@
 use crate::model::Span;
+use std::fmt;
 use thiserror::Error;
+
+/// `text` for diagnostic output: every control character (Unicode `Cc`),
+/// U+2028/U+2029 and every Unicode `Bidi_Control` character written as an
+/// escape (`\n`, `\r`, `\t`, `\0`, otherwise `\u{1b}` style), everything
+/// else unchanged.
+///
+/// One diagnostic stays one line, no input byte drives a terminal, and no
+/// value reorders the text around it. The
+/// escape is idempotent: its output contains no character it would escape.
+pub(crate) fn escape_control(text: &str) -> EscapeControl<'_> {
+    EscapeControl(text)
+}
+
+/// [`Display`](fmt::Display) of [`escape_control`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct EscapeControl<'a>(&'a str);
+
+/// Whether [`escape_control`] escapes `c`.
+pub(crate) fn needs_escape(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{2028}'
+                | '\u{2029}'
+                // Bidi_Control
+                | '\u{061C}'
+                | '\u{200E}'
+                | '\u{200F}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2066}'..='\u{2069}'
+        )
+}
+
+impl fmt::Display for EscapeControl<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut rest = self.0;
+        while let Some((at, c)) = rest.char_indices().find(|&(_, c)| needs_escape(c)) {
+            f.write_str(&rest[..at])?;
+            match c {
+                '\0' => f.write_str("\\0")?,
+                '\t' => f.write_str("\\t")?,
+                '\n' => f.write_str("\\n")?,
+                '\r' => f.write_str("\\r")?,
+                _ => write!(f, "\\u{{{:x}}}", u32::from(c))?,
+            }
+            rest = &rest[at + c.len_utf8()..];
+        }
+        f.write_str(rest)
+    }
+}
 
 /// Wrapper around [`std::io::Error`] that implements [`PartialEq`] by comparing [`std::io::ErrorKind`].
 ///
@@ -87,6 +138,25 @@ impl std::fmt::Display for Insignificant {
 ///   zero-width caret.
 ///
 /// Use `span.start` when only the start position is needed.
+///
+/// # Text from the input
+///
+/// `Display` (and, with `diagnostics`, the `miette` help) writes control
+/// characters, U+2028/U+2029 and bidirectional formatting characters
+/// (`Bidi_Control`) from input values as escapes, so one error is one line,
+/// no input byte reaches a terminal raw and no value reorders the line. The fields hold the raw
+/// values.
+///
+/// ```
+/// use edifact::{EdifactError, Span};
+///
+/// let err = EdifactError::DuplicateReference {
+///     tag: "UNH".into(),
+///     reference: "A\r\nFAKE".into(),
+///     span: Span::new(5, 9),
+/// };
+/// assert_eq!(err.to_string(), r"duplicate UNH reference 'A\r\nFAKE' at bytes 5..9");
+/// ```
 #[derive(Debug, Error, PartialEq)]
 #[non_exhaustive]
 pub enum EdifactError {
@@ -132,16 +202,19 @@ pub enum EdifactError {
         offset: usize,
     },
 
-    /// UNZ interchange message count does not match the number of UNH/UNT pairs found.
+    /// `UNZ` DE 0036 does not match the interchange's content.
     ///
-    /// The `UNZ` segment declares the number of messages in the interchange,
-    /// but the actual number of `UNH`/`UNT` pairs observed differs.
-    #[error("interchange message count mismatch: UNZ declared {expected}, found {actual}")]
+    /// DE 0036 counts the messages and packages of the interchange or, when
+    /// groups are used, its groups (ISO 9735-10:2002 §5.3.5, DE 0036). A group's
+    /// own count is [`GroupCountMismatch`](Self::GroupCountMismatch).
+    #[error("UNZ DE 0036 declares {expected} unit(s), the interchange holds {actual}")]
     MessageCountMismatch {
-        /// Message count declared in the UNZ segment.
+        /// Count declared in `UNZ` DE 0036.
         expected: u32,
-        /// Actual number of UNH/UNT pairs observed.
+        /// Messages (or groups, when the interchange uses them) found.
         actual: u32,
+        /// Byte range of the `UNZ`.
+        span: Span,
     },
 
     /// UNT segment count does not match the actual number of segments in the message.
@@ -149,13 +222,14 @@ pub enum EdifactError {
     /// The `UNT` segment declares the number of segments in the message (including `UNH`/`UNT`),
     /// but the actual count differs.
     #[error(
-        "segment count mismatch in message {message_ref}: UNT declared {expected}, found {actual}"
+        "segment count mismatch in message {message_ref}: UNT declared {expected}, found {actual}",
+        message_ref = escape_control(.message_ref)
     )]
     SegmentCountMismatch {
-        /// Segment count declared in the UNT segment.
-        expected: u32,
+        /// Segment count declared in the UNT segment (DE 0074, up to 10 digits).
+        expected: u64,
         /// Actual number of segments observed.
-        actual: u32,
+        actual: u64,
         /// Message reference from the UNH segment.
         message_ref: String,
         /// Byte range of the offending `UNT`.
@@ -191,7 +265,7 @@ pub enum EdifactError {
     ///
     /// Certain segments require specific elements to be present. This error indicates
     /// a mandatory element was not found.
-    #[error("missing required element {element_index} in segment {tag}")]
+    #[error("missing required element {element_index} in segment {tag}", tag = escape_control(.tag))]
     MissingRequiredElement {
         /// Segment tag containing the missing element.
         tag: String,
@@ -203,7 +277,8 @@ pub enum EdifactError {
     ///
     /// The element is present, but the required component at the given index is absent or empty.
     #[error(
-        "missing required component {component_index} in element {element_index} of segment {tag}"
+        "missing required component {component_index} in element {element_index} of segment {tag}",
+        tag = escape_control(.tag)
     )]
     MissingRequiredComponent {
         /// Segment tag containing the composite element.
@@ -229,7 +304,7 @@ pub enum EdifactError {
     /// Segment is not valid for the current message type.
     ///
     /// Structural validation found a segment that should not appear in this message.
-    #[error("segment {tag} is not valid for message type {message_type}")]
+    #[error("segment {tag} is not valid for message type {message_type}", tag = escape_control(.tag), message_type = escape_control(.message_type))]
     InvalidSegmentForMessage {
         /// Segment tag that is not allowed for the message type.
         tag: String,
@@ -242,7 +317,7 @@ pub enum EdifactError {
     /// Element count in segment exceeds or falls short of directory definition.
     ///
     /// Validation against directory metadata found an element count mismatch.
-    #[error("segment {tag} has {actual} elements, expected between {min} and {max}")]
+    #[error("segment {tag} has {actual} elements, expected between {min} and {max}", tag = escape_control(.tag))]
     InvalidElementCount {
         /// Segment tag with wrong arity.
         tag: String,
@@ -259,7 +334,7 @@ pub enum EdifactError {
     /// Component count in a composite element is invalid.
     ///
     /// A composite data element does not have the expected number of components.
-    #[error("segment {tag} element {element_index} has {actual} components, expected {expected}")]
+    #[error("segment {tag} element {element_index} has {actual} components, expected {expected}", tag = escape_control(.tag))]
     InvalidComponentCount {
         /// Segment tag containing the composite.
         tag: String,
@@ -278,7 +353,8 @@ pub enum EdifactError {
     /// The value appears in a field that should contain a code from a specific code list,
     /// but the value is not in that code list.
     #[error(
-        "segment {tag} element {element_index}: '{value}' is not a valid code (code list {code_list})"
+        "segment {tag} element {element_index}: '{value}' is not a valid code (code list {code_list})",
+        tag = escape_control(.tag), value = escape_control(.value), code_list = escape_control(.code_list)
     )]
     InvalidCodeValue {
         /// Segment tag containing the invalid value.
@@ -298,7 +374,7 @@ pub enum EdifactError {
     /// A required segment is missing from the message.
     ///
     /// Structural validation found that a mandatory segment is absent.
-    #[error("required segment {tag} is missing from message (position {expected_position})")]
+    #[error("required segment {tag} is missing from message (position {expected_position})", tag = escape_control(.tag), expected_position = escape_control(.expected_position))]
     MissingSegment {
         /// Missing segment tag.
         tag: String,
@@ -309,7 +385,7 @@ pub enum EdifactError {
     /// Qualifier does not match expected value for segment.
     ///
     /// A qualified segment (e.g., NAD+MS) has a qualifier that does not match expected.
-    #[error("segment {tag} has qualifier '{actual}', expected '{expected}'")]
+    #[error("segment {tag} has qualifier '{actual}', expected '{expected}'", tag = escape_control(.tag), actual = escape_control(.actual), expected = escape_control(.expected))]
     QualifierMismatch {
         /// Segment tag whose qualifier mismatched.
         tag: String,
@@ -325,7 +401,7 @@ pub enum EdifactError {
     ///
     /// A segment or element is conditionally required based on another element's value,
     /// but the condition was not satisfied.
-    #[error("segment {tag} element {element_index}: conditional requirement not met ({condition})")]
+    #[error("segment {tag} element {element_index}: conditional requirement not met ({condition})", tag = escape_control(.tag), condition = escape_control(.condition))]
     ConditionalRequirementNotMet {
         /// Segment tag that violated a conditional rule.
         tag: String,
@@ -388,13 +464,14 @@ pub enum EdifactError {
         count: u64,
     },
 
-    /// An [`crate::EventEmitter`] received events in an invalid sequence.
+    /// Events or writer calls in an invalid sequence.
     ///
-    /// This indicates a programming error in the caller's serialization code:
-    /// for example, emitting an [`crate::EdifactEvent::Element`] without a prior
-    /// [`crate::EdifactEvent::StartSegment`], or emitting
+    /// This indicates a programming error in the caller's code: for example,
+    /// emitting an [`crate::EdifactEvent::Element`] without a prior
+    /// [`crate::EdifactEvent::StartSegment`], emitting
     /// [`crate::EdifactEvent::ComponentElement`] without a preceding
-    /// [`crate::EdifactEvent::Element`].
+    /// [`crate::EdifactEvent::Element`], or a raw `UNB`/`UNZ` inside an
+    /// interchange opened by [`crate::Writer::begin_interchange`].
     #[error("invalid event sequence: {message}")]
     InvalidEventSequence {
         /// Description of the protocol violation.
@@ -427,7 +504,7 @@ pub enum EdifactError {
     /// Distinct from [`InvalidCodeValue`][Self::InvalidCodeValue] which is for
     /// code-list membership checks.  Use this variant when a free-text or numeric
     /// field contains a value that is structurally invalid for its purpose.
-    #[error("segment {tag} element {element_index}: invalid field value {value:?}")]
+    #[error("segment {tag} element {element_index}: invalid field value {value:?}", tag = escape_control(.tag))]
     InvalidFieldValue {
         /// Segment tag that contains the invalid field.
         tag: String,
@@ -443,8 +520,8 @@ pub enum EdifactError {
     /// A data element token encountered before any tag (e.g. after a stray
     /// separator at the start of the stream) is a protocol violation.
     ///
-    /// Unlike stray segment terminators (which are tolerated as blank lines),
-    /// stray data tokens indicate encoding corruption or a partial write.
+    /// Like a segment terminator where a tag belongs (`E002`), stray data
+    /// tokens indicate encoding corruption or a partial write.
     #[error("unexpected data token at byte offset {offset}: data element before segment tag")]
     UnexpectedDataToken {
         /// Byte offset of the stray token.
@@ -459,7 +536,7 @@ pub enum EdifactError {
     /// Korean identifier outside ISO 9735) are refused as
     /// [`UnsupportedCharset`][Self::UnsupportedCharset]; anything else is
     /// reported here.
-    #[error("unrecognised syntax identifier '{0}': expected UNOA-UNOK or UNOY")]
+    #[error("unrecognised syntax identifier '{}': expected UNOA-UNOK or UNOY", escape_control(.0))]
     UnrecognisedSyntaxIdentifier(String),
 
     /// A control reference was reused within the scope that requires it to be unique.
@@ -469,7 +546,7 @@ pub enum EdifactError {
     /// DE 0048) to be unique within an interchange.  Duplicates make a message
     /// unaddressable: a receiver keying on the reference silently processes one
     /// occurrence and drops the rest.
-    #[error("duplicate {tag} reference '{reference}' at bytes {span}")]
+    #[error("duplicate {tag} reference '{reference}' at bytes {span}", tag = escape_control(.tag), reference = escape_control(.reference))]
     DuplicateReference {
         /// Segment tag that carries the duplicated reference (`UNH` or `UNG`).
         tag: String,
@@ -487,7 +564,7 @@ pub enum EdifactError {
     /// the supplied [`SegmentLayout`][crate::SegmentLayout].  This is the error
     /// that turns a mistyped or stale DE reference into a loud failure instead
     /// of a silent off-by-one read of the wrong element.
-    #[error("segment {tag} has no data element {data_element} in its definition")]
+    #[error("segment {tag} has no data element {data_element} in its definition", tag = escape_control(.tag), data_element = escape_control(.data_element))]
     UnknownDataElement {
         /// Segment tag whose definition was searched.
         tag: String,
@@ -501,7 +578,7 @@ pub enum EdifactError {
     /// genuinely repeats a code (e.g. the same DE used at two positions), address
     /// it positionally with [`Segment::element_str`][crate::Segment::element_str]
     /// or split the definition.
-    #[error("segment {tag} defines data element {data_element} at more than one position")]
+    #[error("segment {tag} defines data element {data_element} at more than one position", tag = escape_control(.tag), data_element = escape_control(.data_element))]
     AmbiguousDataElement {
         /// Segment tag whose definition was searched.
         tag: String,
@@ -509,10 +586,12 @@ pub enum EdifactError {
         data_element: String,
     },
 
-    /// A configured [`ReaderConfig`][crate::ReaderConfig] resource limit was exceeded.
+    /// A [`ReaderConfig`][crate::ReaderConfig] resource limit or the repertoire
+    /// sniff window was exceeded.
     ///
     /// Raised by the parsing iterators when the input carries more segments,
-    /// messages, or bytes than the caller allowed.  The limit is reported rather
+    /// messages, or bytes than the caller allowed, and by the repertoire sniff
+    /// when the `UNB` syntax identifier lies outside its fixed window.  The limit is reported rather
     /// than silently applied: a budget that ends the iterator without an error is
     /// indistinguishable from a clean end of input, so the caller would accept a
     /// **truncated** interchange as complete.
@@ -522,23 +601,27 @@ pub enum EdifactError {
     ///
     /// The variant is `#[non_exhaustive]`: match it as
     /// `LimitExceeded { limit, max, .. }`.
-    #[error("input exceeded the configured {limit} limit of {max} at byte offset {offset}")]
+    #[error("input exceeded the {limit} limit of {max} at byte offset {offset}")]
     #[non_exhaustive]
     LimitExceeded {
         /// Name of the limit that tripped: `"max_segments"`, `"max_messages"`,
-        /// `"max_segments_per_message"`, `"max_input_bytes"`, or — for the
+        /// `"max_message_bytes"`, `"max_input_bytes"`, or — for the
         /// recovering scan's fault budget,
         /// [`RecoveryConfig::max_faults`][crate::RecoveryConfig::max_faults] —
-        /// `"max_faults"`.
+        /// `"max_faults"`, or — for the repertoire sniff, see
+        /// [`sniff_charset`][crate::sniff_charset] — `"sniff_window"`, or — for
+        /// [`InterchangeHeader::read_from`][crate::InterchangeHeader::read_from]
+        /// — `"header_read"`.
         limit: &'static str,
         /// The configured ceiling.
         max: u64,
         /// Where the budget ran out.
         ///
-        /// For a count budget (`max_segments`, `max_messages`,
-        /// `max_segments_per_message`, `max_faults`): the start of the segment
+        /// For a count or per-message budget (`max_segments`, `max_messages`,
+        /// `max_message_bytes`, `max_faults`): the start of the segment
         /// that would have exceeded it. For `max_input_bytes`: the budget
-        /// itself — the first byte outside it — saturated to `usize::MAX`.
+        /// itself — the first byte outside it — saturated to `usize::MAX`. For
+        /// `sniff_window`: the first byte of the header the window cannot hold.
         offset: usize,
     },
 
@@ -563,7 +646,7 @@ pub enum EdifactError {
     /// There is no representation for `NaN` or infinity, and `Display` would
     /// emit `NaN` / `inf`, text no receiver can parse and that the crate's own
     /// reader would hand back as a string.
-    #[error("non-finite number {value} has no EDIFACT representation")]
+    #[error("non-finite number {value} has no EDIFACT representation", value = escape_control(.value))]
     NonFiniteNumber {
         /// The offending value, formatted for the message.
         value: String,
@@ -589,15 +672,15 @@ pub enum EdifactError {
         offset: usize,
     },
 
-    /// A `UNB` was written declaring a repertoire other than the writer's own.
+    /// An interchange header declares a repertoire other than the writer's own.
     ///
     /// A header that names `UNOA` while the body goes out as ISO 8859-1 is
     /// unreadable at the far end in exactly the way that is hardest to diagnose,
     /// so [`Writer::begin_interchange`][crate::Writer::begin_interchange] refuses
     /// the combination rather than emitting it.
-    #[error("UNB declares repertoire {declared}, but the writer encodes {writer}")]
+    #[error("UNB declares repertoire {declared}, but the writer encodes {writer}", declared = escape_control(.declared))]
     CharacterRepertoireMismatch {
-        /// Syntax identifier passed to `begin_interchange`.
+        /// Syntax identifier of the header passed to `begin_interchange`.
         declared: String,
         /// Repertoire the writer was bound to with `Writer::with_charset`.
         writer: &'static str,
@@ -609,7 +692,7 @@ pub enum EdifactError {
     /// outside ISO 9735) are stateful or multi-byte in ways that break the byte-level delimiter scanning every
     /// other repertoire allows.  They are reported rather than silently
     /// mis-decoded.
-    #[error("character repertoire '{syntax_identifier}' is not supported")]
+    #[error("character repertoire '{syntax_identifier}' is not supported", syntax_identifier = escape_control(.syntax_identifier))]
     UnsupportedCharset {
         /// The `UNB` S001 DE 0001 value that could not be handled.
         syntax_identifier: String,
@@ -621,7 +704,7 @@ pub enum EdifactError {
     /// message or one package".  A bare `UNB`/`UNZ` pair is a delivery that says
     /// nothing, and because `UNZ+0` makes the control count agree with the
     /// (absent) content, no count check can catch it.
-    #[error("interchange {control_ref} contains no message or group")]
+    #[error("interchange {control_ref} contains no message or group", control_ref = escape_control(.control_ref))]
     EmptyInterchange {
         /// Interchange control reference (`UNB` DE 0020) of the empty interchange.
         control_ref: String,
@@ -632,7 +715,7 @@ pub enum EdifactError {
     /// ISO 9735-1 §7.3: a message "shall be started and identified by a message
     /// header, shall be terminated by a message trailer, and shall contain at
     /// least one additional segment".
-    #[error("message {message_ref} has no segments between UNH and UNT")]
+    #[error("message {message_ref} has no segments between UNH and UNT", message_ref = escape_control(.message_ref))]
     EmptyMessage {
         /// Message reference number (`UNH` DE 0062) of the empty message.
         message_ref: String,
@@ -649,7 +732,7 @@ pub enum EdifactError {
     /// scans for delimiters produces nonsense, so the package is reported instead.
     /// Split the object out of the byte stream using the declared length before
     /// parsing the remainder.
-    #[error("segment {tag} opens or closes a package, which this crate does not parse")]
+    #[error("segment {tag} opens or closes a package, which this crate does not parse", tag = escape_control(.tag))]
     PackageNotSupported {
         /// The package segment encountered: `UNO` or `UNP`.
         tag: String,
@@ -665,7 +748,8 @@ pub enum EdifactError {
     /// have been omitted — and a receiver comparing it against a code list, a
     /// reference, or a previous message will not treat it as absent.
     #[error(
-        "segment {tag} element {element_index} component {component_index}: value is only spaces"
+        "segment {tag} element {element_index} component {component_index}: value is only spaces",
+        tag = escape_control(.tag)
     )]
     BlankDataElementValue {
         /// Segment tag containing the blank value.
@@ -685,7 +769,7 @@ pub enum EdifactError {
     /// only content is the tag "shall be omitted in its entirety" — so `ABC'` is
     /// either a mandatory segment that lost its data or a conditional one that
     /// should not have been sent.
-    #[error("segment {tag} contains no data element")]
+    #[error("segment {tag} contains no data element", tag = escape_control(.tag))]
     SegmentWithoutDataElements {
         /// The offending segment tag.
         tag: String,
@@ -699,7 +783,7 @@ pub enum EdifactError {
     /// status and maximum number of occurrences within the segment structure
     /// shall be stated in the segment specification." Exceeding the stated
     /// maximum is a structural violation, reported by `CONTRL` as code 35.
-    #[error("segment {tag} element {element_index} occurs {actual} times, at most {max} allowed")]
+    #[error("segment {tag} element {element_index} occurs {actual} times, at most {max} allowed", tag = escape_control(.tag))]
     TooManyRepetitions {
         /// Segment tag carrying the over-repeated element.
         tag: String,
@@ -720,7 +804,8 @@ pub enum EdifactError {
     /// an optional minus, a decimal mark, and an exponent — and explicitly not
     /// the space character or a plus sign. Reported by `CONTRL` as code 37.
     #[error(
-        "segment {tag} element {element_index} component {component_index}: {value:?} is not {repr}"
+        "segment {tag} element {element_index} component {component_index}: {value:?} is not {repr}",
+        tag = escape_control(.tag), repr = escape_control(.repr)
     )]
     InvalidCharacterType {
         /// Segment tag containing the value.
@@ -743,7 +828,8 @@ pub enum EdifactError {
     /// numeric value excludes the sign, the decimal mark, and the exponent
     /// (§10). Reported by `CONTRL` as code 39.
     #[error(
-        "segment {tag} element {element_index} component {component_index}: {actual} characters exceeds {repr}"
+        "segment {tag} element {element_index} component {component_index}: {actual} characters exceeds {repr}",
+        tag = escape_control(.tag), repr = escape_control(.repr)
     )]
     DataElementTooLong {
         /// Segment tag containing the value.
@@ -766,7 +852,8 @@ pub enum EdifactError {
     /// a variable one (`an..35`) is satisfied by any non-empty value. Reported
     /// by `CONTRL` as code 40.
     #[error(
-        "segment {tag} element {element_index} component {component_index}: {actual} characters is short of {repr}"
+        "segment {tag} element {element_index} component {component_index}: {actual} characters is short of {repr}",
+        tag = escape_control(.tag), repr = escape_control(.repr)
     )]
     DataElementTooShort {
         /// Segment tag containing the value.
@@ -793,7 +880,7 @@ pub enum EdifactError {
     /// `BGM+220+'` and `DTM+137:20260101:'` are therefore both malformed, and a
     /// receiver that trims them is being generous rather than correct. Reported
     /// by `CONTRL` as code 45.
-    #[error("segment {tag} ends in a separator that carries no value")]
+    #[error("segment {tag} ends in a separator that carries no value", tag = escape_control(.tag))]
     TrailingSeparator {
         /// Segment tag carrying the trailing separator.
         tag: String,
@@ -827,7 +914,7 @@ pub enum EdifactError {
     /// variable-length field. The value is still readable, so this is a warning
     /// — but a receiver comparing `007` against the code `7`, or `"ACME "`
     /// against `"ACME"`, will not match them.
-    #[error("segment {tag} element {element_index} component {component_index}: {kind}")]
+    #[error("segment {tag} element {element_index} component {component_index}: {kind}", tag = escape_control(.tag))]
     InsignificantCharacters {
         /// Segment tag containing the value.
         tag: String,
@@ -841,12 +928,136 @@ pub enum EdifactError {
         span: Span,
     },
 
+    /// `UNE` DE 0060 does not match the number of messages in its group.
+    ///
+    /// ISO 9735-10:2002 §5.3.5, DE 0060: "the number of messages and packages
+    /// in the group". Reported by `CONTRL` as code 29 on the group (`UCF`).
+    #[error(
+        "UNE DE 0060 of group {group_ref} declares {expected} message(s), the group holds {actual}",
+        group_ref = escape_control(.group_ref)
+    )]
+    GroupCountMismatch {
+        /// Group reference number (`UNG`/`UNE` DE 0048).
+        group_ref: String,
+        /// Count declared in `UNE` DE 0060.
+        expected: u32,
+        /// Messages found in the group.
+        actual: u32,
+        /// Byte range of the `UNE`.
+        span: Span,
+    },
+
+    /// An interactive-EDI segment (`UIB`, `UIH`, `UIR`, `UIT`, `UIZ`;
+    /// ISO 9735-3), which this batch-EDI crate does not support.
+    ///
+    /// Reported by `CONTRL` as code 47 ("envelope functionality not supported").
+    #[error("segment {tag} belongs to interactive EDI (ISO 9735-3), which is not supported", tag = escape_control(.tag))]
+    InteractiveSegmentNotSupported {
+        /// The interactive segment tag.
+        tag: String,
+        /// Byte range of the segment.
+        span: Span,
+    },
+
+    /// A security segment (`USA`…`USY`; ISO 9735-5, -7, -9), which this crate
+    /// does not support.
+    ///
+    /// The crate neither verifies nor strips security headers, so a secured
+    /// message is refused rather than passed as if it were plain. Reported by
+    /// `CONTRL` as code 47.
+    #[error("segment {tag} is a security segment (ISO 9735-5/-7/-9), which is not supported", tag = escape_control(.tag))]
+    SecuritySegmentNotSupported {
+        /// The security segment tag.
+        tag: String,
+        /// Byte range of the segment.
+        span: Span,
+    },
+
+    /// A segment tag starting with `U` that is no service segment.
+    ///
+    /// ISO 9735-1:2002 §7.7 reserves tags starting with `U` for service
+    /// segments. Reported by `CONTRL` as code 15.
+    #[error(
+        "segment tag {tag} is reserved for service segments (ISO 9735-1 §7.7) and defines none",
+        tag = escape_control(.tag)
+    )]
+    ReservedServiceSegmentTag {
+        /// The reserved tag.
+        tag: String,
+        /// Byte range of the segment.
+        span: Span,
+    },
+
+    /// Data follows the interchange trailer.
+    ///
+    /// One input holds one interchange: from `UNB` (or its `UNA`) to the first
+    /// `UNZ` outside a message. A second interchange, a `UNA` after the first
+    /// segment, or any stray segment after `UNZ` is reported here, once, at its
+    /// first segment. Reported by `CONTRL` as code 33.
+    #[error("segment {tag} follows the interchange trailer UNZ; one input holds one interchange", tag = escape_control(.tag))]
+    DataAfterInterchangeTrailer {
+        /// Tag of the first segment after `UNZ` (`UNA` from the tokenizer).
+        tag: String,
+        /// Byte range of that segment (of the three bytes `UNA` from the
+        /// tokenizer).
+        span: Span,
+    },
+
+    /// `UNB` S001 DE 0002 names a syntax version this crate does not support.
+    ///
+    /// Versions `1` to `4` are supported (ISO 9735-1:2002 §2); `X`
+    /// (ISO 9735-11) and any other value are refused. Reported by `CONTRL`
+    /// as code 2 on the interchange.
+    #[error("UNB S001 DE 0002 syntax version {value:?} is not supported; expected 1, 2, 3 or 4")]
+    UnsupportedSyntaxVersion {
+        /// The declared value.
+        value: String,
+        /// Byte range of DE 0002.
+        span: Span,
+    },
+
+    /// `UNB` or `UNG` S004 is not a calendar date or a 24-hour time.
+    ///
+    /// DE 0017 is `YYMMDD` (syntax versions 1–3) or `CCYYMMDD` (version 4);
+    /// DE 0019 is `HHMM` (ISO 9735-10:2002 §5.3.5). A `YYMMDD` year divisible
+    /// by 4 admits 29 February, because the century is not transferred.
+    /// Reported by `CONTRL` as code 12.
+    #[error(
+        "segment {tag} element {element_index} component {component_index}: {value:?} is not a valid {}",
+        if *component_index == 0 { "date" } else { "time (HHMM)" },
+        tag = escape_control(.tag)
+    )]
+    InvalidDateTime {
+        /// `UNB` or `UNG`.
+        tag: String,
+        /// Zero-based element index of S004.
+        element_index: usize,
+        /// `0` for DE 0017 (date), `1` for DE 0019 (time).
+        component_index: usize,
+        /// The offending value.
+        value: String,
+        /// Byte range of the value.
+        span: Span,
+    },
+
+    /// A group (`UNG`…`UNE`) holds no message.
+    ///
+    /// ISO 9735-1:2002 §7.3: a group "shall contain at least one message or
+    /// package". Reported by `CONTRL` as code 32 on the group.
+    #[error("group {group_ref} contains no message", group_ref = escape_control(.group_ref))]
+    EmptyGroup {
+        /// Group reference number (`UNG` DE 0048).
+        group_ref: String,
+        /// Byte range of the `UNG`.
+        span: Span,
+    },
+
     /// A [`SegmentLayout`][crate::SegmentLayout] was applied to a segment with a different tag.
     ///
     /// Passing the `NAD` definition to a `DTM` segment would resolve codes
     /// against the wrong table, which is exactly the class of mistake that
     /// code-addressed access exists to prevent — so it is rejected up front.
-    #[error("segment layout is for {expected}, but the segment is {actual}")]
+    #[error("segment layout is for {expected}, but the segment is {actual}", expected = escape_control(.expected), actual = escape_control(.actual))]
     SegmentLayoutMismatch {
         /// Tag the layout describes.
         expected: String,
@@ -891,7 +1102,7 @@ pub enum EdifactError {
     /// for every segment the resolver skipped. The segment is never attached to
     /// a wrong group; `reason` says whether it fits a place already passed, a
     /// place elsewhere in the message, or none at all.
-    #[error("segment {tag} is not placed: {reason}")]
+    #[error("segment {tag} is not placed: {reason}", tag = escape_control(.tag))]
     SegmentNotPlaced {
         /// Segment tag.
         tag: String,
@@ -902,7 +1113,7 @@ pub enum EdifactError {
     },
 
     /// A segment place occurs more often in one group instance than its `max`.
-    #[error("segment {tag} occurs more than {max} time(s) in its group")]
+    #[error("segment {tag} occurs more than {max} time(s) in its group", tag = escape_control(.tag))]
     TooManySegmentOccurrences {
         /// Segment tag.
         tag: String,
@@ -913,7 +1124,7 @@ pub enum EdifactError {
     },
 
     /// A segment group occurs more often in its parent instance than its `max`.
-    #[error("segment group {group} occurs more than {max} time(s)")]
+    #[error("segment group {group} occurs more than {max} time(s)", group = escape_control(.group))]
     TooManyGroupOccurrences {
         /// Group name.
         group: String,
@@ -936,15 +1147,72 @@ pub enum EdifactError {
         /// What is wrong.
         reason: &'static str,
     },
+
+    /// A [`crate::Writer`] refused to write after an earlier failure.
+    ///
+    /// The sink may end in a partial segment or an unclosed message, so
+    /// nothing more is written to it. Start a new writer; use
+    /// [`Writer::into_inner`][crate::Writer::into_inner] to inspect or discard
+    /// what was written.
+    #[error("writer is poisoned: {reason}; no further output was written")]
+    WriterPoisoned {
+        /// What poisoned the writer.
+        reason: &'static str,
+    },
 }
 
 impl From<std::io::Error> for EdifactError {
+    /// Wraps `e` as [`Io`][Self::Io], unless it carries an `EdifactError` — a
+    /// reader adapter of this crate refusing its input — which is returned as is.
     fn from(e: std::io::Error) -> Self {
+        if e.get_ref().is_some_and(|inner| inner.is::<Self>()) {
+            if let Some(Ok(inner)) = e.into_inner().map(|inner| inner.downcast::<Self>()) {
+                return *inner;
+            }
+            unreachable!("the payload was checked to be an EdifactError");
+        }
         Self::Io(IoError(e))
     }
 }
 
 impl EdifactError {
+    /// This error with every input offset it carries moved by `base` bytes.
+    ///
+    /// The reader path tokenizes each segment from its own buffer, so the
+    /// offsets a per-segment tokenizer reports are relative to the segment's
+    /// first byte; rebasing them makes them absolute, as on the slice path.
+    /// Only the lexical variants and the tokenizer's `E058` carry such a
+    /// position; every other variant is returned unchanged.
+    pub(crate) fn rebased(self, base: usize) -> Self {
+        match self {
+            Self::UnexpectedEof { offset } => Self::UnexpectedEof {
+                offset: offset.saturating_add(base),
+            },
+            Self::InvalidDelimiter { byte, offset } => Self::InvalidDelimiter {
+                byte,
+                offset: offset.saturating_add(base),
+            },
+            Self::InvalidText { offset } => Self::InvalidText {
+                offset: offset.saturating_add(base),
+            },
+            Self::InvalidReleaseSequence { offset } => Self::InvalidReleaseSequence {
+                offset: offset.saturating_add(base),
+            },
+            Self::SegmentTooLong { offset, limit } => Self::SegmentTooLong {
+                offset: offset.saturating_add(base),
+                limit,
+            },
+            Self::UnexpectedDataToken { offset } => Self::UnexpectedDataToken {
+                offset: offset.saturating_add(base),
+            },
+            Self::DataAfterInterchangeTrailer { tag, span } => Self::DataAfterInterchangeTrailer {
+                tag,
+                span: span.offset(base),
+            },
+            other => other,
+        }
+    }
+
     /// Stable diagnostic code for this error variant.
     #[must_use]
     pub const fn stable_code(&self) -> &'static str {
@@ -1002,13 +1270,22 @@ impl EdifactError {
             Self::TrailingSeparator { .. } => "E051",
             Self::GroupsAndMessagesMixed { .. } => "E052",
             Self::InsignificantCharacters { .. } => "E053",
-            // E054–E065 are reserved; never reuse them for anything else.
+            Self::GroupCountMismatch { .. } => "E054",
+            Self::InteractiveSegmentNotSupported { .. } => "E055",
+            Self::SecuritySegmentNotSupported { .. } => "E056",
+            Self::ReservedServiceSegmentTag { .. } => "E057",
+            Self::DataAfterInterchangeTrailer { .. } => "E058",
+            Self::UnsupportedSyntaxVersion { .. } => "E059",
+            Self::InvalidDateTime { .. } => "E060",
+            Self::EmptyGroup { .. } => "E061",
+            // E062–E065 are reserved; never reuse them for anything else.
             Self::ActionNotPermitted { .. } => "E066",
             Self::InvalidContrlIdentifier { .. } => "E067",
             Self::SegmentNotPlaced { .. } => "E068",
             Self::TooManySegmentOccurrences { .. } => "E069",
             Self::TooManyGroupOccurrences { .. } => "E070",
             Self::InvalidGroupSchema { .. } => "E071",
+            Self::WriterPoisoned { .. } => "E072",
         }
     }
 
@@ -1063,9 +1340,9 @@ impl EdifactError {
                 let _ = limit; // used in the error message; hint is generic
                 Some("Increase max_segment_bytes in ReaderConfig or reject the input as malformed")
             }
-            Self::InvalidEventSequence { .. } => {
-                Some("Emit StartSegment before Element, and Element before ComponentElement")
-            }
+            Self::InvalidEventSequence { .. } => Some(
+                "Emit StartSegment before Element, and Element before ComponentElement; open and close an interchange with begin_interchange and end_interchange only",
+            ),
             Self::InvalidElementPosition => Some(
                 "Set element position to a value >= 1; positions are one-based (1 = first element slot)",
             ),
@@ -1090,9 +1367,9 @@ impl EdifactError {
             Self::SegmentLayoutMismatch { .. } => {
                 Some("Resolve codes against the segment definition whose tag matches the segment")
             }
-            Self::LimitExceeded { .. } => {
-                Some("Raise the corresponding ReaderConfig limit, or reject the input as oversized")
-            }
+            Self::LimitExceeded { .. } => Some(
+                "Raise the corresponding ReaderConfig limit (ReaderConfig::unbounded() for trusted input), or reject the input as oversized",
+            ),
             Self::RepetitionSeparatorNotDeclared => Some(
                 "Build the writer with Writer::with_una and a ServiceStringAdvice whose repetition_sep is set",
             ),
@@ -1106,7 +1383,7 @@ impl EdifactError {
                 "EDIFACT has no representation for NaN or infinity; check the calculation, or omit the element",
             ),
             Self::CharacterRepertoireMismatch { .. } => Some(
-                "Pass the writer's own syntax identifier to begin_interchange, or bind the writer to the repertoire the header declares",
+                "Declare the writer's own repertoire in the header, or leave the writer unbound so begin_interchange binds it",
             ),
             Self::EmptyInterchange { .. } => Some(
                 "An interchange must carry at least one message or group; send nothing rather than an empty envelope",
@@ -1165,6 +1442,33 @@ impl EdifactError {
             Self::InvalidGroupSchema { .. } => Some(
                 "Fix the group schema: tags are three upper-case letters, min <= max, max >= 1, one_of lists at least one code, at most 64 nested groups",
             ),
+            Self::WriterPoisoned { .. } => Some(
+                "Start a new writer; Writer::into_inner returns the sink with the partial output",
+            ),
+            Self::GroupCountMismatch { .. } => {
+                Some("Set UNE DE 0060 to the number of messages between the UNG and the UNE")
+            }
+            Self::InteractiveSegmentNotSupported { .. } => Some(
+                "Interactive EDI (ISO 9735-3) is not supported; exchange the data as a batch interchange (UNB...UNZ)",
+            ),
+            Self::SecuritySegmentNotSupported { .. } => Some(
+                "Secured EDIFACT (ISO 9735-5/-7/-9) is not supported; verify and remove the security segments before parsing, or agree on unsecured exchange",
+            ),
+            Self::ReservedServiceSegmentTag { .. } => Some(
+                "Tags starting with U are reserved for service segments; rename the segment or remove it",
+            ),
+            Self::DataAfterInterchangeTrailer { .. } => Some(
+                "Split the input at the end of each UNZ segment and parse every interchange on its own",
+            ),
+            Self::UnsupportedSyntaxVersion { .. } => {
+                Some("Declare syntax version 1, 2, 3 or 4 in UNB S001 DE 0002")
+            }
+            Self::InvalidDateTime { .. } => Some(
+                "Send a real calendar date (YYMMDD for syntax versions 1-3, CCYYMMDD for 4) and a time HHMM from 0000 to 2359",
+            ),
+            Self::EmptyGroup { .. } => {
+                Some("Put at least one message in the group, or omit the UNG and UNE")
+            }
             Self::ValidationErrors { .. }
             | Self::MessageCountMismatch { .. }
             | Self::SegmentCountMismatch { .. }
@@ -1199,7 +1503,28 @@ impl miette::Diagnostic for EdifactError {
         })
     }
 
+    /// The help text, with input-derived values escaped like `Display`.
     fn help<'a>(&'a self) -> Option<Box<dyn std::fmt::Display + 'a>> {
+        let text = self.help_text()?.to_string();
+        Some(Box::new(EscapedText(text)))
+    }
+}
+
+/// An owned string displayed through [`escape_control`].
+#[cfg(feature = "diagnostics")]
+struct EscapedText(String);
+
+#[cfg(feature = "diagnostics")]
+impl fmt::Display for EscapedText {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        escape_control(&self.0).fmt(f)
+    }
+}
+
+#[cfg(feature = "diagnostics")]
+impl EdifactError {
+    /// The unescaped help text.
+    fn help_text(&self) -> Option<Box<dyn std::fmt::Display + '_>> {
         match self {
             // Static text — no allocation needed.
             Self::InvalidUna => Some(Box::new(
@@ -1225,9 +1550,11 @@ impl miette::Diagnostic for EdifactError {
                 "Release character at offset {offset} is dangling. \
                  Ensure '?' is followed by an escaped byte",
             ))),
-            Self::MessageCountMismatch { expected, actual } => Some(Box::new(format!(
-                "UNZ declares {expected} message(s) but {actual} UNH/UNT pair(s) were found. \
-                 Check the UNZ message count",
+            Self::MessageCountMismatch {
+                expected, actual, ..
+            } => Some(Box::new(format!(
+                "UNZ DE 0036 declares {expected} but the interchange holds {actual} message(s), \
+                 or group(s) when groups are used",
             ))),
             Self::SegmentCountMismatch {
                 expected,
@@ -1394,9 +1721,18 @@ impl miette::Diagnostic for EdifactError {
                 "The value {value} is not finite. EDIFACT numeric data elements have no \
                  representation for NaN or infinity",
             ))),
+            Self::LimitExceeded {
+                limit: "sniff_window",
+                max,
+                offset,
+            } => Some(Box::new(format!(
+                "The UNB syntax identifier lies outside the {max}-byte sniff window at byte \
+                 offset {offset}. Strip the leading whitespace or reject the input",
+            ))),
             Self::LimitExceeded { limit, max, offset } => Some(Box::new(format!(
                 "The input exceeds the configured {limit} limit of {max} at byte offset {offset}. \
-                 Raise it via ReaderConfig if the input is legitimate, or reject the input",
+                 Raise it via ReaderConfig (ReaderConfig::unbounded() for trusted input) \
+                 if the input is legitimate, or reject the input",
             ))),
             Self::EmptyInterchange { control_ref } => Some(Box::new(format!(
                 "Interchange {control_ref} carries no message and no group. \
@@ -1502,6 +1838,55 @@ impl miette::Diagnostic for EdifactError {
             Self::InvalidGroupSchema { group, reason } => Some(Box::new(format!(
                 "The group schema is malformed at {group:?}: {reason}",
             ))),
+            Self::GroupCountMismatch {
+                group_ref,
+                expected,
+                actual,
+                ..
+            } => Some(Box::new(format!(
+                "UNE of group {group_ref} declares {expected} message(s) but the group holds \
+                 {actual}",
+            ))),
+            Self::InteractiveSegmentNotSupported { tag, .. } => Some(Box::new(format!(
+                "{tag} is an interactive-EDI segment (ISO 9735-3); only batch interchanges \
+                 (UNB...UNZ) are supported",
+            ))),
+            Self::SecuritySegmentNotSupported { tag, .. } => Some(Box::new(format!(
+                "{tag} is a security segment (ISO 9735-5/-7/-9); secured messages are refused, \
+                 not passed unverified",
+            ))),
+            Self::ReservedServiceSegmentTag { tag, .. } => Some(Box::new(format!(
+                "{tag} starts with U, which ISO 9735-1 §7.7 reserves for service segments, but \
+                 no service segment has this tag",
+            ))),
+            Self::DataAfterInterchangeTrailer { tag, .. } => Some(Box::new(format!(
+                "{tag} follows the UNZ that ends the interchange. Split concatenated \
+                 interchanges and parse each on its own",
+            ))),
+            Self::UnsupportedSyntaxVersion { value, .. } => Some(Box::new(format!(
+                "Syntax version {value:?} is not supported: UNB S001 DE 0002 must be 1, 2, 3 or 4",
+            ))),
+            Self::InvalidDateTime {
+                tag,
+                component_index,
+                value,
+                ..
+            } => Some(Box::new(if *component_index == 0 {
+                format!(
+                    "{tag} S004 DE 0017 {value:?} is no calendar date: YYMMDD (syntax 1-3) or \
+                     CCYYMMDD (syntax 4), month 01-12, day valid for the month"
+                )
+            } else {
+                format!("{tag} S004 DE 0019 {value:?} is no time: HHMM, 0000 to 2359")
+            })),
+            Self::EmptyGroup { group_ref, .. } => Some(Box::new(format!(
+                "Group {group_ref} has no message; ISO 9735-1 §7.3 requires at least one",
+            ))),
+            Self::WriterPoisoned { .. } => Some(Box::new(
+                "The output is incomplete and must not be sent. Close every message with \
+                 MessageWriter::finish(); after a failed write start a new Writer \
+                 (Writer::into_inner returns the sink with the partial output)",
+            )),
         }
     }
 }
@@ -1513,6 +1898,68 @@ pub use crate::report::ValidationReport;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rebased_moves_every_lexical_offset_and_nothing_else() {
+        let cases = [
+            (
+                EdifactError::UnexpectedEof { offset: 1 },
+                EdifactError::UnexpectedEof { offset: 11 },
+            ),
+            (
+                EdifactError::InvalidDelimiter {
+                    byte: b'+',
+                    offset: 1,
+                },
+                EdifactError::InvalidDelimiter {
+                    byte: b'+',
+                    offset: 11,
+                },
+            ),
+            (
+                EdifactError::InvalidText { offset: 1 },
+                EdifactError::InvalidText { offset: 11 },
+            ),
+            (
+                EdifactError::InvalidReleaseSequence { offset: 1 },
+                EdifactError::InvalidReleaseSequence { offset: 11 },
+            ),
+            (
+                EdifactError::SegmentTooLong {
+                    offset: 1,
+                    limit: 5,
+                },
+                EdifactError::SegmentTooLong {
+                    offset: 11,
+                    limit: 5,
+                },
+            ),
+            (
+                EdifactError::UnexpectedDataToken { offset: 1 },
+                EdifactError::UnexpectedDataToken { offset: 11 },
+            ),
+            (
+                EdifactError::InvalidSegmentTag("B?".to_owned()),
+                EdifactError::InvalidSegmentTag("B?".to_owned()),
+            ),
+            (EdifactError::InvalidUna, EdifactError::InvalidUna),
+            (
+                EdifactError::LimitExceeded {
+                    limit: "max_segments",
+                    max: 1,
+                    offset: 1,
+                },
+                EdifactError::LimitExceeded {
+                    limit: "max_segments",
+                    max: 1,
+                    offset: 1,
+                },
+            ),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(error.rebased(10), expected);
+        }
+    }
 
     #[test]
     fn recovery_hint_exists_for_common_malformed_cases() {
@@ -1533,14 +1980,14 @@ mod tests {
     #[test]
     fn a_limit_error_names_its_budget_and_position() {
         let err = EdifactError::LimitExceeded {
-            limit: "max_segments_per_message",
+            limit: "max_message_bytes",
             max: 1_000,
             offset: 63_105,
         };
         assert_eq!(err.stable_code(), "E036");
         assert_eq!(
             err.to_string(),
-            "input exceeded the configured max_segments_per_message limit of 1000 \
+            "input exceeded the max_message_bytes limit of 1000 \
              at byte offset 63105"
         );
         assert!(err.recovery_hint().is_some());
@@ -1575,5 +2022,520 @@ mod tests {
         for err in &new {
             assert!(err.recovery_hint().is_some(), "{err:?}");
         }
+    }
+
+    #[test]
+    fn writer_poisoned_has_its_own_code_and_hint() {
+        let err = EdifactError::WriterPoisoned {
+            reason: "a message was dropped without finish()",
+        };
+        assert_eq!(err.stable_code(), "E072");
+        assert!(err.recovery_hint().is_some());
+        assert_eq!(
+            err.to_string(),
+            "writer is poisoned: a message was dropped without finish(); \
+             no further output was written"
+        );
+    }
+
+    #[test]
+    fn service_segment_codes_are_errors_with_a_hint_and_a_contrl_code() {
+        use crate::contrl::SyntaxError;
+        let span = Span::new(0, 3);
+        let cases = [
+            (
+                EdifactError::GroupCountMismatch {
+                    group_ref: "G1".into(),
+                    expected: 2,
+                    actual: 1,
+                    span,
+                },
+                "E054",
+                "29",
+            ),
+            (
+                EdifactError::InteractiveSegmentNotSupported {
+                    tag: "UIH".into(),
+                    span,
+                },
+                "E055",
+                "47",
+            ),
+            (
+                EdifactError::SecuritySegmentNotSupported {
+                    tag: "USH".into(),
+                    span,
+                },
+                "E056",
+                "47",
+            ),
+            (
+                EdifactError::ReservedServiceSegmentTag {
+                    tag: "UXX".into(),
+                    span,
+                },
+                "E057",
+                "15",
+            ),
+            (
+                EdifactError::DataAfterInterchangeTrailer {
+                    tag: "UNB".into(),
+                    span,
+                },
+                "E058",
+                "33",
+            ),
+            (
+                EdifactError::UnsupportedSyntaxVersion {
+                    value: "X".into(),
+                    span,
+                },
+                "E059",
+                "2",
+            ),
+            (
+                EdifactError::InvalidDateTime {
+                    tag: "UNB".into(),
+                    element_index: 3,
+                    component_index: 0,
+                    value: "261399".into(),
+                    span,
+                },
+                "E060",
+                "12",
+            ),
+            (
+                EdifactError::EmptyGroup {
+                    group_ref: "G1".into(),
+                    span,
+                },
+                "E061",
+                "32",
+            ),
+        ];
+        for (err, code, contrl) in cases {
+            assert_eq!(err.stable_code(), code);
+            assert!(err.recovery_hint().is_some(), "{code}");
+            assert_eq!(SyntaxError::for_error(&err).code(), contrl, "{code}");
+            let issue =
+                crate::ValidationIssue::new(crate::ValidationSeverity::Error, err.to_string())
+                    .with_error_code(code);
+            assert_eq!(SyntaxError::for_issue(&issue).code(), contrl, "{code}");
+            assert_eq!(
+                crate::report::severity_for_error(&err),
+                crate::ValidationSeverity::Error,
+                "{code}"
+            );
+        }
+    }
+
+    // ── escaping input-derived text ──────────────────────────────────────────
+
+    /// A value carrying every kind of character the escape must neutralise.
+    const HOSTILE: &str = "A\r\n\x1b[31m\u{85}\u{2028}\u{2029}\u{202e}\0\tZ";
+
+    fn h() -> String {
+        HOSTILE.to_owned()
+    }
+
+    #[test]
+    fn escape_control_spellings() {
+        let escaped = |s: &str| escape_control(s).to_string();
+        assert_eq!(escaped("BY"), "BY");
+        assert_eq!(escaped("A\r\nB"), r"A\r\nB");
+        assert_eq!(escaped("\0\t"), r"\0\t");
+        assert_eq!(escaped("\x1b[31m"), r"\u{1b}[31m");
+        assert_eq!(escaped("\u{85}"), r"\u{85}");
+        assert_eq!(escaped("\u{2028}\u{2029}"), r"\u{2028}\u{2029}");
+        assert_eq!(escaped("A\u{202e}gnp"), r"A\u{202e}gnp");
+        assert_eq!(escaped("\u{61c}\u{2066}"), r"\u{61c}\u{2066}");
+        assert_eq!(escaped("Müller 'x' \"y\" \\"), "Müller 'x' \"y\" \\");
+        let once = escaped(HOSTILE);
+        assert!(!once.chars().any(needs_escape));
+        assert_eq!(escaped(&once), once, "idempotent");
+    }
+
+    /// Position of `error`'s variant. No wildcard arm: a new variant does not
+    /// compile until it is listed here, and the test below fails until it is
+    /// built with hostile values.
+    fn variant_index(error: &EdifactError) -> usize {
+        use EdifactError as E;
+        match error {
+            E::UnexpectedEof { .. } => 0,
+            E::InvalidDelimiter { .. } => 1,
+            E::InvalidText { .. } => 2,
+            E::InvalidReleaseSequence { .. } => 3,
+            E::MessageCountMismatch { .. } => 4,
+            E::SegmentCountMismatch { .. } => 5,
+            E::InvalidSegmentTag(..) => 6,
+            E::InvalidUna => 7,
+            E::MissingRequiredElement { .. } => 8,
+            E::MissingRequiredComponent { .. } => 9,
+            E::InvalidUtf8 => 10,
+            E::Io(..) => 11,
+            E::InvalidSegmentForMessage { .. } => 12,
+            E::InvalidElementCount { .. } => 13,
+            E::InvalidComponentCount { .. } => 14,
+            E::InvalidCodeValue { .. } => 15,
+            E::MissingSegment { .. } => 16,
+            E::QualifierMismatch { .. } => 17,
+            E::ConditionalRequirementNotMet { .. } => 18,
+            E::ValidationErrors { .. } => 19,
+            E::SegmentTooLong { .. } => 20,
+            E::InterchangeTooLarge { .. } => 21,
+            E::InvalidEventSequence { .. } => 22,
+            E::InvalidElementPosition => 23,
+            E::IncompatibleReleaseScopes { .. } => 24,
+            E::InvalidFieldValue { .. } => 25,
+            E::UnexpectedDataToken { .. } => 26,
+            E::UnrecognisedSyntaxIdentifier(..) => 27,
+            E::DuplicateReference { .. } => 28,
+            E::UnknownDataElement { .. } => 29,
+            E::AmbiguousDataElement { .. } => 30,
+            E::LimitExceeded { .. } => 31,
+            E::RepetitionSeparatorNotDeclared => 32,
+            E::NonFiniteNumber { .. } => 33,
+            E::CharacterNotInRepertoire { .. } => 34,
+            E::CharacterRepertoireMismatch { .. } => 35,
+            E::UnsupportedCharset { .. } => 36,
+            E::EmptyInterchange { .. } => 37,
+            E::EmptyMessage { .. } => 38,
+            E::PackageNotSupported { .. } => 39,
+            E::BlankDataElementValue { .. } => 40,
+            E::SegmentWithoutDataElements { .. } => 41,
+            E::TooManyRepetitions { .. } => 42,
+            E::InvalidCharacterType { .. } => 43,
+            E::DataElementTooLong { .. } => 44,
+            E::DataElementTooShort { .. } => 45,
+            E::TrailingSeparator { .. } => 46,
+            E::GroupsAndMessagesMixed { .. } => 47,
+            E::InsignificantCharacters { .. } => 48,
+            E::GroupCountMismatch { .. } => 49,
+            E::InteractiveSegmentNotSupported { .. } => 50,
+            E::SecuritySegmentNotSupported { .. } => 51,
+            E::ReservedServiceSegmentTag { .. } => 52,
+            E::DataAfterInterchangeTrailer { .. } => 53,
+            E::UnsupportedSyntaxVersion { .. } => 54,
+            E::InvalidDateTime { .. } => 55,
+            E::EmptyGroup { .. } => 56,
+            E::SegmentLayoutMismatch { .. } => 57,
+            E::ActionNotPermitted { .. } => 58,
+            E::InvalidContrlIdentifier { .. } => 59,
+            E::SegmentNotPlaced { .. } => 60,
+            E::TooManySegmentOccurrences { .. } => 61,
+            E::TooManyGroupOccurrences { .. } => 62,
+            E::InvalidGroupSchema { .. } => 63,
+            E::WriterPoisoned { .. } => 64,
+        }
+    }
+
+    /// Every variant, each string field set to [`HOSTILE`].
+    fn hostile_variants() -> Vec<EdifactError> {
+        use EdifactError as E;
+        vec![
+            E::UnexpectedEof { offset: 1 },
+            E::InvalidDelimiter { byte: 1, offset: 1 },
+            E::InvalidText { offset: 1 },
+            E::InvalidReleaseSequence { offset: 1 },
+            E::MessageCountMismatch {
+                expected: 1,
+                actual: 1,
+                span: Span::new(0, 1),
+            },
+            E::SegmentCountMismatch {
+                expected: 1,
+                actual: 1,
+                message_ref: h(),
+                span: Span::new(0, 1),
+            },
+            E::InvalidSegmentTag(h()),
+            E::InvalidUna,
+            E::MissingRequiredElement {
+                tag: h(),
+                element_index: 1,
+            },
+            E::MissingRequiredComponent {
+                tag: h(),
+                element_index: 1,
+                component_index: 1,
+            },
+            E::InvalidUtf8,
+            E::Io(IoError(std::io::Error::other("x"))),
+            E::InvalidSegmentForMessage {
+                tag: h(),
+                message_type: h(),
+                span: Span::new(0, 1),
+            },
+            E::InvalidElementCount {
+                tag: h(),
+                min: 1,
+                max: 1,
+                actual: 1,
+                span: Span::new(0, 1),
+            },
+            E::InvalidComponentCount {
+                tag: h(),
+                element_index: 1,
+                expected: 1,
+                actual: 1,
+                span: Span::new(0, 1),
+            },
+            E::InvalidCodeValue {
+                tag: h(),
+                element_index: 1,
+                value: h(),
+                code_list: h(),
+                span: Span::new(0, 1),
+                suggestion: None,
+            },
+            E::MissingSegment {
+                tag: h(),
+                expected_position: h(),
+            },
+            E::QualifierMismatch {
+                tag: h(),
+                actual: h(),
+                expected: h(),
+                span: Span::new(0, 1),
+            },
+            E::ConditionalRequirementNotMet {
+                tag: h(),
+                element_index: 1,
+                condition: h(),
+                span: Span::new(0, 1),
+            },
+            E::ValidationErrors {
+                error_count: 1,
+                report: Box::default(),
+            },
+            E::SegmentTooLong {
+                offset: 1,
+                limit: 1,
+            },
+            E::InterchangeTooLarge { count: 1 },
+            E::InvalidEventSequence { message: "x" },
+            E::InvalidElementPosition,
+            E::IncompatibleReleaseScopes {
+                current: h(),
+                incoming: h(),
+            },
+            E::InvalidFieldValue {
+                tag: h(),
+                element_index: 1,
+                value: h(),
+            },
+            E::UnexpectedDataToken { offset: 1 },
+            E::UnrecognisedSyntaxIdentifier(h()),
+            E::DuplicateReference {
+                tag: h(),
+                reference: h(),
+                span: Span::new(0, 1),
+            },
+            E::UnknownDataElement {
+                tag: h(),
+                data_element: h(),
+            },
+            E::AmbiguousDataElement {
+                tag: h(),
+                data_element: h(),
+            },
+            E::LimitExceeded {
+                limit: "x",
+                max: 1,
+                offset: 1,
+            },
+            E::RepetitionSeparatorNotDeclared,
+            E::NonFiniteNumber { value: h() },
+            E::CharacterNotInRepertoire {
+                charset: "x",
+                character: '\u{1b}',
+                offset: 1,
+            },
+            E::CharacterRepertoireMismatch {
+                declared: h(),
+                writer: "x",
+            },
+            E::UnsupportedCharset {
+                syntax_identifier: h(),
+            },
+            E::EmptyInterchange { control_ref: h() },
+            E::EmptyMessage {
+                message_ref: h(),
+                span: Span::new(0, 1),
+            },
+            E::PackageNotSupported {
+                tag: h(),
+                span: Span::new(0, 1),
+            },
+            E::BlankDataElementValue {
+                tag: h(),
+                element_index: 1,
+                component_index: 1,
+                span: Span::new(0, 1),
+            },
+            E::SegmentWithoutDataElements {
+                tag: h(),
+                span: Span::new(0, 1),
+            },
+            E::TooManyRepetitions {
+                tag: h(),
+                element_index: 1,
+                max: 1,
+                actual: 1,
+                span: Span::new(0, 1),
+            },
+            E::InvalidCharacterType {
+                tag: h(),
+                element_index: 1,
+                component_index: 1,
+                repr: h(),
+                value: h(),
+                span: Span::new(0, 1),
+            },
+            E::DataElementTooLong {
+                tag: h(),
+                element_index: 1,
+                component_index: 1,
+                repr: h(),
+                actual: 1,
+                span: Span::new(0, 1),
+            },
+            E::DataElementTooShort {
+                tag: h(),
+                element_index: 1,
+                component_index: 1,
+                repr: h(),
+                actual: 1,
+                span: Span::new(0, 1),
+            },
+            E::TrailingSeparator {
+                tag: h(),
+                element_index: Some(1),
+                span: Span::new(0, 1),
+            },
+            E::GroupsAndMessagesMixed {
+                span: Span::new(0, 1),
+            },
+            E::InsignificantCharacters {
+                tag: h(),
+                element_index: 1,
+                component_index: 1,
+                kind: Insignificant::TrailingSpaces,
+                span: Span::new(0, 1),
+            },
+            E::GroupCountMismatch {
+                group_ref: h(),
+                expected: 1,
+                actual: 1,
+                span: Span::new(0, 1),
+            },
+            E::InteractiveSegmentNotSupported {
+                tag: h(),
+                span: Span::new(0, 1),
+            },
+            E::SecuritySegmentNotSupported {
+                tag: h(),
+                span: Span::new(0, 1),
+            },
+            E::ReservedServiceSegmentTag {
+                tag: h(),
+                span: Span::new(0, 1),
+            },
+            E::DataAfterInterchangeTrailer {
+                tag: h(),
+                span: Span::new(0, 1),
+            },
+            E::UnsupportedSyntaxVersion {
+                value: h(),
+                span: Span::new(0, 1),
+            },
+            E::InvalidDateTime {
+                tag: h(),
+                element_index: 1,
+                component_index: 1,
+                value: h(),
+                span: Span::new(0, 1),
+            },
+            E::EmptyGroup {
+                group_ref: h(),
+                span: Span::new(0, 1),
+            },
+            E::SegmentLayoutMismatch {
+                expected: h(),
+                actual: h(),
+            },
+            E::ActionNotPermitted {
+                segment_tag: "x",
+                action: "x",
+            },
+            E::InvalidContrlIdentifier {
+                data_element: "x",
+                value: h(),
+            },
+            E::SegmentNotPlaced {
+                tag: h(),
+                reason: crate::group::UnplacedReason::Unknown,
+                span: Span::new(0, 1),
+            },
+            E::TooManySegmentOccurrences {
+                tag: h(),
+                max: 1,
+                span: Span::new(0, 1),
+            },
+            E::TooManyGroupOccurrences {
+                group: h(),
+                max: 1,
+                span: Span::new(0, 1),
+            },
+            E::InvalidGroupSchema {
+                group: h(),
+                reason: "x",
+            },
+            E::WriterPoisoned { reason: "x" },
+        ]
+    }
+
+    #[test]
+    fn display_escapes_every_variant() {
+        let errors = hostile_variants();
+        let mut seen: Vec<usize> = errors.iter().map(variant_index).collect();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(
+            seen,
+            (0..errors.len()).collect::<Vec<_>>(),
+            "every variant once"
+        );
+        for error in &errors {
+            // `Io` displays the caller's own reader error unchanged
+            // (`#[error(transparent)]`); the reader is trusted.
+            if matches!(error, EdifactError::Io(_)) {
+                continue;
+            }
+            let text = error.to_string();
+            assert!(
+                !text.chars().any(needs_escape),
+                "{error:?} displays {text:?}"
+            );
+            #[cfg(feature = "diagnostics")]
+            if let Some(help) = miette::Diagnostic::help(error) {
+                let help = help.to_string();
+                assert!(!help.chars().any(needs_escape), "{error:?} help {help:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn clean_values_display_unchanged() {
+        let error = EdifactError::QualifierMismatch {
+            tag: "NAD".to_owned(),
+            actual: "BY".to_owned(),
+            expected: "SU".to_owned(),
+            span: Span::new(0, 1),
+        };
+        assert_eq!(
+            error.to_string(),
+            "segment NAD has qualifier 'BY', expected 'SU'"
+        );
     }
 }

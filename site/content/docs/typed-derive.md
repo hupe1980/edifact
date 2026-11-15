@@ -4,9 +4,9 @@ description = "Map EDIFACT segments and messages onto Rust structs with #[derive
 weight = 50
 +++
 
-`edifact` ships first-class derive macros that map EDIFACT segments and messages
-to plain Rust structs. Add `#[derive(EdifactDeserialize, EdifactSerialize)]` and the
-macros generate efficient, span-accurate code — no hand-written parsing loops.
+`#[derive(EdifactDeserialize, EdifactSerialize)]` maps EDIFACT segments and
+messages onto plain Rust structs. Composite elements get
+`EdifactCompositeDeserialize` / `EdifactCompositeSerialize`.
 
 ---
 
@@ -55,12 +55,10 @@ struct Dtm {
 }
 ```
 
-When `segment = "TAG"` is present, the struct is treated as a **segment struct**:
-- `EdifactDeserialize::edifact_deserialize` finds the first segment with tag `"TAG"`.
-- `EdifactSerialize` emits a single segment.
-- `EdifactSegmentTag::SEGMENT_TAG` is set to `"TAG"`.
-
-If `segment` is **absent**, the struct is treated as a **message struct** (see below).
+With `segment`, the struct is a **segment struct**: `edifact_deserialize`
+reads the first segment tagged `"TAG"`, `EdifactSerialize` emits one segment,
+and `EdifactSegmentTag::SEGMENT_TAG` is `"TAG"`. Without it, the struct is a
+[message struct](#message-structs).
 
 ### `qualifier = "VALUE"` — fixed qualifier matching
 
@@ -74,8 +72,8 @@ struct NadMs {
 }
 ```
 
-The generated `matches_segment` impl checks that element 0 equals `"MS"`.
-Use wildcard suffix with `*` for prefix matching:
+The generated `matches_segment` checks that element 0 equals `"MS"`. `*` is a
+wildcard:
 
 ```text
 #[edifact(segment = "NAD", qualifier = "M*")]   // matches "MS", "MR", "MT", …
@@ -95,9 +93,8 @@ struct Nad {
 }
 ```
 
-`qualifier_from = 0` means "the qualifier comes from element 0 at runtime" — the
-struct can represent any `NAD` qualifier. This is the pattern for message-level
-structs that hold multiple qualifier variants in separate fields:
+The qualifier is read from element 0 at runtime, so the struct represents any
+`NAD`. A message struct then binds variants to separate fields:
 
 ```rust
 # use edifact::{EdifactDeserialize, EdifactSerialize};
@@ -119,10 +116,10 @@ struct OrderMessage {
 
 ### `layout = PATH` — resolve fields by UN/EDIFACT data element identifier
 
-Points the struct at a `SegmentDefinition`, which unlocks the code-addressed
-form of `element` described [below](#element-by-identifier).
-The path must name a **`const`** item (a `const` initialiser cannot read a
-`static`), because identifiers are resolved during const evaluation:
+Points the struct at a `SegmentDefinition` for the
+[code-addressed `element`](#element-by-identifier). The path must name a
+**`const`**: identifiers resolve during const evaluation, which cannot read a
+`static`:
 
 ```rust
 use edifact::{
@@ -151,14 +148,13 @@ struct SenderParty {
 }
 ```
 
-`layout` requires `segment`, since a layout describes exactly one segment.
+`layout` requires `segment`.
 
 #### Where layouts come from
 
-The crate ships every **ISO 9735-1 batch service segment** — `UNB`, `UNG`, `UNH`,
-`UNT`, `UNE`, `UNZ`, `UNS`, `UNO`, `UNP`, `UGH`, `UGT` — in `edifact::service`,
-ready to point `layout` at. They are fixed by the syntax standard, so there is one
-correct answer and no directory version to choose:
+`edifact::service` ships the ISO 9735 batch service segments — `UNB`, `UNG`,
+`UNH`, `UNT`, `UNE`, `UNZ`, `UNS`, `UNO`, `UNP`, `UGH`, `UGT` — and the
+`CONTRL` segments `UCI`, `UCM`, `UCF`, `UCS`, `UCD`:
 
 ```rust
 use edifact::{EdifactDeserialize, service};
@@ -175,35 +171,20 @@ struct InterchangeHeader {
 
 #### Message-level segments are yours to supply
 
-For **message-level** segments — `BGM`, `DTM`, `NAD`, `LIN` and their composites
-`C002`, `C507`, `C082`, … — you supply the layout yourself. Be clear-eyed about
-what that means: `element = "code"` is turnkey for the service segments and is
-**authoring work** for everything else.
+Layouts for **message-level** segments — `BGM`, `DTM`, `NAD`, `LIN`, composites
+`C002`, `C507`, `C082`, … — are yours to supply. The
+[UN UNTDID licence](https://service.unece.org/trade/untdid/license.htm)
+forbids distributing modified directory content, so the crate ships nothing
+from the directories.
 
-The reason is licensing, not effort. The UN/EDIFACT directories are published by
-UNECE under the [UN UNTDID license agreement](https://service.unece.org/trade/untdid/license.htm),
-which grants a licence to use the Directory "only in the country where you
-acquired it and/or the country(ies) where your organization is located", requires
-the copyright notice to be reproduced on every copy or partial copy, and states
-that **you cannot modify the Directory and distribute it**. Transcribing
-directory content into Rust `const` tables and publishing it on crates.io is
-precisely that. A crate that shipped even a "stable subset" of composites would
-be redistributing modified Directory content worldwide, which the licence does
-not permit — so this crate ships the ISO 9735 syntax segments, which the standard
-fixes, and nothing from the directories.
-
-Write the subset you touch as `const` tables (as in the `NAD` example above),
-generate them from your directory of record, or load them at startup with
-`DirectoryValidatorBuilder` for the runtime-validation path.
-
-Whichever route you take, **audit the result against real messages** — a
-hand-authored layout that disagrees with the wire fails silently. See
+Write the subset you use as `const` tables (as above), generate them from your
+directory of record, or load them at startup with `DirectoryValidatorBuilder`.
+**Audit the result against real messages**: see
 [Auditing a hand-written layout](@/docs/validation.md#auditing-a-hand-written-layout).
 
-A composite that repeats a data element by design — `C080 PARTY NAME` is `3036`
-five times — must be declared with `ComponentRef::repeated`, not with five
-`ComponentRef::new` entries. Five entries count as five positions, and the code
-then resolves as ambiguous and cannot be addressed at all:
+A composite that repeats a data element by design — `C080` is `3036` five
+times — uses `ComponentRef::repeated`. Five `ComponentRef::new` entries are
+five positions, and the code then resolves as ambiguous:
 
 ```rust
 use edifact::{ComponentRef, Status};
@@ -225,8 +206,7 @@ const C080: &[ComponentRef] = &[
 function_code: Option<String>,
 ```
 
-Maps the field to **component 0 of element N**. This is the most common pattern —
-use it for every simple (non-composite) field.
+Maps the field to **component 0 of element N**.
 
 ### `element = N, component = C` — composite component
 
@@ -235,9 +215,8 @@ use it for every simple (non-composite) field.
 date_value: String,
 ```
 
-Maps the field to a specific component within an element.  Use this when an element
-carries multiple values (e.g. `DTM` element 0 has qualifier/value/format at
-components 0/1/2).
+Maps the field to one component of a composite (e.g. `DTM` C507 components
+0/1/2).
 
 ### `element = "3055"` — data element identifier {#element-by-identifier}
 
@@ -249,14 +228,9 @@ identifier instead of an index:
 agency: Option<String>,
 ```
 
-The identifier is resolved against the layout **at compile time**, and it
-resolves *both* coordinates: a code naming a component inside a composite (like
-`3055` in `C082`) yields that element *and* component position, so no index is
-written by hand anywhere.
-
-This is the point of the attribute. A transposed positional index reads the
-wrong data element and still validates clean — the most dangerous failure mode
-in this domain. An identifier cannot fail that way:
+The identifier resolves against the layout **at compile time**, to element and
+component (`3055` in `C082`). A transposed positional index reads the wrong
+data element silently; an identifier cannot:
 
 | Mistake | Positional form | Code form |
 |---|---|---|
@@ -265,15 +239,12 @@ in this domain. An identifier cannot fail that way:
 | Two fields claiming one slot | compile error | **compile error** |
 | Wrong segment's definition | — | compile error (or `E035` at runtime) |
 
-Identifier resolution also picks the right diagnostic for `#[edifact(required)]`:
-an identifier naming a whole data element reports `MissingRequiredElement`
-(`E008`), one naming a component inside a composite reports
-`MissingRequiredComponent` (`E021`) — a distinction a bare component index
-cannot make, because the first component of a composite also sits at index 0.
+With `required`, an identifier naming a whole data element reports
+`MissingRequiredElement` (`E008`); one naming a component reports
+`MissingRequiredComponent` (`E021`).
 
-`component = N` may still accompany a code, but only one that names a whole data
-element — combining it with a code that already names a component is a compile
-error.
+`component = N` may accompany a code that names a whole data element; with a
+code that names a component it is a compile error.
 
 For runtime lookups against the same metadata, see
 [`Segment::value_by_code`](@/docs/validation.md#code-addressed-element-access).
@@ -301,15 +272,11 @@ struct Nad {
 }
 ```
 
-`composite` hands the entire `CompositeElement` to the field's
-`EdifactCompositeDeserialize` impl instead of extracting a single string.
-
-Field *n* of the composite struct maps to component *n*, so `NAD+BY+4711::9`
-fills `id = "4711"`, `code_list = None`, `agency = Some("9")`. Add
-`#[edifact(component = N)]` to a field to pin it to a specific component
-regardless of declaration order. A bare `String` component is mandatory —
-an absent or empty value raises `MissingRequiredComponent` (`E021`) — while
-`Option<String>` is not.
+`composite` hands the whole element to the field's
+`EdifactCompositeDeserialize` impl. Field *n* maps to component *n*, so
+`NAD+BY+4711::9` fills `id = "4711"`, `code_list = None`, `agency = Some("9")`;
+`#[edifact(component = N)]` pins a field. A bare `String` component is
+mandatory (`E021` when absent or empty); `Option<String>` is not.
 
 ### `group` — repeated segment group
 
@@ -335,24 +302,23 @@ struct OrderMessage {
 }
 ```
 
-`group` on a `Vec<T>` field collects all matching segments where
-`T::matches_segment` returns `true`.  `T` must implement `EdifactSegmentTag`.
+`group` on a `Vec<T>` collects every segment `T::matches_segment` accepts; `T`
+must implement `EdifactSegmentTag`. For segment-group *structure*, see
+[Segment Groups](@/docs/segment-groups.md).
 
 ### `repeat` — repeated *data element*
 
-`group` repeats the **segment**. `repeat` repeats the **data element inside one
-segment** (ISO 9735-1 §8.7). Both are `Vec<T>` in Rust, and nothing but the
-attribute can tell them apart:
+`group` repeats the **segment**; `repeat` repeats the **data element inside one
+segment** (ISO 9735-1 §8.7):
 
 ```text
 RFF+ON:1'RFF+ON:2'       two RFF segments          → #[edifact(group)]
 RFF+ON:1*ON:2            one RFF, two occurrences  → #[edifact(repeat)]
 ```
 
-A repetition separator divides whole **occurrences**, so every component of the
-element is transferred in each one — which is why the qualifier `ON` appears
-twice above. The derive handles that: a non-repeating field in the same element
-is emitted once per occurrence, and a repeating one contributes its *k*-th item.
+Each **occurrence** carries every component, hence `ON` twice. On write, a
+non-repeating field in the same element is emitted once per occurrence; a
+repeating one contributes its *k*-th item.
 
 ```rust
 use edifact::{EdifactDeserialize, EdifactSerialize, from_bytes};
@@ -376,17 +342,19 @@ assert_eq!(rff.numbers, ["1", "2", "3"]);
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-An occurrence that omits the component yields `""` rather than disappearing:
-§8.8.4 makes an occurrence's position significant, so `DE*DE***DE` deliberately
-transfers two empty ones and dropping them would shift every later value left.
-An empty `Vec` emits the element as absent, which keeps the elements after it in
-position (§8.8.2).
+An occurrence without the component yields `""`: positions are significant
+(§8.8.4). An empty `Vec` writes the element as absent (§8.8.2).
 
-Writing needs an active repetition separator — see
-[Writing](@/docs/writing.md#repeating-data-elements). Without one the writer
-returns `RepetitionSeparatorNotDeclared`
-([`E037`](@/docs/error-reference.md#e037-repetitionseparatornotdeclared)) rather
-than emitting output that reads back as a single occurrence.
+Writing needs an active repetition separator, else
+[`E037`](@/docs/error-reference.md#e037-repetitionseparatornotdeclared) — see
+[Writing](@/docs/writing.md#repeating-data-elements).
+
+### `required` — mandatory `Option<T>`
+
+`#[edifact(required)]` on an `Option<T>` field of a segment struct makes an
+absent or empty value `MissingRequiredElement` (`E008`) — or `E021` for a
+component — while the Rust type stays `Option<T>`. It is a compile error on a
+non-`Option` field, with `composite`, or in a message struct.
 
 ### `qualifier = "VALUE"` — message-field qualifier filter
 
@@ -413,8 +381,7 @@ struct OrderMessage {
 }
 ```
 
-Within a message struct, `qualifier` on a field restricts which `Nad` segment
-(identified by element 0) is mapped to that field.
+In a message struct, `qualifier` on a field selects the segment by element 0.
 
 ---
 
@@ -477,6 +444,7 @@ Field rules:
 | `composite` | field | Map the whole element to `EdifactCompositeDeserialize` |
 | `group` | field | Collect all matching **segments** into a `Vec<T>` |
 | `repeat` | field | Map the occurrences of a repeating **data element** into a `Vec<T>` |
+| `required` | field (segment struct) | Absent or empty `Option<T>` is an error |
 | `qualifier = "Q"` | field (message struct) | Filter which qualifier variant to bind to this field |
 
 ---
@@ -493,66 +461,49 @@ For a **segment struct** `#[edifact(segment = "TAG")]` the macro generates:
 | `EdifactSegmentTag` | `QUALIFIER_PATTERN` | `Some("Q")` or `None` |
 | `EdifactSegmentTag` | `matches_segment(seg)` | Checks tag and qualifier |
 
-One `edifact_deserialize` covers both parsing paths: `&[OwnedSegment]` coerces to
-`&[Segment<'_>]`, so the reader path runs exactly this code with no conversion and
-no second generated body.
+`&[OwnedSegment]` coerces to `&[Segment<'_>]`, so one `edifact_deserialize`
+serves both parse paths.
 
 ---
 
 ## Limitations
 
-- **No generic type parameters**: structs with `<T>` type params are rejected at
-  compile time.
-- **No lifetime parameters**: use `String` (owned) instead of `&str` (borrowed)
-  in derive-annotated structs.
-- **Named fields only**: tuple structs and unit structs are not supported.
-- **Single segment per struct**: one derive struct maps to one EDIFACT segment type.
-  Nested message structs handle multi-segment composition.
-- **`layout` must be a `const`**: a `const` initialiser cannot read a `static`, and
-  identifier resolution happens in const evaluation. Declare directory tables as
-  `const SegmentDefinition` / `const &[ElementRef]`.
+Each is a compile error with a span:
 
-These limitations are documented on the derive macro items and surfaced as
-compile-time errors with span-accurate messages.
+- **No generic or lifetime parameters**: use `String`, not `&str`.
+- **Named fields only**: no tuple or unit structs.
+- **One segment type per segment struct**; message structs compose them.
+- **`layout` must be a `const`** (`const SegmentDefinition`, `const &[ElementRef]`).
 
 ---
 
 ## Troubleshooting
 
-### "expected `#[edifact(segment = …)]` or named-field struct"
+### "only support structs with named fields"
 
-You applied the derive to a struct without the `segment` attribute and without any
-named fields, or to a tuple/unit struct. Add `#[edifact(segment = "TAG")]` or switch
-to a named-field struct.
+The derive was applied to a tuple struct, unit struct or enum. Use a struct
+with named fields.
 
 ### "data element {code} is not defined exactly once in the segment layout"
 
-The identifier in `#[edifact(element = "…")]` either does not appear in the
-`layout`, or appears at more than one position. Check it against the directory
-definition for that segment; this is the compile-time counterpart of the
-runtime `E033` / `E034` errors.
+The identifier is missing from the `layout` or appears at more than one
+position — the compile-time form of runtime `E033`/`E034`. A repeat by design
+needs `ComponentRef::repeated` ([Where layouts come from](#where-layouts-come-from)).
 
-If it appears more than once because the composite repeats it *by design*,
-declare the repeat with `ComponentRef::repeated` instead of one entry per
-occurrence — see [Where layouts come from](#where-layouts-come-from).
+### "use either #[edifact(qualifier = ...)] or #[edifact(qualifier_from = ...)], not both"
 
-### "qualifier conflicts with qualifier_from"
-
-You used both `qualifier = "…"` and `qualifier_from = N` on the same struct. Use
-only one — `qualifier` for a fixed compile-time filter, `qualifier_from` for a
-runtime value stored in a field.
+`qualifier` is a fixed filter; `qualifier_from` stores the runtime value. Pick
+one.
 
 ### "`EdifactSegmentTag` is not implemented for `MyStruct`"
 
-The `Vec<T>` blanket impl of `EdifactDeserialize` requires `T: EdifactSegmentTag`.
-This trait is auto-generated for segment structs (those with `#[edifact(segment = "TAG")]`).
-Message structs (no `segment` attribute) do not get `EdifactSegmentTag`.
+`Vec<T>` fields need `T: EdifactSegmentTag`, which only segment structs
+derive.
 
-### Field type must be `String`, `Option<String>`, or a type implementing `FromStr`
+### "trait not satisfied" on a field type
 
-The derive macro calls `FromStr::from_str` for non-String field types. Ensure the
-type implements `std::str::FromStr` and that its error type implements
-`std::fmt::Display`.
+Non-`String` fields are read with `FromStr` and written with `Display`; the
+type needs both.
 
 ---
 

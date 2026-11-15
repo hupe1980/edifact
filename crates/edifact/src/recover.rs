@@ -88,7 +88,7 @@ use crate::tokenizer::{ServiceStringAdvice, Tokenizer, prologue_len};
 /// additions that keep recovery bounded:
 ///
 /// - faults count against `max_segments` and, inside a message, against
-///   `max_segments_per_message`; a faulted `UNH` counts against `max_messages`;
+///   `max_message_bytes`; a faulted `UNH` counts against `max_messages`;
 /// - every consumed byte — prologue, whitespace between segments, faulted
 ///   bytes, trailing whitespace — counts against `max_input_bytes`.
 ///
@@ -126,8 +126,10 @@ impl Default for RecoveryConfig {
 }
 
 impl RecoveryConfig {
-    /// The default configuration: `ReaderConfig::default()` and a budget of
-    /// 1 000 faults.
+    /// The default configuration: `ReaderConfig::default()` (64 KiB per
+    /// segment, 16 MiB per message, 256 MiB in total) and a budget of 1 000
+    /// faults. For trusted input use
+    /// `RecoveryConfig::new().reader(ReaderConfig::unbounded())`.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -330,12 +332,13 @@ impl<'a> RecoveringScan<'a> {
         let config = *config;
         // Delimiters are resolved exactly as `from_bytes_with_config` resolves
         // them, including refusing a malformed UNA even under an override.
-        let discovered = ServiceStringAdvice::from_bytes(input);
+        let discovered = ServiceStringAdvice::discover(input, config.reader.max_segment_bytes);
         let mut scan = Self {
             input,
             ssa: config
                 .reader
                 .service_string_advice
+                .or_else(|| discovered.as_ref().ok().copied())
                 .unwrap_or_else(|| ServiceStringAdvice::from_bytes_unchecked(input)),
             config,
             parser: None,
@@ -395,7 +398,7 @@ impl<'a> RecoveringScan<'a> {
         if let Err(error) = self.budget.admit_bytes(end as u64) {
             return Some(error);
         }
-        if let Err(error) = self.budget.admit_segment(tag.unwrap_or(""), start) {
+        if let Err(error) = self.budget.admit_segment(tag.unwrap_or(""), start, end) {
             return Some(error);
         }
         if fault && self.faults >= self.config.max_faults {
@@ -409,13 +412,13 @@ impl<'a> RecoveringScan<'a> {
     }
 
     /// Count an item against the budgets, mirroring the strict iterator.
-    fn account(&mut self, tag: Option<&str>, end: usize, fault: bool) {
+    fn account(&mut self, tag: Option<&str>, start: usize, end: usize, fault: bool) {
         self.items += 1;
         self.cursor = self.cursor.max(end);
         if fault {
             self.faults += 1;
         }
-        self.budget.account(tag.unwrap_or(""));
+        self.budget.account(tag.unwrap_or(""), start);
     }
 
     /// Emit `fault` (or the limit it would exceed), stopping the scan when it
@@ -451,7 +454,12 @@ impl<'a> RecoveringScan<'a> {
             None => {}
         }
         fault.ordinal = self.ordinal();
-        self.account(fault.raw_tag.as_deref(), fault.span.end, true);
+        self.account(
+            fault.raw_tag.as_deref(),
+            fault.span.start,
+            fault.span.end,
+            true,
+        );
         if fault.terminal {
             self.parser = None;
             self.pending.clear();
@@ -553,17 +561,17 @@ impl<'a> Iterator for RecoveringScan<'a> {
                 self.done = true;
                 // Trailing whitespace is consumed input too.
                 let end = self.input.len();
-                if let Some(max) = self.config.reader.max_input_bytes {
-                    if end as u64 > max {
-                        let start = self.cursor.min(end);
-                        return Some(self.emit_fault(Fault {
-                            error: Arc::new(input_bytes_exceeded(max)),
-                            span: Span::new(start, end),
-                            ordinal: 0,
-                            raw_tag: None,
-                            terminal: true,
-                        }));
-                    }
+                if let Some(max) = self.config.reader.max_input_bytes
+                    && end as u64 > max
+                {
+                    let start = self.cursor.min(end);
+                    return Some(self.emit_fault(Fault {
+                        error: Arc::new(input_bytes_exceeded(max)),
+                        span: Span::new(start, end),
+                        ordinal: 0,
+                        raw_tag: None,
+                        terminal: true,
+                    }));
                 }
                 None
             }
@@ -583,7 +591,12 @@ impl<'a> Iterator for RecoveringScan<'a> {
                         terminal: true,
                     }));
                 }
-                self.account(Some(segment.tag()), segment.span.end, false);
+                self.account(
+                    Some(segment.tag()),
+                    segment.tag_span.start,
+                    segment.span.end,
+                    false,
+                );
                 Some(Scanned::Segment(segment))
             }
             Some(Err(error)) => {
@@ -641,10 +654,10 @@ fn raw_component(
         let b = segment[i];
         let collecting = position == wanted && comp == component && first_occurrence;
         if b == ssa.release_char {
-            if let Some(&escaped) = segment.get(i + 1) {
-                if collecting {
-                    out.push(escaped);
-                }
+            if let Some(&escaped) = segment.get(i + 1)
+                && collecting
+            {
+                out.push(escaped);
             }
             i += 2;
             continue;
@@ -878,8 +891,9 @@ impl GroupWindow {
 /// the same input ([`locate`](Self::locate)). See the
 /// [module documentation](self) for an example.
 ///
-/// Memory is bounded by the limits: at most `max_segments + 1` items when that
-/// limit is set, at most `max_faults + 1` faults.
+/// Memory holds every item of the input: at most `max_segments + 1` items when
+/// that limit is set, at most `max_faults + 1` faults, and up to 128 × the
+/// scanned bytes in heap (at most `max_input_bytes`, 256 MiB by default).
 ///
 /// The input must be the bytes the interchange was scanned from; locations are
 /// counts (segment, element, component), so transcoding a non-UTF-8 repertoire

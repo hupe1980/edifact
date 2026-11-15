@@ -4,16 +4,17 @@ description = "Zero-copy slice parsing, streaming readers, byte spans, UNA handl
 weight = 30
 +++
 
-This guide covers every entry point for reading EDIFACT data — byte slices, readers,
-custom delimiter configuration, and envelope-level helpers.
+Entry points for reading EDIFACT — byte slices, readers, custom delimiters,
+envelope helpers, and the interchange header.
 
 ---
 
 ## Entry points overview
 
-Six functions, in three symmetric pairs — every one returns a **lazy iterator**
-of `Result<Segment<'_>, EdifactError>`, and every one has a `_with_config`
-sibling that takes a [`ReaderConfig`](#dos-hardening-with-readerconfig).
+Each has a `_with_config` sibling that takes a
+[`ReaderConfig`](#dos-hardening-with-readerconfig). All but `from_bytes_decoded`
+return a **lazy iterator** of `Result<_, EdifactError>`; `from_bytes_decoded`
+returns the whole `Result<Vec<OwnedSegment>, _>`.
 
 | Function | Input | Yields | When to use |
 |---|---|---|---|
@@ -23,12 +24,10 @@ sibling that takes a [`ReaderConfig`](#dos-hardening-with-readerconfig).
 | `from_bytes_decoded` | `&[u8]` | `Vec<OwnedSegment>` | Transcodes from the repertoire the `UNB` declares |
 | `from_reader_decoded` | `impl Read` | `OwnedSegment` | The streaming counterpart |
 
-`OwnedSegment` is just `Segment<'static>`, so the two paths produce values of the
-same type and every downstream function accepts either — see
+`OwnedSegment` is `Segment<'static>`; every function accepts either — see
 [Core Concepts](@/docs/core-concepts.md#one-segment-type-borrowed-or-owned).
-
-Collect with `.collect::<Result<Vec<_>, _>>()?`; take the first match with
-`.next()`; or iterate and handle each `Result` as it arrives.
+Both paths return the same `Result` for every input, however a reader chunks
+it, with absolute error offsets.
 
 ---
 
@@ -50,12 +49,10 @@ for result in from_bytes(input) {
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-`from_bytes` is the fastest path:
-- The tag and every component value are `Cow<'_, str>` that **borrow from
-  `input`**; `Cow::Owned` appears only where a release escape was resolved.
-- Each segment allocates its element vector once; components sit inline in a
-  `SmallVec` up to four per element. The full budget is in
-  [Performance](@/docs/performance.md#allocation-per-segment).
+Tag and component values **borrow from `input`**; `Cow::Owned` appears only
+where a release escape was resolved. Each segment allocates its element vector
+once; up to four components per element sit inline
+([Performance](@/docs/performance.md#allocation-per-segment)).
 
 ---
 
@@ -69,7 +66,7 @@ for result in from_bytes(input) {
 # let segments: Vec<_> = from_bytes(input).collect::<Result<Vec<_>, _>>()?;
 let bgm = &segments[0];
 
-// component 0 of element n — covers the vast majority of EDIFACT fields
+// component 0 of element n
 assert_eq!(bgm.element_str(0), Some("220"));
 assert_eq!(bgm.element_str(99), None); // out-of-bounds → None
 # Ok::<(), edifact::EdifactError>(())
@@ -113,8 +110,8 @@ assert_eq!(val, "4000001");
 
 ## Byte spans
 
-Every `Segment`, `Element`, and component carries a `Span { start, end }` pointing
-into the **original input slice**.
+Every `Segment`, `Element` and component carries a `Span { start, end }` into
+the input.
 
 ```rust
 # use edifact::from_bytes;
@@ -133,18 +130,23 @@ if let Some(span) = elem.component_span(0) {
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-Spans are stable across all parsing modes and are used by the `diagnostics` feature
-to show source-annotated error messages.
+Spans are absolute on both paths; the `diagnostics` feature renders them.
 
 ---
 
 ## UNA handling
 
-`from_bytes` and `from_reader` both check for a `UNA` prefix automatically:
+Every entry point reads a leading `UNA` (after an optional byte order mark and
+whitespace):
 
-- **UNA present**: the six custom service characters are extracted and applied.
-- **UNA absent**: EDIFACT defaults (`+`, `:`, `.`, ` `, `?`, `'`) are used.
-- **Malformed UNA**: parsing fails immediately with `EdifactError::InvalidUna`.
+- **Present**: its six service characters apply.
+- **Absent**: defaults `:` `+` `.` `?` `'`; repetition separator `*` only when
+  `UNB` S001 declares syntax version 4.
+- **Malformed**: `InvalidUna`.
+- **After the first segment**: a `UNA` opens a second interchange (ISO 9735-2
+  §5), so parsing fails with `DataAfterInterchangeTrailer` (`E058`). Envelope
+  validation reports any other segment after `UNZ` the same way. Split
+  concatenated interchanges after each `UNZ`.
 
 ```rust
 # use edifact::from_bytes;
@@ -159,6 +161,13 @@ assert_eq!(segs[0].tag, "BGM");
 assert_eq!(segs[0].element_str(0), Some("220"));
 assert_eq!(segs[0].element_str(1), Some("PO-4711"));
 # Ok::<(), edifact::EdifactError>(())
+```
+
+```rust
+# use edifact::{EdifactError, from_bytes};
+let two = b"UNB+UNOC:3+S+R+260101:0900+1'UNZ+0+1'UNA:+.? 'UNB+UNOC:3+S+R+260101:0900+2'";
+let err = from_bytes(two).collect::<Result<Vec<_>, _>>().unwrap_err();
+assert_eq!(err.stable_code(), "E058");
 ```
 
 ---
@@ -179,8 +188,8 @@ for result in from_reader(f) {
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-`from_reader` holds one segment at a time, at most `max_segment_bytes`, plus its
-read buffer. Collect it when you do want everything in memory:
+`from_reader` holds one segment (at most `max_segment_bytes`) plus its read
+buffer. Collecting costs up to 128 × the input in heap:
 
 ```rust,no_run
 use edifact::from_reader;
@@ -191,36 +200,39 @@ let segments: Vec<_> = from_reader(f).collect::<Result<Vec<_>, _>>()?;
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-If you already hold a `BufRead`, use `from_bufread` instead — `from_reader` wraps
-its argument in a `BufReader`, and wrapping a buffered reader again just pays for
-a second layer of copying.
+`from_reader` wraps its argument in a `BufReader`; pass an existing `BufRead`
+to `from_bufread` instead.
 
 ---
 
 ## DoS hardening with `ReaderConfig`
 
-`ReaderConfig` carries five independent budgets. Every one of them is a **hard cap
-that reports an error** — none of them ever ends the iterator quietly.
+`ReaderConfig` carries five budgets. Each is a **hard cap that reports an
+error**, never a quiet end of the iterator. Three are on by default on every
+entry point.
 
 | Field | Default | Raised as |
 |---|---|---|
-| `max_segment_bytes` | 65 536 (64 KiB) | `SegmentTooLong { offset, limit }` (E020) |
+| `max_segment_bytes` | 65 536 (64 KiB, `DEFAULT_MAX_SEGMENT_BYTES`) | `SegmentTooLong { offset, limit }` (E020) |
+| `max_input_bytes` | 268 435 456 (256 MiB, `DEFAULT_MAX_INPUT_BYTES`) | `LimitExceeded { limit: "max_input_bytes", max, offset }` (E036) |
+| `max_message_bytes` | 16 777 216 (16 MiB, `DEFAULT_MAX_MESSAGE_BYTES`) | `LimitExceeded { limit: "max_message_bytes", max, offset }` (E036) |
 | `max_segments` | unlimited | `LimitExceeded { limit: "max_segments", max, offset }` (E036) |
 | `max_messages` | unlimited | `LimitExceeded { limit: "max_messages", max, offset }` (E036) |
-| `max_segments_per_message` | unlimited | `LimitExceeded { limit: "max_segments_per_message", max, offset }` (E036) |
-| `max_input_bytes` | unlimited | `LimitExceeded { limit: "max_input_bytes", max, offset }` (E036) |
 
-The same config applies to every front end: `from_bytes_with_config`,
-`from_reader_with_config`, `from_bufread_with_config`, and the two decoding
-variants.
+`max_message_bytes` counts from a `UNH` through its `UNT` terminator and bounds
+a message window. A window, like a collected interchange, takes at most 128 ×
+its input bytes in heap ([Performance](@/docs/performance.md#memory-by-entry-point)).
+
+The config applies to every `*_with_config` entry point, the decoding variants,
+message windows and the recovering scan.
 
 ```rust
-use edifact::{EdifactError, ReaderConfig, from_bytes_with_config};
+use edifact::{ReaderConfig, from_bytes_with_config};
 
 let config = ReaderConfig::default()
     .max_segment_bytes(8_192)   // reject any single segment over 8 KiB
-    .max_segments(10_000)       // …and any input with more than 10 000 segments
-    .max_input_bytes(1 << 20);  // …or more than 1 MiB in total
+    .max_message_bytes(1 << 20) // …any message over 1 MiB
+    .max_input_bytes(4 << 20);  // …or more than 4 MiB in total
 
 let segments: Vec<_> = from_bytes_with_config(b"BGM+220+test'", config)
     .collect::<Result<_, _>>()?;
@@ -228,18 +240,22 @@ assert_eq!(segments.len(), 1);
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-### Why the limits are errors and not a quiet stop
+Trusted input opts out explicitly. A long-lived stream drops the total and keeps
+each message capped:
 
-A budget that merely returned `None` is indistinguishable from a clean end of
-input. The idiomatic call —
+```rust
+use edifact::ReaderConfig;
 
-```rust,ignore
-let segments: Vec<_> = from_bytes_with_config(input, config).collect::<Result<_, _>>()?;
+let archive = ReaderConfig::unbounded();                          // no limit at all
+let stream = ReaderConfig::unbounded().max_message_bytes(16 << 20); // windows still capped
+assert_eq!(stream.max_input_bytes, None);
+# let _ = archive;
 ```
 
-— would then succeed on a **truncated** interchange, and everything downstream
-would treat a fragment as the whole message. Reporting the violation is the only
-outcome a caller cannot accidentally ignore:
+### Limits are errors
+
+A quiet stop would let `collect::<Result<_, _>>()?` succeed on a **truncated**
+interchange. A limit is reported instead:
 
 ```rust
 use edifact::{EdifactError, ReaderConfig, from_bytes_with_config};
@@ -254,26 +270,16 @@ assert!(matches!(
 ));
 ```
 
-Input that ends *exactly* at a limit is not a violation and finishes normally.
-Segments parsed before the violation are still delivered, so a caller iterating
-manually can keep the partial result and decide what to do with it.
-
-`max_input_bytes` is a true cap: a segment whose end offset would pass the budget
-is never handed out at all.
+Input ending exactly at a limit finishes normally. Segments before the
+violation are still yielded. A segment that would end past `max_input_bytes`
+is never yielded.
 
 ---
 
 ## Parsing a fragment: `service_string_advice`
 
-`ReaderConfig` carries one non-budget field. By default `edifact` discovers the
-service characters the way a receiver should — from a leading `UNA` if there is
-one, otherwise the ISO 9735-1 §5.2 defaults with the repetition separator
-resolved from the syntax version in `UNB` S001 DE 0002.
-
-A **fragment** has neither. A single message lifted out of an interchange carries
-no `UNA` and no `UNB`, so nothing in it records the delimiters its interchange
-declared — and parsing it with the defaults silently mis-splits every value.
-Supply them:
+A **fragment** — a message lifted out of its interchange — has no `UNA` and no
+`UNB`, so the defaults would mis-split it. Supply the delimiters:
 
 ```rust
 use edifact::{ReaderConfig, ServiceStringAdvice, from_bytes_with_config};
@@ -288,38 +294,36 @@ assert_eq!(segments[0].element_str(1), Some("PO-4711"));
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-An explicit advice outranks a `UNA` in the input, so it doubles as the escape
-hatch when a partner's header disagrees with what they actually send. A malformed
-`UNA` is still rejected either way — the input is broken regardless of which
-delimiters you then use.
+An explicit advice outranks a `UNA` in the input — useful when a partner's
+header disagrees with its data. A malformed `UNA` is still an error.
 
 ---
 
-## Envelope helpers
+## Finding segments
 
-Use `find_segment` and `find_qualified_segment` to locate specific segments without
-iterating manually:
+`SegmentSliceExt` adds lookups to any segment slice — borrowed, or owned from
+the reader path. The qualifier is component 0 of element 0; `Segment::is`
+tests one segment inside a closure:
 
 ```rust
-use edifact::{find_segment, find_qualified_segment, from_bytes};
+use edifact::{OwnedSegment, SegmentSliceExt, from_bytes, from_reader};
 
 let input = b"UNH+1+ORDERS:D:11A:UN'\
               BGM+220+PO-4711+9'\
               NAD+BY+4000001::9'\
               NAD+SU+4000002::9'\
-              UNT+5+1'";
-let segs: Vec<_> = from_bytes(input).collect::<Result<_, _>>()?;
+              RFF+Z13:17009'\
+              UNT+6+1'";
+let borrowed: Vec<_> = from_bytes(input).collect::<Result<_, _>>()?;
+let owned: Vec<OwnedSegment> = from_reader(&input[..]).collect::<Result<_, _>>()?;
 
-// First segment with tag "BGM"
-let bgm = find_segment(&segs, "BGM").expect("BGM not found");
-assert_eq!(bgm.element_str(1), Some("PO-4711"));
-
-// First NAD where element 0 == "BY"
-let buyer_nad = find_qualified_segment(&segs, "NAD", "BY").expect("NAD BY not found");
-assert_eq!(buyer_nad.element_str(1), Some("4000001"));
-
-// The very same calls work on the reader path — `&[OwnedSegment]` coerces to
-// `&[Segment<'_>]`, so there is no owned-specific variant to reach for.
+for segs in [&borrowed[..], &owned[..]] {
+    assert_eq!(segs.first_tag("BGM").and_then(|s| s.element_str(1)), Some("PO-4711"));
+    assert_eq!(segs.qualified("NAD", "SU").and_then(|s| s.element_str(1)), Some("4000002"));
+    assert_eq!(segs.qualified_value("RFF", "Z13", 0, 1), Some("17009"));
+    assert_eq!(segs.tagged("NAD").count(), 2);
+    assert_eq!(segs.iter().position(|s| s.is("NAD", "SU")), Some(3));
+}
 # Ok::<(), edifact::EdifactError>(())
 ```
 
@@ -339,22 +343,16 @@ let err = from_bytes(bad_input)
 assert!(matches!(err, EdifactError::UnexpectedEof { offset: 14 }));
 ```
 
-A segment with no terminator is a **truncation**, not a short segment: accepting
-it would let a file cut off mid-transfer parse as a complete interchange. Every
-syntax contract is reported identically by both parse paths.
-
-See the [Error Reference](@/docs/error-reference.md) for a complete list of all variants
-and their stable codes.
+A segment without terminator is a **truncation** (`E001`), so a file cut off
+mid-transfer never parses as complete. All variants and codes:
+[Error Reference](@/docs/error-reference.md).
 
 ---
 
 ## Strict vs. lenient envelope validation
 
-The parse entry points are **lenient about the envelope** — they surface every
-segment even when `UNB`/`UNZ` or `UNH`/`UNT` reference parity is wrong. (They are
-not lenient about *syntax*: a segment with no terminator, a dangling release
-character, or a malformed `UNA` is an error on every path.) Use
-`validate_envelope` to enforce parity explicitly:
+Parsing checks syntax, not the envelope: it yields every segment even when
+`UNB`/`UNZ` or `UNH`/`UNT` disagree. `validate_envelope` enforces the envelope:
 
 ```rust
 use edifact::{from_bytes, validate_envelope};
@@ -363,13 +361,12 @@ let input = b"UNB+UNOA:1+SENDER+RECEIVER+200101:0900+IC1'\
               UNH+1+ORDERS:D:96A:UN'BGM+220'UNT+3+1'\
               UNZ+1+IC1'";
 let segs: Vec<_> = from_bytes(input).collect::<Result<_, _>>()?;
-validate_envelope(&segs)?; // returns Err on the first parity violation
+validate_envelope(&segs)?; // Err on the first violation
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-To collect **every** violation instead of stopping at the first, use
-`validate_envelope_lenient`, which returns a `LenientResult` carrying both the
-parsed interchange (when it could be recovered) and the full error list:
+`validate_envelope_lenient` collects **every** violation in a `LenientResult`
+alongside the recovered interchange:
 
 ```rust
 use edifact::{from_bytes, validate_envelope_lenient};
@@ -383,6 +380,45 @@ let result = validate_envelope_lenient(&segs);
 assert!(result.errors.len() >= 2); // both problems reported
 # Ok::<(), edifact::EdifactError>(())
 ```
+
+`interchange` is `None` when the `UNB` cannot be typed (unknown repertoire or
+version, a missing party, S004 or control reference); the reasons are in
+`errors`.
+
+---
+
+## Reading the interchange header first
+
+`InterchangeHeader::read_from` reads the optional `UNA` and the `UNB`, nothing
+further, and returns a reader that replays those bytes — route before parsing
+the body:
+
+```rust
+use edifact::{InterchangeHeader, ReaderConfig, SyntaxVersion, Year, from_reader};
+
+let raw: &[u8] = b"UNB+UNOC:3+SENDER:14+RECEIVER:14+260802:0915+REF1++++1'\
+                   UNH+1+ORDERS:D:96A:UN'BGM+220'UNT+3+1'UNZ+1+REF1'";
+let (header, rest) = InterchangeHeader::read_from(raw, &ReaderConfig::default())?;
+assert_eq!(header.sender.id, "SENDER");
+assert_eq!(header.sender.qualifier.as_deref(), Some("14"));
+assert_eq!(header.syntax_version, SyntaxVersion::V3);
+assert!(header.ack_requested());
+// Versions 1–3 transfer no century; state it.
+assert_eq!(header.prepared.year(), Year::TwoDigit(26));
+assert_eq!(header.prepared.with_century(20)?.year(), Year::Full(2026));
+
+let segments: Vec<_> = from_reader(rest).collect::<Result<_, _>>()?;
+assert_eq!(segments.len(), 5);
+# Ok::<(), edifact::EdifactError>(())
+```
+
+It consumes at most 4 096 (prologue) + 9 (`UNA`) + `max_segment_bytes` bytes;
+no terminator within that is `E036`. Values are decoded with the repertoire S001
+names. Nothing is defaulted: a missing S001 is `E008`, syntax `X` `E059`, an
+invalid S004 `E060`, DE 0031/0035 other than `1` `E014`.
+`InterchangeHeader::read(&[u8])` does the same on a slice,
+`InterchangeHeader::parse(&segment)` on a parsed `UNB`, and
+`validate_envelope(..)?.interchange.header` is the same value.
 
 ---
 

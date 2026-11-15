@@ -193,23 +193,30 @@ impl<'a> Iterator for Parser<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         // Obtain the segment tag (may have been peeked from a previous iteration)
-        let (tag, tag_span) = loop {
-            let tok = match self.peeked.take() {
-                Some(t) => Ok(t),
-                None => self.tokenizer.next()?,
-            };
-            match tok {
-                Ok(Token::SegmentTag { value, span }) => break (value, span),
-                Ok(Token::SegmentTerminator { .. }) => continue, // stray terminator — tolerated (blank line)
-                Ok(Token::DataElement { span, .. })
-                | Ok(Token::ComponentElement { span, .. })
-                | Ok(Token::RepeatElement { span, .. }) => {
-                    return Some(Err(EdifactError::UnexpectedDataToken {
-                        offset: span.start,
-                    }));
-                }
-                Err(e) => return Some(Err(e)),
+        let tok = match self.peeked.take() {
+            Some(t) => Ok(t),
+            None => self.tokenizer.next()?,
+        };
+        let (tag, tag_span) = match tok {
+            Ok(Token::SegmentTag { value, span }) => (value, span),
+            // Not produced by the current tokenizer, which reports a terminator
+            // in tag position itself. Kept as the same error so a future
+            // tokenizer change cannot make an empty segment pass silently
+            // (ISO 9735-1 §7.6: a segment starts with its tag).
+            Ok(Token::SegmentTerminator { span }) => {
+                return Some(Err(EdifactError::InvalidDelimiter {
+                    byte: self.tokenizer.service_string_advice().segment_term,
+                    offset: span.start,
+                }));
             }
+            Ok(Token::DataElement { span, .. })
+            | Ok(Token::ComponentElement { span, .. })
+            | Ok(Token::RepeatElement { span, .. }) => {
+                return Some(Err(EdifactError::UnexpectedDataToken {
+                    offset: span.start,
+                }));
+            }
+            Err(e) => return Some(Err(e)),
         };
 
         // `Element` is a large struct (inline component storage), so the
@@ -347,31 +354,31 @@ impl<'a> Iterator for Parser<'a> {
 ///
 /// | Field | Default | Violation |
 /// |---|---|---|
-/// | `max_segment_bytes` | 65 536 | `E020 SegmentTooLong` |
-/// | `max_segments` | unlimited | `E036 LimitExceeded`, `limit = "max_segments"` |
+/// | `max_segment_bytes` | 65 536 ([`DEFAULT_MAX_SEGMENT_BYTES`][Self::DEFAULT_MAX_SEGMENT_BYTES]) | `E020 SegmentTooLong` |
+/// | `max_input_bytes` | 268 435 456, 256 MiB ([`DEFAULT_MAX_INPUT_BYTES`][Self::DEFAULT_MAX_INPUT_BYTES]) | `E036 LimitExceeded`, `limit = "max_input_bytes"` |
+/// | `max_message_bytes` | 16 777 216, 16 MiB ([`DEFAULT_MAX_MESSAGE_BYTES`][Self::DEFAULT_MAX_MESSAGE_BYTES]) | `E036`, `limit = "max_message_bytes"` |
+/// | `max_segments` | unlimited | `E036`, `limit = "max_segments"` |
 /// | `max_messages` | unlimited | `E036`, `limit = "max_messages"` |
-/// | `max_segments_per_message` | unlimited | `E036`, `limit = "max_segments_per_message"` |
-/// | `max_input_bytes` | unlimited | `E036`, `limit = "max_input_bytes"` |
 ///
 /// Every limit is reported as an error item, after which the iterator ends;
 /// input that ends exactly at a limit is not a violation. The slice and reader
 /// paths report the same limit error at the same offset for the same input.
+/// [`ReaderConfig::unbounded`] lifts every limit — for trusted input only.
 ///
 /// - **Memory.** A segment iterator holds one segment (at most
-///   `max_segment_bytes`) plus, on the reader path, one read buffer, whatever
-///   the count limits are. A [`MessageWindows`][crate::MessageWindows] iterator
-///   additionally buffers one message: at most `max_segments_per_message`
-///   segments of at most `max_segment_bytes` each. **Without
-///   `max_segments_per_message` a message window is unbounded** — a `UNH`
-///   that never sees its `UNT` is buffered until the input ends;
-///   `max_messages` does not change that.
-/// - **CPU.** Only `max_input_bytes` bounds the work done on input that yields
-///   no segments (for example an endless run of whitespace); every consumed
-///   byte — byte order mark, `UNA`, whitespace, stray terminators, segments —
-///   counts against it.
+///   `max_segment_bytes` of input) plus, on the reader path, one read buffer.
+///   A [`MessageWindows`][crate::MessageWindows] iterator additionally holds
+///   one `UNH`…`UNT` window of at most `max_message_bytes` of input; its parsed
+///   form takes at most 128 × that in heap (≤ 2 GiB at the default).
+///   Collecting a whole interchange into a `Vec` takes up to 128 × its bytes:
+///   stream untrusted input instead.
+/// - **CPU.** `max_input_bytes` bounds all work, including input that yields
+///   no segments (an endless run of whitespace); every consumed byte — byte
+///   order mark, `UNA`, whitespace, segments — counts against it.
 ///
-/// The `resource_limits` integration tests assert each of these bounds,
-/// including the peak heap of a window under `max_segments_per_message`.
+/// The `resource_limits` integration tests assert each limit on both paths;
+/// `allocation_budget::worst_case_window_heap_within_factor` pins the 128×
+/// heap factor.
 ///
 /// # Example
 /// ```
@@ -379,7 +386,7 @@ impl<'a> Iterator for Parser<'a> {
 ///
 /// let cfg = ReaderConfig::default()
 ///     .max_segment_bytes(4_096)
-///     .max_segments_per_message(10_000)
+///     .max_message_bytes(1 << 20)
 ///     .max_input_bytes(64 << 20);
 /// let segments: Vec<_> = from_reader_with_config(b"BGM+220+1+9'".as_ref(), cfg)
 ///     .collect::<Result<_, _>>()
@@ -389,15 +396,19 @@ impl<'a> Iterator for Parser<'a> {
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct ReaderConfig {
-    /// Maximum allowed segment byte length (excluding the segment terminator).
+    /// Maximum allowed segment byte length, from the first byte of the
+    /// segment tag to the byte before its terminator.
     ///
-    /// If a segment accumulates more bytes than this limit without a terminator
-    /// the parser returns [`EdifactError::SegmentTooLong`].  This prevents
+    /// Whitespace between segments does not count; line breaks inside a
+    /// segment do. A longer segment is [`EdifactError::SegmentTooLong`] at the
+    /// tag's offset, reported once `max_segment_bytes + 1` bytes of it have
+    /// been read — unless one of those bytes is already a fault, which is
+    /// reported instead. Both parse paths measure it the same way.  This prevents
     /// unbounded allocation when processing malformed or adversarially crafted
     /// input streams.
     ///
-    /// Default: 65 536 bytes (64 KiB).  For untrusted input, set the limit to
-    /// the largest segment your partners actually send.
+    /// Default: [`DEFAULT_MAX_SEGMENT_BYTES`][Self::DEFAULT_MAX_SEGMENT_BYTES]
+    /// (65 536 bytes). Set it to the largest segment your partners send.
     pub max_segment_bytes: usize,
     /// Maximum number of segments the input may contain.
     ///
@@ -407,16 +418,16 @@ pub struct ReaderConfig {
     ///
     /// This counts the whole input, so on a long-lived stream it eventually
     /// stops valid traffic; bound each message with
-    /// [`max_segments_per_message`][Self::max_segments_per_message] instead.
+    /// [`max_message_bytes`][Self::max_message_bytes] instead.
     ///
     /// Default: `None` (unlimited).
     pub max_segments: Option<usize>,
     /// Maximum number of input bytes the parser may consume.
     ///
     /// **Every** consumed byte counts: a byte order mark, the `UNA`,
-    /// whitespace, stray segment terminators, segments and their terminators.
-    /// Input is consumed in units — the prologue, a run of whitespace or stray
-    /// terminators, one segment with its terminator — and a unit whose end
+    /// whitespace, segments and their terminators.
+    /// Input is consumed in units — the prologue, a run of whitespace, one
+    /// segment with its terminator — and a unit whose end
     /// lies beyond the budget yields [`EdifactError::LimitExceeded`] at
     /// `offset = max` *instead of* the unit, so no data beyond the cap is ever
     /// parsed or handed to the caller. Input that ends exactly at the budget,
@@ -430,32 +441,36 @@ pub struct ReaderConfig {
     /// On the decoding paths the budget counts decoded (UTF-8) bytes; a
     /// Latin-1 interchange can be up to twice as long after decoding.
     ///
-    /// Default: `None` (unlimited).
+    /// Default: [`DEFAULT_MAX_INPUT_BYTES`][Self::DEFAULT_MAX_INPUT_BYTES]
+    /// (268 435 456 bytes, 256 MiB). A long-lived stream reaches it by
+    /// design: use [`ReaderConfig::unbounded`] with
+    /// [`max_message_bytes`][Self::max_message_bytes] for trusted streams.
     pub max_input_bytes: Option<u64>,
     /// Maximum number of EDIFACT messages (`UNH`/`UNT` pairs) the input may contain.
     ///
     /// The `UNH` of a message beyond this budget yields
     /// [`EdifactError::LimitExceeded`] at its start. It does not bound the size
-    /// of a message: see
-    /// [`max_segments_per_message`][Self::max_segments_per_message].
+    /// of a message: see [`max_message_bytes`][Self::max_message_bytes].
     ///
     /// Default: `None` (unlimited).
     pub max_messages: Option<usize>,
-    /// Maximum number of segments in any one message, from `UNH` through `UNT`
-    /// inclusive.
+    /// Maximum number of input bytes in any one message, from the first byte
+    /// of its `UNH` through the `UNT` terminator — segments, terminators and
+    /// any whitespace or stray terminators between them.
     ///
-    /// The first segment that would exceed it yields
-    /// [`EdifactError::LimitExceeded`] with
-    /// `limit = "max_segments_per_message"` at that segment's start. Envelope
-    /// segments outside a message (`UNB`, `UNG`, `UNE`, `UNZ`) do not
-    /// count, and a `UNH` restarts the count even inside an unclosed message.
-    /// A message of exactly this many segments is not a violation.
+    /// The first segment whose terminator would lie beyond it yields
+    /// [`EdifactError::LimitExceeded`] with `limit = "max_message_bytes"` at
+    /// that segment's start, instead of the segment. Envelope segments outside
+    /// a message (`UNB`, `UNG`, `UNE`, `UNZ`) do not count, and a `UNH`
+    /// restarts the count even inside an unclosed message. A message of
+    /// exactly this many bytes is not a violation.
     ///
     /// This is the limit that bounds a [`MessageWindows`][crate::MessageWindows]
-    /// buffer, and the one to set on a long-lived stream.
+    /// buffer, independently of how long the stream runs.
     ///
-    /// Default: `None` (unlimited).
-    pub max_segments_per_message: Option<usize>,
+    /// Default: [`DEFAULT_MAX_MESSAGE_BYTES`][Self::DEFAULT_MAX_MESSAGE_BYTES]
+    /// (16 777 216 bytes, 16 MiB).
+    pub max_message_bytes: Option<u64>,
     /// Service characters to use instead of reading them from the input.
     ///
     /// `None` — the default — discovers them the way ISO 9735-1 says a receiver
@@ -474,17 +489,52 @@ pub struct ReaderConfig {
 impl Default for ReaderConfig {
     fn default() -> Self {
         Self {
-            max_segment_bytes: 65_536,
+            max_segment_bytes: Self::DEFAULT_MAX_SEGMENT_BYTES,
             max_segments: None,
-            max_input_bytes: None,
+            max_input_bytes: Some(Self::DEFAULT_MAX_INPUT_BYTES),
             max_messages: None,
-            max_segments_per_message: None,
+            max_message_bytes: Some(Self::DEFAULT_MAX_MESSAGE_BYTES),
             service_string_advice: None,
         }
     }
 }
 
 impl ReaderConfig {
+    /// Default [`max_segment_bytes`][Self::max_segment_bytes]: 65 536 bytes (64 KiB).
+    pub const DEFAULT_MAX_SEGMENT_BYTES: usize = 64 << 10;
+    /// Default [`max_input_bytes`][Self::max_input_bytes]: 268 435 456 bytes (256 MiB).
+    pub const DEFAULT_MAX_INPUT_BYTES: u64 = 256 << 20;
+    /// Default [`max_message_bytes`][Self::max_message_bytes]: 16 777 216 bytes (16 MiB).
+    pub const DEFAULT_MAX_MESSAGE_BYTES: u64 = 16 << 20;
+
+    /// No limits at all — for trusted input only.
+    ///
+    /// `max_segment_bytes` is `usize::MAX` and every other limit is `None`.
+    /// Chain a builder to keep one limit, or lift a single limit of the
+    /// defaults by assigning its field (`config.max_input_bytes = None`).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use edifact::ReaderConfig;
+    ///
+    /// // A long-lived trusted stream: no total, but every window stays capped.
+    /// let config = ReaderConfig::unbounded().max_message_bytes(16 << 20);
+    /// assert_eq!(config.max_input_bytes, None);
+    /// assert_eq!(config.max_message_bytes, Some(16 << 20));
+    /// ```
+    #[must_use]
+    pub fn unbounded() -> Self {
+        Self {
+            max_segment_bytes: usize::MAX,
+            max_segments: None,
+            max_input_bytes: None,
+            max_messages: None,
+            max_message_bytes: None,
+            service_string_advice: None,
+        }
+    }
+
     /// Set the maximum segment byte length and return `self`.
     #[must_use]
     pub fn max_segment_bytes(mut self, limit: usize) -> Self {
@@ -513,29 +563,30 @@ impl ReaderConfig {
         self
     }
 
-    /// Set the maximum number of segments per message (`UNH` through `UNT`
-    /// inclusive) and return `self`.
+    /// Set the maximum input bytes per message (`UNH` through the `UNT`
+    /// terminator) and return `self`.
     ///
-    /// See [`max_segments_per_message`][Self::max_segments_per_message].
+    /// See [`max_message_bytes`][Self::max_message_bytes].
     ///
     /// # Example
     ///
     /// ```
     /// use edifact::{EdifactError, ReaderConfig, from_bytes_with_config};
     ///
-    /// let config = ReaderConfig::default().max_segments_per_message(2);
+    /// // `UNH+1+ORDERS:D:96A:UN'BGM+220'` is 30 bytes; the `DTM` would end at 52.
+    /// let config = ReaderConfig::default().max_message_bytes(40);
     /// let input = b"UNH+1+ORDERS:D:96A:UN'BGM+220'DTM+137:20260101:102'UNT+4+1'";
     /// let err = from_bytes_with_config(input, config)
     ///     .collect::<Result<Vec<_>, _>>()
     ///     .unwrap_err();
     /// assert!(matches!(
     ///     err,
-    ///     EdifactError::LimitExceeded { limit: "max_segments_per_message", max: 2, offset: 30, .. }
+    ///     EdifactError::LimitExceeded { limit: "max_message_bytes", max: 40, offset: 30, .. }
     /// ));
     /// ```
     #[must_use]
-    pub fn max_segments_per_message(mut self, limit: usize) -> Self {
-        self.max_segments_per_message = Some(limit);
+    pub fn max_message_bytes(mut self, limit: u64) -> Self {
+        self.max_message_bytes = Some(limit);
         self
     }
 
@@ -591,22 +642,21 @@ pub(crate) fn input_bytes_exceeded(max: u64) -> EdifactError {
 ///
 /// Check order for a segment: [`admit_bytes`](Self::admit_bytes) for the unit
 /// that carries it (before parsing), then [`admit_segment`](Self::admit_segment)
-/// (`max_segments`, `max_messages`, `max_segments_per_message`, in that order),
+/// (`max_segments`, `max_messages`, `max_message_bytes`, in that order),
 /// then [`account`](Self::account) once the segment is handed out.
 #[derive(Debug, Clone)]
 pub(crate) struct Budget {
     max_segments: Option<usize>,
     max_messages: Option<usize>,
-    max_segments_per_message: Option<usize>,
+    max_message_bytes: Option<u64>,
     max_input_bytes: Option<u64>,
     /// Segments handed out so far.
     segments: usize,
     /// Complete `UNH`…`UNT` messages so far.
     messages: usize,
-    /// Whether a `UNH` has been handed out without its `UNT`.
-    in_message: bool,
-    /// Segments of the open message, its `UNH` included.
-    message_segments: usize,
+    /// Start of the open message's `UNH`, if a `UNH` has been handed out
+    /// without its `UNT`.
+    message_start: Option<usize>,
 }
 
 impl Budget {
@@ -614,12 +664,11 @@ impl Budget {
         Self {
             max_segments: config.max_segments,
             max_messages: config.max_messages,
-            max_segments_per_message: config.max_segments_per_message,
+            max_message_bytes: config.max_message_bytes,
             max_input_bytes: config.max_input_bytes,
             segments: 0,
             messages: 0,
-            in_message: false,
-            message_segments: 0,
+            message_start: None,
         }
     }
 
@@ -642,71 +691,65 @@ impl Budget {
         }
     }
 
-    /// Whether a segment-size violation detected once byte `detected_at`
-    /// (exclusive end) has been read falls inside the byte budget — that is,
-    /// whether `E020` is seen before `E036` in the byte stream.
-    #[inline]
-    pub(crate) fn sees_byte(&self, detected_at: u64) -> bool {
-        self.max_input_bytes.is_none_or(|max| detected_at <= max)
-    }
-
-    /// Check the count budgets for a segment tagged `tag` starting at `start`,
-    /// before it is handed out.
+    /// Check the count and per-message budgets for a segment tagged `tag`
+    /// that starts at `start` and whose terminator ends at `end`, before it
+    /// is handed out.
     ///
     /// Checking a segment that has actually been read — rather than refusing
     /// to read once a count is reached — is what lets input that ends exactly
     /// at a limit finish cleanly.
-    pub(crate) fn admit_segment(&self, tag: &str, start: usize) -> Result<(), EdifactError> {
-        let exceeded = |limit: &'static str, max: usize| EdifactError::LimitExceeded {
+    pub(crate) fn admit_segment(
+        &self,
+        tag: &str,
+        start: usize,
+        end: usize,
+    ) -> Result<(), EdifactError> {
+        let exceeded = |limit: &'static str, max: u64| EdifactError::LimitExceeded {
             limit,
-            max: max as u64,
+            max,
             offset: start,
         };
-        if let Some(max) = self.max_segments {
-            if self.segments >= max {
-                return Err(exceeded("max_segments", max));
-            }
+        if let Some(max) = self.max_segments
+            && self.segments >= max
+        {
+            return Err(exceeded("max_segments", max as u64));
         }
         // Only a `UNH` opens a message, so only a `UNH` can push the count past
         // the budget.  Testing every segment would trip on the interchange
         // trailer, which belongs to no message.
-        if let Some(max) = self.max_messages {
-            if tag == "UNH" && self.messages >= max {
-                return Err(exceeded("max_messages", max));
-            }
+        if let Some(max) = self.max_messages
+            && tag == "UNH"
+            && self.messages >= max
+        {
+            return Err(exceeded("max_messages", max as u64));
         }
-        if let Some(max) = self.max_segments_per_message {
-            let position = if tag == "UNH" {
-                1
-            } else if self.in_message {
-                self.message_segments + 1
-            } else {
-                0
-            };
-            if position > max {
-                return Err(exceeded("max_segments_per_message", max));
-            }
+        // A `UNH` opens (or restarts) the window it belongs to; segments
+        // outside a window are not counted.
+        let window_start = if tag == "UNH" {
+            Some(start)
+        } else {
+            self.message_start
+        };
+        if let Some(max) = self.max_message_bytes
+            && let Some(window_start) = window_start
+            && end.saturating_sub(window_start) as u64 > max
+        {
+            return Err(exceeded("max_message_bytes", max));
         }
         Ok(())
     }
 
-    /// Record a segment that has been handed out.
+    /// Record a segment starting at `start` that has been handed out.
     ///
     /// Only a `UNT` that closes a `UNH` already seen advances the message
     /// counter; a bare `UNT` is malformed and must not inflate it.
-    pub(crate) fn account(&mut self, tag: &str) {
+    pub(crate) fn account(&mut self, tag: &str, start: usize) {
         self.segments += 1;
         if tag == "UNH" {
-            self.in_message = true;
-            self.message_segments = 1;
-        } else if self.in_message {
-            if tag == "UNT" {
-                self.messages += 1;
-                self.in_message = false;
-                self.message_segments = 0;
-            } else {
-                self.message_segments += 1;
-            }
+            self.message_start = Some(start);
+        } else if tag == "UNT" && self.message_start.is_some() {
+            self.messages += 1;
+            self.message_start = None;
         }
     }
 }
@@ -738,9 +781,22 @@ enum StreamState {
 /// count, and an element that does not repeat allocates nothing for
 /// repetitions. The `allocation_budget` integration test enforces these counts.
 ///
-/// A segment that straddles the read buffer's boundary — and the first one
-/// after a `UNA` — takes the slow path instead: its bytes are accumulated into
-/// a temporary `Vec<u8>` and tokenized from there.
+/// A segment that straddles the read buffer's boundary — and the prologue
+/// (byte order mark, whitespace, `UNA`) with the first segment — takes the slow
+/// path instead: its bytes are accumulated into a temporary `Vec<u8>` (at most
+/// `max_segment_bytes + 1` of them) and tokenized from there. Whitespace
+/// between segments is consumed as it is scanned and never buffered.
+///
+/// # Same answer as the slice path
+///
+/// Both paths hand every per-segment decision to the same [`Tokenizer`] and
+/// [`Parser`], so the stream yields exactly what
+/// [`from_bytes_with_config`][crate::from_bytes_with_config] yields for the
+/// same bytes and configuration — segments with equal spans, or the same error
+/// with the same absolute offset — whatever sizes `fill_buf` returns. Only I/O
+/// errors (`E010`) have no slice counterpart. Evidence: the
+/// `parse_path_parity` integration tests and the `fuzz_parity_raw` /
+/// `fuzz_parity_structured` bolero targets.
 ///
 /// Configure limits via [`ReaderConfig`] and [`from_reader_with_config`] /
 /// [`from_bufread_with_config`].
@@ -748,19 +804,18 @@ enum StreamState {
 /// # Resource bounds
 ///
 /// Every [`ReaderConfig`] limit applies (`max_segment_bytes`, `max_segments`,
-/// `max_messages`, `max_segments_per_message`, `max_input_bytes`); a violation
-/// is an error item, after which the stream ends. With
-/// `ReaderConfig::default()` only `max_segment_bytes` (64 KiB) is set.
+/// `max_messages`, `max_message_bytes`, `max_input_bytes`); a violation
+/// is an error item, after which the stream ends. The defaults bound every
+/// one that has a default (64 KiB per segment, 16 MiB per message, 256 MiB in
+/// total); [`ReaderConfig::unbounded`] lifts them for trusted input.
 ///
 /// - **Memory:** one segment of at most `max_segment_bytes` plus the reader's
 ///   buffer, independent of the input length and of the count limits.
 /// - **CPU:** bounded by `max_input_bytes`, which counts every consumed byte —
-///   byte order mark, `UNA`, whitespace, stray terminators and segments. The
+///   byte order mark, `UNA`, whitespace and segments. The
 ///   check runs inside the byte-skipping loops, so an endless run of
-///   whitespace stops within one read buffer of the budget. Without
-///   `max_input_bytes` such input holds memory at the bound above but runs for
-///   unbounded time (the `resource_limits` test `endless_whitespace_reader_stops`
-///   covers the bounded case).
+///   whitespace stops within one read buffer of the budget (the
+///   `resource_limits` test `every_default_entry_point_stops_endless_input`).
 pub struct OwnedSegmentStream<R: BufRead> {
     reader: R,
     ssa: crate::tokenizer::ServiceStringAdvice,
@@ -796,30 +851,12 @@ impl<R: BufRead> OwnedSegmentStream<R> {
         }
     }
 
-    /// Adopt the repetition separator implied by a `UNB`'s syntax version.
-    ///
-    /// Only reached when nothing has already settled the delimiters: a `UNA`
-    /// states all six explicitly, and a caller-supplied advice is by definition
-    /// the last word.  Version 4 is the version that has a repetition separator
-    /// at all, and its default is `*` (ISO 9735-1 §5.1).
-    ///
-    /// The `UNB` itself has no repeating data elements, so re-reading it under
-    /// the updated advice would not change a thing.
-    fn adopt_syntax_version(&mut self, unb: &OwnedSegment) {
-        self.delimiters_settled = true;
-        if unb.component_str(0, 1) == Some("4") {
-            self.ssa.repetition_sep = b'*';
-        }
-    }
-
     /// Hand out a segment that has been read and parsed, after checking the
     /// count budgets against it.
     fn hand_out(&mut self, seg: OwnedSegment) -> Result<OwnedSegment, EdifactError> {
-        self.budget.admit_segment(&seg.tag, seg.tag_span.start)?;
-        if !self.delimiters_settled && seg.tag == "UNB" {
-            self.adopt_syntax_version(&seg);
-        }
-        self.budget.account(&seg.tag);
+        self.budget
+            .admit_segment(&seg.tag, seg.tag_span.start, seg.span.end)?;
+        self.budget.account(&seg.tag, seg.tag_span.start);
         Ok(seg)
     }
 
@@ -828,17 +865,222 @@ impl<R: BufRead> OwnedSegmentStream<R> {
         self.state = StreamState::Done;
         Some(Err(error))
     }
+
+    /// Read the prologue — byte order mark, whitespace, an optional `UNA` —
+    /// and the first segment, one byte at a time.
+    ///
+    /// Byte by byte so that what is recognised never depends on how many bytes
+    /// a fill returns: a mark split across two fills is still a mark, and a
+    /// `UNA` is recognised by its three letters alone, as on the slice path
+    /// (`tokenizer::classify_head`). Bytes read while probing that turn out not
+    /// to be prologue are the first segment's first bytes.
+    ///
+    /// Like the slice path, the probes classify by the bytes themselves, even
+    /// past `max_input_bytes` — at most the two bytes after a mark's first byte
+    /// and the eight after a `U` — and the budget is then applied to the unit
+    /// they turned out to be.
+    fn read_head(&mut self, cursor: &mut SlowCursor) -> Result<Option<OwnedSegment>, EdifactError> {
+        let bom = crate::tokenizer::UTF8_BOM;
+        let mut prefix: SmallVec<[u8; 3]> = SmallVec::new();
+        let Some(&first) = self.reader.fill_buf()?.first() else {
+            return Ok(None);
+        };
+        if first == bom[0] {
+            self.probe(cursor, &mut prefix, &bom)?;
+            if prefix.as_slice() == bom {
+                self.budget.admit_bytes(bom.len() as u64)?;
+                prefix.clear();
+            }
+        }
+        // A failed mark is already the first segment, which starts at 0.
+        let mut start = 0;
+        if prefix.is_empty() {
+            let Some((offset, byte)) = read_next_non_ws_byte(&mut self.reader, cursor)? else {
+                return Ok(None);
+            };
+            start = offset;
+            prefix.push(byte);
+            if byte == b'U' {
+                self.probe(cursor, &mut prefix, b"NA")?;
+                if prefix.as_slice() == b"UNA" {
+                    self.read_una(cursor, start)?;
+                    return self.read_segment(cursor);
+                }
+            }
+        }
+        self.locate_and_parse(cursor, &prefix, start)
+    }
+
+    /// Read on while the next bytes spell `expected` — a byte order mark, or
+    /// the `NA` of `UNA` — stopping after the first byte that does not, or at
+    /// the end of the input. Not checked against the byte budget: the caller
+    /// applies it once it knows what the bytes are.
+    fn probe(
+        &mut self,
+        cursor: &mut SlowCursor,
+        prefix: &mut SmallVec<[u8; 3]>,
+        expected: &[u8],
+    ) -> Result<(), EdifactError> {
+        for &want in expected {
+            let Some(byte) = read_raw_byte(&mut self.reader, cursor)? else {
+                break;
+            };
+            prefix.push(byte);
+            if byte != want {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Read the six service characters after the `UNA` starting at `start`
+    /// and settle the delimiters.
+    ///
+    /// Fewer than six is `E001` at the end of the input (ISO 9735-1 Annex A).
+    /// The nine bytes are one unit against `max_input_bytes`.
+    fn read_una(&mut self, cursor: &mut SlowCursor, start: usize) -> Result<(), EdifactError> {
+        let mut una = [0u8; 6];
+        for slot in &mut una {
+            let Some(byte) = read_raw_byte(&mut self.reader, cursor)? else {
+                self.budget.admit_bytes(cursor.offset as u64)?;
+                return Err(EdifactError::UnexpectedEof {
+                    offset: cursor.offset,
+                });
+            };
+            *slot = byte;
+        }
+        self.budget.admit_bytes(start as u64 + 9)?;
+        let declared = crate::tokenizer::ServiceStringAdvice::from_una(una);
+        if !declared.is_valid() {
+            return Err(EdifactError::InvalidUna);
+        }
+        // A malformed UNA is an error even when the caller supplied its own
+        // advice — the input is broken either way — but the caller's choice,
+        // not the header's, is what parsing then uses.
+        if self.config.service_string_advice.is_none() {
+            self.ssa = declared;
+        }
+        self.delimiters_settled = true;
+        Ok(())
+    }
+
+    /// Read the next segment one byte at a time: the slow path, for a segment
+    /// that straddles the read buffer's boundary.
+    fn read_segment(
+        &mut self,
+        cursor: &mut SlowCursor,
+    ) -> Result<Option<OwnedSegment>, EdifactError> {
+        match read_next_non_ws_byte(&mut self.reader, cursor)? {
+            None => Ok(None),
+            Some((start, byte)) => self.locate_and_parse(cursor, &[byte], start),
+        }
+    }
+
+    /// Locate and parse the segment whose first bytes, `prefix` (starting with
+    /// its first non-whitespace byte, at absolute offset `start`), are already
+    /// consumed.
+    fn locate_and_parse(
+        &mut self,
+        cursor: &mut SlowCursor,
+        prefix: &[u8],
+        start: usize,
+    ) -> Result<Option<OwnedSegment>, EdifactError> {
+        if prefix[0] == self.ssa.segment_term {
+            return Err(EdifactError::InvalidDelimiter {
+                byte: self.ssa.segment_term,
+                offset: start,
+            });
+        }
+        let max_segment_bytes = self.config.max_segment_bytes;
+        let (bytes, cut) = locate_segment(
+            &mut self.reader,
+            cursor,
+            &self.ssa,
+            max_segment_bytes,
+            prefix,
+            start,
+        )?;
+        if !self.delimiters_settled {
+            // Only the first segment may choose the repetition separator, and
+            // only a `UNB` declaring syntax version 4 does (ISO 9735-1 §5.1,
+            // §7.2). The slice path sniffs the same bytes before tokenizing,
+            // so the head `UNB` is itself read under the advice it declares.
+            self.delimiters_settled = true;
+            if crate::tokenizer::sniff_syntax_version(&bytes) == Some(4) {
+                self.ssa.repetition_sep = b'*';
+            }
+        }
+        parse_located(&bytes, cut, start, self.ssa, max_segment_bytes).map(Some)
+    }
+}
+
+// ── shared per-segment decision ───────────────────────────────────────────────
+
+/// How a located segment's bytes end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Cut {
+    /// With its unescaped segment terminator.
+    Terminated,
+    /// At the end of the input, without a terminator.
+    Eof,
+    /// After the first `max_segment_bytes + 1` bytes, none of them an
+    /// unescaped terminator, with more input following: the segment is too
+    /// long, unless an earlier byte is already a fault.
+    Oversize,
+}
+
+/// Parse one located segment exactly as the slice path parses the same bytes.
+///
+/// `bytes` starts at the segment tag, which sits at absolute offset `base`.
+/// Every decision — a bad tag, a bad value, a dangling release character, the
+/// segment budget, the end of the input — is the shared tokenizer's and
+/// parser's; this only moves their offsets from the segment's own coordinates
+/// to the input's.
+fn parse_located(
+    bytes: &[u8],
+    cut: Cut,
+    base: usize,
+    ssa: crate::tokenizer::ServiceStringAdvice,
+    max_segment_bytes: usize,
+) -> Result<OwnedSegment, EdifactError> {
+    let tokenizer = Tokenizer::for_segment(bytes, ssa, max_segment_bytes);
+    let element_capacity = memchr::memchr_iter(ssa.element_sep, bytes).count();
+    let too_long = || EdifactError::SegmentTooLong {
+        offset: base,
+        limit: max_segment_bytes,
+    };
+    match Parser::with_element_capacity(tokenizer, element_capacity).next() {
+        Some(Ok(segment)) if cut == Cut::Terminated => Ok(segment.into_owned().offset(base)),
+        // A release character in the last byte of an oversized prefix escapes
+        // a byte the tokenizer was not shown; the segment is too long either
+        // way, which is what the slice tokenizer reports seeing that byte.
+        Some(Err(EdifactError::InvalidReleaseSequence { offset }))
+            if cut == Cut::Oversize && offset + 1 == bytes.len() =>
+        {
+            Err(too_long())
+        }
+        Some(Err(error)) => Err(error.rebased(base)),
+        // Not reachable: `bytes` starts with a byte that is neither whitespace
+        // nor a terminator, so there is a tag or a fault, and without a
+        // terminator the parser never completes a segment.
+        _ if cut == Cut::Oversize => Err(too_long()),
+        _ => Err(EdifactError::UnexpectedEof {
+            offset: base.saturating_add(bytes.len()),
+        }),
+    }
 }
 
 // ── fast-path helpers ─────────────────────────────────────────────────────────
 
 /// Outcome of a single-buffer segment extraction attempt.
 enum FastSegment {
-    /// Segment parsed; second field = bytes to consume (content + terminator).
+    /// Segment parsed; second field = bytes to consume (whitespace, content
+    /// and terminator).
     Parsed(OwnedSegment, usize),
-    /// Only whitespace or an isolated terminator; bytes to skip and continue.
+    /// A buffer holding only inter-segment whitespace; bytes to consume.
     Skip(usize),
-    /// Terminator not present in the current buffer; caller must use slow path.
+    /// The segment does not end within the current buffer; the caller must
+    /// use the slow path.
     NeedMore,
     /// Buffer is empty — no more input.
     Eof,
@@ -882,11 +1124,12 @@ pub(crate) fn is_inter_segment_ws(b: u8) -> bool {
 
 /// Try to parse one segment directly from the `BufRead` buffer.
 ///
-/// The buffer is handled in two steps: **locate** the unit (leading
-/// whitespace, the segment, its terminator) and check it against the size and
-/// byte budgets, then **parse** it. A unit that ends beyond `max_input_bytes`
-/// is refused before any of it is parsed, so the answer never depends on a
-/// syntax error sitting in over-budget bytes.
+/// Leading inter-segment whitespace is skipped (a buffer of nothing else is
+/// consumed as it is scanned, so no whitespace is ever held); the segment
+/// starts at the first other byte. A terminator there is `E002`. The segment
+/// is checked against the byte budget as one unit with its terminator before
+/// any of it is parsed, so the answer never depends on a syntax error sitting
+/// in over-budget bytes; `max_segment_bytes` is measured from the tag.
 ///
 /// This function borrows `reader` only for the duration of the call.  After it
 /// returns the caller is free to call `reader.consume(n)`.
@@ -906,66 +1149,46 @@ fn try_fast_segment<R: BufRead>(
         return FastSegment::Eof;
     }
 
-    let Some(pos) = find_unescaped_term(buf, ssa.segment_term, ssa.release_char) else {
-        return FastSegment::NeedMore;
-    };
-
+    let lead = buf.iter().take_while(|&&b| is_inter_segment_ws(b)).count();
+    if lead == buf.len() {
+        return match budget.admit_bytes(stream_offset.saturating_add(lead as u64)) {
+            Ok(()) => FastSegment::Skip(lead),
+            Err(error) => FastSegment::Err(error),
+        };
+    }
+    let body = &buf[lead..];
+    let start_u64 = stream_offset.saturating_add(lead as u64);
     // Saturate rather than wrap on 32-bit targets; Span offsets are `usize`
     // so streams > 4 GiB on 32-bit produce clamped (but monotonic) diagnostic
     // positions.
-    let seg_start = stream_offset.min(usize::MAX as u64) as usize;
+    let start = start_u64.min(usize::MAX as u64) as usize;
 
-    // Enforce the segment-size guard *before* any allocation.
-    // `pos` is the index of the terminator byte, so the segment body is `buf[..pos]`.
-    if pos > max_segment_bytes {
-        // The slow path and the slice tokenizer detect an oversized segment
-        // once its first `max_segment_bytes + 1` bytes (from the tag) have
-        // been read; when the byte budget ends before that point, the budget
-        // is what the stream runs into first.
-        let lead = buf[..pos]
-            .iter()
-            .take_while(|&&b| is_inter_segment_ws(b))
-            .count() as u64;
-        let detected_at = stream_offset
-            .saturating_add(lead)
-            .saturating_add(max_segment_bytes as u64)
-            .saturating_add(1);
-        if budget.sees_byte(detected_at) {
-            return FastSegment::Err(EdifactError::SegmentTooLong {
-                offset: seg_start,
-                limit: max_segment_bytes,
-            });
+    if body[0] == ssa.segment_term {
+        if let Err(error) = budget.admit_bytes(start_u64.saturating_add(1)) {
+            return FastSegment::Err(error);
         }
+        return FastSegment::Err(EdifactError::InvalidDelimiter {
+            byte: ssa.segment_term,
+            offset: start,
+        });
     }
 
-    // The byte budget, for the whole unit including its terminator.
-    if let Err(error) = budget.admit_bytes(stream_offset.saturating_add(pos as u64 + 1)) {
+    // At most `max_segment_bytes` bytes before the terminator.
+    let cap = max_segment_bytes.saturating_add(1);
+    let (located, cut) = match find_unescaped_term(body, ssa.segment_term, ssa.release_char) {
+        Some(pos) if pos < cap => (&body[..=pos], Cut::Terminated),
+        Some(_) => (&body[..cap], Cut::Oversize),
+        None if body.len() > cap => (&body[..cap], Cut::Oversize),
+        None => return FastSegment::NeedMore,
+    };
+    // The byte budget: the whole unit, or for an oversized segment the bytes
+    // that show it is oversized.
+    if let Err(error) = budget.admit_bytes(start_u64.saturating_add(located.len() as u64)) {
         return FastSegment::Err(error);
     }
-
-    // `buf[..pos]` is the segment content without the terminator.
-    let seg_bytes = &buf[..pos];
-
-    // Skip isolated terminators / pure-whitespace slots between segments.
-    if seg_bytes.iter().all(|&b| is_inter_segment_ws(b)) {
-        return FastSegment::Skip(pos + 1);
-    }
-
-    // Parse directly from the buffer slice — zero intermediate allocation.
-    // Include the terminator byte so the parser sees a `SegmentTerminator`
-    // token and records a span that is consistent with the `from_bytes` path.
-    // `for_segment` (not `with_limit`) because this slice is one bare segment:
-    // the whole-interchange constructors would mistake a segment tagged `UNA`
-    // for a service string advice and skip nine bytes of it.  The configured
-    // `max_segment_bytes` is passed through so the tokenizer never applies a
-    // tighter cap than the caller allowed.
-    let tok = Tokenizer::for_segment(&buf[..pos + 1], ssa, max_segment_bytes);
-    let element_capacity = memchr::memchr_iter(ssa.element_sep, seg_bytes).count();
-    let mut parser_iter = Parser::with_element_capacity(tok, element_capacity);
-    match parser_iter.next() {
-        None => FastSegment::Skip(pos + 1),
-        Some(Err(e)) => FastSegment::Err(e),
-        Some(Ok(s)) => FastSegment::Parsed(s.into_owned().offset(seg_start), pos + 1),
+    match parse_located(located, cut, start, ssa, max_segment_bytes) {
+        Ok(segment) => FastSegment::Parsed(segment, lead + located.len()),
+        Err(error) => FastSegment::Err(error),
     }
     // `buf` borrow released here — `reader.consume()` is safe to call in the caller.
 }
@@ -981,7 +1204,7 @@ impl<R: BufRead> Iterator for OwnedSegmentStream<R> {
         }
 
         loop {
-            // ── Fast path (after UNA has been consumed) ───────────────────
+            // ── Fast path: the whole segment is in the read buffer ────────
             if self.state == StreamState::Running {
                 match try_fast_segment(
                     &mut self.reader,
@@ -1003,84 +1226,40 @@ impl<R: BufRead> Iterator for OwnedSegmentStream<R> {
                         self.stream_offset += n as u64;
                         continue;
                     }
-                    FastSegment::Eof => return None,
-                    FastSegment::Err(e) => return self.fail(e),
-                    FastSegment::NeedMore => {
-                        // Segment spans buffer boundary — fall through to slow path.
+                    FastSegment::Eof => {
+                        self.state = StreamState::Done;
+                        return None;
                     }
+                    FastSegment::Err(e) => return self.fail(e),
+                    FastSegment::NeedMore => {}
                 }
             }
 
-            // ── Slow path: byte accumulation (also handles UNA header) ────
-            if self.state == StreamState::Init {
-                // Strip a byte order mark before anything tries to read a tag
-                // out of it.  The slice path does the same (see
-                // `tokenizer::prologue_len`), and the two must agree or the
-                // identical file parses only from one of them.
-                match self.reader.fill_buf() {
-                    Ok(buf) if buf.starts_with(&crate::tokenizer::UTF8_BOM) => {
-                        // The mark is consumed input like any other.
-                        if let Err(error) = self.budget.admit_bytes(self.stream_offset + 3) {
-                            return self.fail(error);
-                        }
-                        self.reader.consume(3);
-                        self.stream_offset += 3;
-                    }
-                    Ok(_) => {}
-                    Err(error) => return self.fail(error.into()),
-                }
-            }
-            let mut scanned = self.state != StreamState::Init;
-            // `read_next_raw_segment` tracks offset as `usize` for segment
-            // start positions; sync back to the `u64` field afterward.
-            // Saturate rather than wrap on 32-bit targets (same rationale as
-            // the fast-path cast).
+            // ── Slow path: the prologue, and segments across fills ────────
+            // `SlowCursor` tracks the offset as `usize`; saturate rather than
+            // wrap on 32-bit targets (same rationale as the fast path).
             let mut cursor = SlowCursor {
                 offset: self.stream_offset.min(usize::MAX as u64) as usize,
                 max_input_bytes: self.budget.max_input_bytes(),
             };
-            let read = read_next_raw_segment(
-                &mut self.reader,
-                &mut self.ssa,
-                &mut scanned,
-                &mut cursor,
-                self.config.max_segment_bytes,
-                &mut self.delimiters_settled,
-                self.config.service_string_advice.is_some(),
-            );
-            self.stream_offset = cursor.offset as u64;
-            let mut raw = match read {
-                Ok(Some(r)) => r,
-                Ok(None) => return None,
-                Err(e) => return self.fail(e),
-            };
-            if scanned {
+            let read = if self.state == StreamState::Init {
                 self.state = StreamState::Running;
-            }
-
-            raw.bytes.push(self.ssa.segment_term);
-            // `for_segment`, and with the configured `max_segment_bytes`: this
-            // buffer holds one bare segment, so neither the UNA skip nor the
-            // 64 KiB default of `Tokenizer::new` applies.
-            let tok = Tokenizer::for_segment(
-                raw.bytes.as_slice(),
-                self.ssa,
-                self.config.max_segment_bytes,
-            );
-            let element_capacity =
-                memchr::memchr_iter(self.ssa.element_sep, raw.bytes.as_slice()).count();
-            let mut parser_iter = Parser::with_element_capacity(tok, element_capacity);
-            match parser_iter.next() {
-                Some(Ok(s)) => {
-                    let seg = s.into_owned().offset(raw.start_offset);
-                    return match self.hand_out(seg) {
-                        Ok(seg) => Some(Ok(seg)),
-                        Err(error) => self.fail(error),
-                    };
+                self.read_head(&mut cursor)
+            } else {
+                self.read_segment(&mut cursor)
+            };
+            self.stream_offset = cursor.offset as u64;
+            return match read {
+                Ok(Some(seg)) => match self.hand_out(seg) {
+                    Ok(seg) => Some(Ok(seg)),
+                    Err(error) => self.fail(error),
+                },
+                Ok(None) => {
+                    self.state = StreamState::Done;
+                    None
                 }
-                Some(Err(e)) => return self.fail(e),
-                None => {} // Empty segment — loop back.
-            }
+                Err(error) => self.fail(error),
+            };
         }
     }
 }
@@ -1093,14 +1272,17 @@ impl<R: BufRead> Iterator for OwnedSegmentStream<R> {
 ///
 /// # Resource bounds
 ///
-/// `ReaderConfig::default()`: only `max_segment_bytes` (64 KiB) applies.
-/// Memory is one segment plus `reader`'s buffer; time is unbounded on input
-/// that never ends (for example endless whitespace). Use
-/// [`from_bufread_with_config`] with `max_input_bytes` for untrusted input.
+/// [`ReaderConfig::default()`][ReaderConfig]: 64 KiB per segment, 16 MiB per
+/// message, 256 MiB in total. Memory is one segment plus `reader`'s buffer.
+/// Use [`from_bufread_with_config`] to tighten the limits, or
+/// [`ReaderConfig::unbounded`] for trusted input.
 ///
 /// # Errors
 ///
-/// Each `next()` yields a parse or I/O failure as `Some(Err(_))`.
+/// Each `next()` yields a parse or I/O failure as `Some(Err(_))`. Apart from
+/// I/O failures the items are exactly those [`from_bytes`][crate::from_bytes]
+/// yields for the same bytes, however `reader` chunks them (see
+/// [`OwnedSegmentStream`]).
 pub fn from_bufread<R: BufRead>(reader: R) -> OwnedSegmentStream<R> {
     OwnedSegmentStream::new(reader)
 }
@@ -1123,8 +1305,8 @@ pub fn from_bufread_with_config<R: BufRead>(
 ///
 /// # Resource bounds
 ///
-/// As [`from_bufread`]: only `max_segment_bytes` (64 KiB) applies; memory is
-/// one segment plus an 8 KiB read buffer.
+/// As [`from_bufread`]: the [`ReaderConfig::default()`][ReaderConfig] limits
+/// apply; memory is one segment plus an 8 KiB read buffer.
 pub fn from_reader_stream<R: Read>(reader: R) -> OwnedSegmentStream<BufReader<R>> {
     from_bufread(BufReader::new(reader))
 }
@@ -1162,197 +1344,52 @@ struct SlowCursor {
     max_input_bytes: Option<u64>,
 }
 
-#[allow(clippy::too_many_arguments)]
-fn read_next_raw_segment<R: BufRead>(
-    reader: &mut R,
-    ssa: &mut crate::tokenizer::ServiceStringAdvice,
-    scanned_header: &mut bool,
-    cursor: &mut SlowCursor,
-    max_segment_bytes: usize,
-    delimiters_settled: &mut bool,
-    advice_overridden: bool,
-) -> Result<Option<crate::tokenizer::RawSegment>, EdifactError> {
-    loop {
-        let Some((first_offset, first)) = read_next_non_ws_byte(reader, cursor)? else {
-            return Ok(None);
-        };
-
-        // A stray terminator is a unit of its own: it ends where it stands.
-        // Reading on to the next terminator would swallow the following
-        // segment into it, and count those bytes against the budget as part
-        // of a unit the slice path never forms. Parsing the empty segment
-        // reports the same `InvalidDelimiter` as before.
-        if first == ssa.segment_term {
-            *scanned_header = true;
-            return Ok(Some(crate::tokenizer::RawSegment {
-                bytes: Vec::new(),
-                start_offset: first_offset,
-            }));
-        }
-
-        if !*scanned_header && first == b'U' {
-            // The `UNA` lookahead reads ahead of the size guard in
-            // `read_remainder_of_segment`. When the byte budget stops it, a
-            // segment already longer than `max_segment_bytes` is what the
-            // stream ran into first, exactly as without the lookahead.
-            let size_first = |error: EdifactError, read: usize| match error {
-                EdifactError::LimitExceeded { .. } if read > max_segment_bytes => {
-                    EdifactError::SegmentTooLong {
-                        offset: first_offset,
-                        limit: max_segment_bytes,
-                    }
-                }
-                other => other,
-            };
-            // Read no further than the bytes still spell `UNA`: a byte that
-            // does not may already be this segment's terminator.
-            let second = read_required_byte(reader, cursor).map_err(|e| size_first(e, 1))?;
-            if second != b'N' {
-                *scanned_header = true;
-                return finish_segment(
-                    reader,
-                    ssa,
-                    &[first, second],
-                    first_offset,
-                    cursor,
-                    max_segment_bytes,
-                );
-            }
-            let third = read_required_byte(reader, cursor).map_err(|e| size_first(e, 2))?;
-            if third == b'A' {
-                let mut una = [0u8; 9];
-                una[0] = b'U';
-                una[1] = b'N';
-                una[2] = b'A';
-                for slot in una.iter_mut().skip(3) {
-                    *slot = read_required_byte(reader, cursor)?;
-                }
-                let declared = crate::tokenizer::ServiceStringAdvice {
-                    component_sep: una[3],
-                    element_sep: una[4],
-                    decimal_mark: una[5],
-                    release_char: una[6],
-                    repetition_sep: una[7],
-                    segment_term: una[8],
-                };
-                if !declared.is_valid() {
-                    return Err(EdifactError::InvalidUna);
-                }
-                // A malformed UNA is still an error when the caller supplied its
-                // own advice — the input is broken either way — but the caller's
-                // choice, not the header's, is what parsing then uses.
-                if !advice_overridden {
-                    *ssa = declared;
-                }
-                *delimiters_settled = true;
-                *scanned_header = true;
-                continue;
-            }
-
-            *scanned_header = true;
-            return finish_segment(
-                reader,
-                ssa,
-                &[first, second, third],
-                first_offset,
-                cursor,
-                max_segment_bytes,
-            );
-        }
-
-        *scanned_header = true;
-        return finish_segment(
-            reader,
-            ssa,
-            &[first],
-            first_offset,
-            cursor,
-            max_segment_bytes,
-        );
-    }
-}
-
 /// Read the rest of a segment whose first bytes, `prefix`, are already
-/// consumed.
+/// consumed, up to and including its unescaped terminator.
 ///
-/// The prefix goes through the same rules as every later byte — release
-/// character, unescaped terminator, size guard — so the segment ends at the
-/// same terminator the fast path's `find_unescaped_term` finds.
-fn finish_segment<R: BufRead>(
+/// The prefix goes through the same rules as every later byte, so the segment
+/// ends at the same terminator the fast path's `find_unescaped_term` finds.
+/// At most `max_segment_bytes + 1` bytes without a terminator are kept: the
+/// segment is then too long if anything follows, and those bytes are all the
+/// tokenizer needs to see to say so — or to find an earlier fault.
+fn locate_segment<R: BufRead>(
     reader: &mut R,
-    ssa: &crate::tokenizer::ServiceStringAdvice,
-    prefix: &[u8],
-    start_offset: usize,
     cursor: &mut SlowCursor,
+    ssa: &crate::tokenizer::ServiceStringAdvice,
     max_segment_bytes: usize,
-) -> Result<Option<crate::tokenizer::RawSegment>, EdifactError> {
-    let mut out = crate::tokenizer::RawSegment {
-        bytes: Vec::with_capacity(prefix.len()),
-        start_offset,
-    };
+    prefix: &[u8],
+    start: usize,
+) -> Result<(Vec<u8>, Cut), EdifactError> {
+    let cap = max_segment_bytes.saturating_add(1);
+    let mut bytes = Vec::with_capacity(prefix.len().min(cap));
+    let mut pending = prefix.iter().copied();
     let mut escaped = false;
-    for &byte in prefix {
-        if out.bytes.len() > max_segment_bytes {
-            return Err(EdifactError::SegmentTooLong {
-                offset: out.start_offset,
-                limit: max_segment_bytes,
-            });
+    loop {
+        if bytes.len() == cap {
+            // Peek, not read: the next byte only has to exist, and it may lie
+            // beyond the byte budget without that being the first fault.
+            let more = pending.len() > 0 || !reader.fill_buf()?.is_empty();
+            return Ok((bytes, if more { Cut::Oversize } else { Cut::Eof }));
         }
+        let byte = match pending.next() {
+            // Prefix bytes may have been read past the byte budget while
+            // probing for the prologue; they count as if read here.
+            Some(byte) => match cursor.max_input_bytes {
+                Some(max) if (start + bytes.len()) as u64 >= max => {
+                    return Err(input_bytes_exceeded(max));
+                }
+                _ => byte,
+            },
+            None => match read_next_byte(reader, cursor)? {
+                Some(byte) => byte,
+                None => return Ok((bytes, Cut::Eof)),
+            },
+        };
+        bytes.push(byte);
         if !escaped && byte == ssa.segment_term {
-            return Ok(Some(out));
+            return Ok((bytes, Cut::Terminated));
         }
         escaped = !escaped && byte == ssa.release_char;
-        out.bytes.push(byte);
-    }
-    read_remainder_of_segment(reader, ssa, out, escaped, cursor, max_segment_bytes)
-}
-
-fn read_remainder_of_segment<R: BufRead>(
-    reader: &mut R,
-    ssa: &crate::tokenizer::ServiceStringAdvice,
-    mut out: crate::tokenizer::RawSegment,
-    mut escaped: bool,
-    cursor: &mut SlowCursor,
-    max_segment_bytes: usize,
-) -> Result<Option<crate::tokenizer::RawSegment>, EdifactError> {
-    loop {
-        // Strictly greater-than, matching the fast path (`pos > max_segment_bytes`)
-        // and the tokenizer guard.  Using `>=` here made a segment of exactly
-        // `max_segment_bytes` bytes parse on the fast path but fail on the slow
-        // path, so identical input succeeded or failed depending only on whether
-        // it happened to straddle a read-buffer boundary.
-        if out.bytes.len() > max_segment_bytes {
-            return Err(EdifactError::SegmentTooLong {
-                offset: out.start_offset,
-                limit: max_segment_bytes,
-            });
-        }
-        let Some(byte) = read_next_byte(reader, cursor)? else {
-            return if out.bytes.is_empty() {
-                Ok(None)
-            } else if escaped {
-                Err(EdifactError::InvalidReleaseSequence {
-                    offset: out.start_offset + out.bytes.len().saturating_sub(1),
-                })
-            } else {
-                Err(EdifactError::UnexpectedEof {
-                    offset: out.start_offset + out.bytes.len(),
-                })
-            };
-        };
-
-        if !escaped && byte == ssa.segment_term {
-            return Ok(Some(out));
-        }
-
-        if !escaped && byte == ssa.release_char {
-            escaped = true;
-            out.bytes.push(byte);
-            continue;
-        }
-
-        escaped = false;
-        out.bytes.push(byte);
     }
 }
 
@@ -1361,38 +1398,39 @@ fn read_remainder_of_segment<R: BufRead>(
 /// This is where the slow path enforces `max_input_bytes`: a byte at or past
 /// the budget that is actually there is `E036` (offset = the budget), while
 /// input that ends exactly at the budget is a clean end. Every slow-path
-/// reader — the whitespace loop, the `UNA` and the segment body — goes through
-/// here, so no run of bytes can be consumed without being counted.
+/// reader — the whitespace loop and the segment body — goes through here, so
+/// no run of bytes can be consumed without being counted; only the bounded
+/// prologue probes (at most eight bytes) read ahead and count afterwards.
 fn read_next_byte<R: BufRead>(
     reader: &mut R,
     cursor: &mut SlowCursor,
 ) -> Result<Option<u8>, EdifactError> {
-    let buf = reader.fill_buf()?;
-    if buf.is_empty() {
+    if reader.fill_buf()?.is_empty() {
         return Ok(None);
     }
-    if let Some(max) = cursor.max_input_bytes {
-        if cursor.offset as u64 >= max {
-            return Err(input_bytes_exceeded(max));
-        }
+    if let Some(max) = cursor.max_input_bytes
+        && cursor.offset as u64 >= max
+    {
+        return Err(input_bytes_exceeded(max));
     }
+    read_raw_byte(reader, cursor)
+}
 
-    let byte = buf[0];
+/// Read one byte without checking the byte budget, or `None` at the end of
+/// the input. Only the bounded prologue probes use this.
+fn read_raw_byte<R: BufRead>(
+    reader: &mut R,
+    cursor: &mut SlowCursor,
+) -> Result<Option<u8>, EdifactError> {
+    let Some(&byte) = reader.fill_buf()?.first() else {
+        return Ok(None);
+    };
     reader.consume(1);
     // Saturating add: on 32-bit targets the offset is a `usize` clamped from a
     // `u64` field.  Plain `+= 1` would wrap to 0 once the counter reaches
     // `usize::MAX` and corrupt subsequent span diagnostics.
     cursor.offset = cursor.offset.saturating_add(1);
     Ok(Some(byte))
-}
-
-fn read_required_byte<R: BufRead>(
-    reader: &mut R,
-    cursor: &mut SlowCursor,
-) -> Result<u8, EdifactError> {
-    read_next_byte(reader, cursor)?.ok_or(EdifactError::UnexpectedEof {
-        offset: cursor.offset,
-    })
 }
 
 fn read_next_non_ws_byte<R: BufRead>(
@@ -1533,27 +1571,22 @@ mod tests {
     }
 
     #[test]
-    fn a_segment_tagged_una_parses_the_same_on_both_paths() {
-        // `UNA` is three ASCII uppercase letters, so it is a syntactically legal
-        // segment tag.  The reader re-tokenizes each segment from its own slice,
-        // where the whole-interchange "skip nine bytes of service string advice"
-        // heuristic is wrong: it ate the tag and everything after it, and the
-        // identical bytes that parsed cleanly through `from_bytes` came back as
-        // `InvalidSegmentTag` through a reader.
+    fn a_una_after_the_head_is_e058_on_both_paths() {
+        // A `UNA` after the first segment opens another interchange; the reader
+        // re-tokenizes each segment from its own slice and must not take it for
+        // the head's service string advice.
         let input = b"BGM+220'UNA+XXXXXX'BGM+221'";
+        let expected = EdifactError::DataAfterInterchangeTrailer {
+            tag: "UNA".to_owned(),
+            span: crate::Span::new(8, 11),
+        };
 
-        let from_slice: Vec<_> = crate::from_bytes(input)
-            .collect::<Result<Vec<_>, _>>()
-            .expect("slice path");
-        let from_reader = crate::from_reader(std::io::Cursor::new(&input[..]))
-            .collect::<Result<Vec<_>, _>>()
-            .expect("reader path must agree");
+        let from_slice = crate::from_bytes(input).collect::<Result<Vec<_>, _>>();
+        let from_reader =
+            crate::from_reader(std::io::Cursor::new(&input[..])).collect::<Result<Vec<_>, _>>();
 
-        assert_eq!(
-            from_slice.iter().map(|s| s.tag()).collect::<Vec<_>>(),
-            from_reader.iter().map(|s| s.tag()).collect::<Vec<_>>(),
-        );
-        assert_eq!(from_reader[1].element_str(0), Some("XXXXXX"));
+        assert_eq!(from_slice.unwrap_err(), expected);
+        assert_eq!(from_reader.unwrap_err(), expected);
     }
 
     #[test]
@@ -1693,13 +1726,15 @@ mod tests {
         }
     }
 
-    /// Admit and account each tag in turn, returning the first refusal.
+    /// Admit and account each tag in turn as a 10-byte segment at
+    /// `index * 10`, returning the first refusal.
     fn feed(budget: &mut Budget, tags: &[&str]) -> Option<(usize, (&'static str, u64, usize))> {
         for (index, tag) in tags.iter().enumerate() {
-            if let Some(limit) = limit_of(budget.admit_segment(tag, index * 10)) {
+            let start = index * 10;
+            if let Some(limit) = limit_of(budget.admit_segment(tag, start, start + 10)) {
                 return Some((index, limit));
             }
-            budget.account(tag);
+            budget.account(tag, start);
         }
         None
     }
@@ -1716,11 +1751,8 @@ mod tests {
             limit_of(budget.admit_bytes(101)),
             Some(("max_input_bytes", 100, 100))
         );
-        assert!(budget.sees_byte(100));
-        assert!(!budget.sees_byte(101));
-        let unlimited = Budget::new(&ReaderConfig::default());
+        let unlimited = Budget::new(&ReaderConfig::unbounded());
         assert_eq!(limit_of(unlimited.admit_bytes(u64::MAX)), None);
-        assert!(unlimited.sees_byte(u64::MAX));
     }
 
     #[test]
@@ -1753,22 +1785,22 @@ mod tests {
     }
 
     #[test]
-    fn budget_per_message_counts_unh_through_unt_inclusive() {
-        let config = ReaderConfig::default().max_segments_per_message(3);
-        // Exactly three: UNH, BGM, UNT.
+    fn budget_message_bytes_count_unh_through_unt_inclusive() {
+        let config = ReaderConfig::default().max_message_bytes(30);
+        // Exactly 30 bytes: UNH, BGM, UNT.
         let mut budget = Budget::new(&config);
         assert_eq!(feed(&mut budget, &["UNH", "BGM", "UNT"]), None);
-        // Four: the UNT is the fourth segment of the message.
+        // 40 bytes: the UNT's terminator lies beyond the budget.
         let mut budget = Budget::new(&config);
         assert_eq!(
             feed(&mut budget, &["UNH", "BGM", "DTM", "UNT"]),
-            Some((3, ("max_segments_per_message", 3, 30)))
+            Some((3, ("max_message_bytes", 30, 30)))
         );
     }
 
     #[test]
-    fn budget_per_message_ignores_segments_outside_a_message() {
-        let mut budget = Budget::new(&ReaderConfig::default().max_segments_per_message(2));
+    fn budget_message_bytes_ignore_segments_outside_a_message() {
+        let mut budget = Budget::new(&ReaderConfig::default().max_message_bytes(20));
         // UNT closes the message; what follows belongs to no message.
         assert_eq!(
             feed(
@@ -1781,12 +1813,25 @@ mod tests {
 
     #[test]
     fn budget_a_unh_inside_an_open_message_restarts_the_count() {
-        let mut budget = Budget::new(&ReaderConfig::default().max_segments_per_message(2));
-        // Without the restart the second UNH would be the third segment.
+        let mut budget = Budget::new(&ReaderConfig::default().max_message_bytes(20));
+        // Without the restart the second UNH would end 30 bytes into the window.
         assert_eq!(feed(&mut budget, &["UNH", "BGM", "UNH", "BGM"]), None);
+        // The second window opened at 20; a DTM at 40..50 ends it at 30 bytes.
         assert_eq!(
-            feed(&mut budget, &["DTM"]),
-            Some((0, ("max_segments_per_message", 2, 0)))
+            limit_of(budget.admit_segment("DTM", 40, 50)),
+            Some(("max_message_bytes", 20, 40))
+        );
+    }
+
+    #[test]
+    fn budget_message_bytes_count_bytes_between_segments() {
+        let mut budget = Budget::new(&ReaderConfig::default().max_message_bytes(20));
+        budget.account("UNH", 0);
+        // A segment at 15..20 after five bytes of whitespace ends the window at 20.
+        assert_eq!(limit_of(budget.admit_segment("BGM", 15, 20)), None);
+        assert_eq!(
+            limit_of(budget.admit_segment("BGM", 16, 21)),
+            Some(("max_message_bytes", 20, 16))
         );
     }
 
@@ -1795,19 +1840,32 @@ mod tests {
         let config = ReaderConfig::default()
             .max_segments(1)
             .max_messages(0)
-            .max_segments_per_message(0);
+            .max_message_bytes(0);
         let budget = Budget::new(&config);
         // All three would trip on a first UNH; `max_segments` is not yet
         // reached, so `max_messages` is reported before the per-message cap.
         assert_eq!(
-            limit_of(budget.admit_segment("UNH", 7)),
+            limit_of(budget.admit_segment("UNH", 7, 17)),
             Some(("max_messages", 0, 7))
         );
         let config = ReaderConfig::default().max_segments(0).max_messages(0);
         assert_eq!(
-            limit_of(Budget::new(&config).admit_segment("UNH", 7)),
+            limit_of(Budget::new(&config).admit_segment("UNH", 7, 17)),
             Some(("max_segments", 0, 7))
         );
+    }
+
+    #[test]
+    fn unbounded_has_no_limit() {
+        let config = ReaderConfig::unbounded();
+        assert_eq!(config.max_segment_bytes, usize::MAX);
+        assert_eq!(config.max_input_bytes, None);
+        assert_eq!(config.max_message_bytes, None);
+        assert_eq!(config.max_segments, None);
+        assert_eq!(config.max_messages, None);
+        assert!(config.service_string_advice.is_none());
+        let budget = Budget::new(&config);
+        assert_eq!(limit_of(budget.admit_segment("UNH", 0, usize::MAX)), None);
     }
 
     #[test]

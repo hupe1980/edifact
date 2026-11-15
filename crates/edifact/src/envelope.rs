@@ -1,7 +1,7 @@
 //! EDIFACT envelope validation — UNB / UNG / UNH / UNT / UNE / UNZ.
 //!
-//! Validates the full ISO 9735-1 interchange structure including optional
-//! groups (`UNG`/`UNE`).  The public surface is:
+//! Validates the full interchange structure including optional groups
+//! (`UNG`/`UNE`).  The public surface is:
 //!
 //! - [`validate_envelope`] — fail-fast strict validation
 //! - [`validate_envelope_lenient`] — collects all errors
@@ -9,196 +9,105 @@
 //!
 //! # What is checked
 //!
-//! | Rule | Source |
-//! |---|---|
-//! | The interchange opens with `UNB` and closes with `UNZ` | §7.1 |
-//! | It contains at least one message or group | §7.1 |
-//! | A group opens with `UNG`, closes with `UNE`, and is not nested | §7.2 |
-//! | A message opens with `UNH`, closes with `UNT`, and has a body | §7.3 |
-//! | `UNZ` DE 0020 repeats `UNB` DE 0020 | Annex C.1.5, UNZ note 1 |
-//! | `UNE` DE 0048 repeats `UNG` DE 0048 | Annex C.1.5, UNE note 1 |
-//! | `UNT` DE 0062 repeats `UNH` DE 0062 | Annex C.1.5, UNT note 1 |
-//! | `UNH` DE 0062 and `UNG` DE 0048 are unique within the interchange | Annex C.1.5, notes 2 / 5 |
-//! | `UNB` S001 DE 0001 names a defined character repertoire | §6, Annex C.3.4 |
-//! | The declared counts match what is there | Annex C.3.4, DE 0036 / 0060 / 0074 |
+//! Every finding is an error; none is a warning.
+//!
+//! | Rule | Code | Source |
+//! |---|---|---|
+//! | The interchange opens with `UNB` (`UIB`: interactive, refused) and closes with `UNZ` | `E015`, `E055` | ISO 9735-1:2002 §7.2 |
+//! | Nothing but whitespace follows the first `UNZ` outside a message | `E058` | ISO 9735-2:2002 §5 |
+//! | It contains at least one message or group | `E042` | ISO 9735-1:2002 §7.2 |
+//! | A group opens with `UNG`, closes with `UNE`, holds a message, and is not nested | `E011`, `E015`, `E061` | ISO 9735-1:2002 §7.3 |
+//! | A message opens with `UNH`, closes with `UNT`, and has a body | `E011`, `E015`, `E043` | ISO 9735-1:2002 §7.4 |
+//! | Every `UNB`/`UNZ`/`UNG`/`UNE`/`UNH`/`UNT` position is present, of its class and length for the syntax version | `E008`, `E021`, `E048`–`E050` | ISO 9735-10:2002 §5.1.5–§5.3.5 |
+//! | `UNB` S001 DE 0002 is `1`–`4` | `E059` | ISO 9735-1:2002 §2 |
+//! | `UNB`/`UNG` S004 is a calendar date and a 24-hour time | `E060` | ISO 9735-10:2002 §5.3.5, DE 0017/0019 |
+//! | `UNB` S001 DE 0001 names a defined character repertoire | `E031`, `E039` | ISO 9735-1:2002 §6 |
+//! | `UNZ`/`UNE`/`UNT` references repeat their header's | `E016` | ISO 9735-10:2002 §5.1.5, UNZ/UNE/UNT note 1 |
+//! | `UNH` DE 0062 and `UNG` DE 0048 are unique within the interchange | `E032` | ISO 9735-10:2002 §5.1.5 |
+//! | The declared counts match what is there | `E004`, `E054`, `E005` | ISO 9735-10:2002 §5.3.5, DE 0036 / 0060 / 0074 |
+//! | No interactive, security or other `U` segment, message bodies included | `E055`–`E057` | ISO 9735-1:2002 §7.7 |
+//!
+//! ```
+//! use edifact::{from_bytes, validate_envelope};
+//!
+//! // Version 3 transfers YYMMDD: an eight-digit date is too long.
+//! let segs: Vec<_> = from_bytes(b"UNB+UNOC:3+S+R+20260101:0900+1'UNH+1+X:D:96A:UN'BGM+1'UNT+3+1'UNZ+1+1'")
+//!     .collect::<Result<_, _>>()?;
+//! assert_eq!(validate_envelope(&segs).unwrap_err().stable_code(), "E049");
+//! # Ok::<(), edifact::EdifactError>(())
+//! ```
 //!
 //! # Count semantics
 //!
-//! The three control counts are defined in Annex C.3.4 and each counts something
-//! different:
-//!
 //! - `UNZ` DE 0036 — "the number of messages and packages in an interchange or,
-//!   if used, the number of groups in an interchange".
-//! - `UNE` DE 0060 — "the number of messages and packages in the group".
+//!   if used, the number of groups in an interchange" ([`EdifactError::MessageCountMismatch`]).
+//! - `UNE` DE 0060 — "the number of messages and packages in the group"
+//!   ([`EdifactError::GroupCountMismatch`]).
 //! - `UNT` DE 0074 — "the number of segments in a message body, plus the message
-//!   header segment and message trailer segment".
+//!   header segment and message trailer segment" ([`EdifactError::SegmentCountMismatch`]).
 //!
-//! A discrepancy is reported as [`EdifactError::MessageCountMismatch`] or
-//! [`EdifactError::SegmentCountMismatch`].
+//! A count that is not an unsigned integer is `E048` and is not compared.
 //!
 //! # Packages
 //!
 //! An interchange may carry packages (`UNO`…`UNP`) instead of, or alongside,
-//! messages (§7.9). The object inside a package is arbitrary binary data whose
-//! length is declared in `UNO` S022 DE 0810 — it is not EDIFACT-encoded and this
-//! crate does not tokenize it. A package therefore reaches this validator as
-//! [`EdifactError::PackageNotSupported`] rather than as a misleading complaint
-//! about a stray segment.
+//! messages (ISO 9735-1:2002 §7.10). The object inside a package is arbitrary
+//! binary data whose length is declared in `UNO` S022 DE 0810 — it is not
+//! EDIFACT-encoded and this crate does not tokenize it. A package therefore
+//! reaches this validator as [`EdifactError::PackageNotSupported`] rather than as
+//! a misleading complaint about a stray segment.
 
+use crate::error::escape_control;
 use crate::{
     error::EdifactError,
+    header::InterchangeHeader,
     model::{Segment, Span},
 };
 use std::collections::HashSet;
 
 // ── Public data types ─────────────────────────────────────────────────────────
 
-/// Extracted data from the `UNB` / `UNZ` interchange envelope.
+/// The interchange envelope: the typed `UNB` header and the `UNZ` count.
 ///
-/// All standard UNB fields that carry business-relevant information are
-/// exposed.  Optional fields that are absent in the source are represented
-/// as empty strings (`syntax_version`, qualifiers) or `None` (optional fields).
-///
-/// UNB element positions (ISO 9735-1 Annex C.1.5 (UNB), 0-indexed):
-///
-/// ```text
-/// [0] S001  syntax identifier + version
-/// [1] S002  sender id (0004) + qualifier (0007) + internal id (0008)
-/// [2] S003  recipient id (0010) + qualifier (0007) + internal id (0014)
-/// [3] S004  date + time
-/// [4] 0020  interchange control reference
-/// [5] S005  recipient password (DE 0022 comp 0)
-/// [6] 0026  application reference
-/// [7] 0029  processing priority code
-/// [8] 0031  acknowledgement request
-/// [9] 0032  communications agreement ID
-///[10] 0035  test indicator
+/// ```
+/// let input = b"UNB+UNOA:3+S+R+200101:0900+CTRL++++++1'UNH+1+ORDERS:D:96A:UN'BGM+220'UNT+3+1'UNZ+1+CTRL'";
+/// let segs: Vec<_> = edifact::from_bytes(input).collect::<Result<_, _>>()?;
+/// let result = edifact::validate_envelope(&segs)?;
+/// assert_eq!(result.interchange.header.sender.id, "S");
+/// assert!(result.interchange.is_test());
+/// # Ok::<(), edifact::EdifactError>(())
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct InterchangeEnvelope {
-    /// Syntax identifier, e.g. `"UNOA"` or `"UNOB"` (UNB S001 DE 0001).
-    pub syntax_identifier: String,
-    /// Syntax version number, e.g. `"3"` (UNB S001 DE 0002).
-    ///
-    /// Empty string when the UNB omits the version component.
-    pub syntax_version: String,
-    /// Interchange sender identification (UNB S002 DE 0004).
-    pub sender_id: String,
-    /// Interchange sender identification code qualifier (UNB S002 DE 0007).
-    ///
-    /// Common values: `"14"` (EAN/GLN), `"ZZZ"` (mutually defined).
-    /// Empty string when no qualifier is present.
-    pub sender_qualifier: String,
-    /// Interchange sender internal identification (UNB S002 **DE 0008**), if present.
-    ///
-    /// An optional address used by some EDI networks to identify the sub-entity
-    /// (division, application) within the sender organisation; ISO 9735 version 3
-    /// calls it the address for reverse routing.
-    ///
-    /// This is **DE 0008**, not DE 0014 — 0014 is the recipient-side component in
-    /// S003.  See [`service::S002`][crate::service::S002].
-    pub sender_routing_address: Option<String>,
-    /// Interchange recipient identification (UNB S003 DE 0010).
-    pub recipient_id: String,
-    /// Interchange recipient identification code qualifier (UNB S003 DE 0007).
-    ///
-    /// Same values as `sender_qualifier`.  Empty string when absent.
-    pub recipient_qualifier: String,
-    /// Interchange recipient internal identification (UNB S003 DE 0014), if present.
-    ///
-    /// The recipient-side counterpart of `sender_routing_address`, which is
-    /// DE 0008.  See [`service::S003`][crate::service::S003].
-    pub recipient_routing_address: Option<String>,
-    /// Interchange date (UNB S004 DE 0017), e.g. `"230401"` (YYMMDD format).
-    pub date: String,
-    /// Interchange time (UNB S004 DE 0019), e.g. `"0900"` (HHMM format), if present.
-    ///
-    /// `None` when the UNB time component (DE 0019) is absent.
-    pub time: Option<String>,
-    /// Interchange control reference (UNB DE 0020).
-    pub control_ref: String,
-    /// Recipient's reference/password (UNB S005 DE 0022), if present.
-    ///
-    /// Used in some EDI networks for basic interchange-level authentication.
-    /// Empty S005 in the source yields `None`.
-    pub recipient_password: Option<String>,
-    /// Recipient's reference/password qualifier (UNB S005 DE 0025), if present.
-    ///
-    /// Qualifies the type of the `recipient_password`.  Example value: `"AA"` (unencoded).
-    /// `None` when DE 0025 is absent or empty.
-    pub recipient_password_qualifier: Option<String>,
-    /// Application reference (UNB DE 0026, element index 6), if present.
-    ///
-    /// Identifies the division, department, or section of sender or recipient.
-    pub app_ref: Option<String>,
-    /// Processing priority code (UNB DE 0029, element index 7), if present.
-    ///
-    /// Indicates the processing priority requested by the sender.
-    pub processing_priority: Option<String>,
-    /// Acknowledgement request flag (UNB DE 0031, element index 8).
-    ///
-    /// `true` when DE 0031 is `"1"`, indicating that the sender requests a
-    /// `CONTRL` functional acknowledgement from the recipient.
-    pub acknowledgement_request: bool,
-    /// Communications agreement identifier (UNB DE 0032, element index 9), if present.
-    ///
-    /// Identifies the agreement controlling the interchange.
-    pub communications_agreement_id: Option<String>,
-    /// Test indicator flag (UNB DE 0035, element index 10).
-    ///
-    /// `true` when DE 0035 is `"1"`.  Test interchanges **must not** be processed
-    /// as production data — check [`is_test()`](Self::is_test) before dispatching
-    /// messages to business logic, billing, or downstream integrations.
-    pub test_indicator: bool,
-    /// Interchange unit count declared in `UNZ` DE 0036.
+    /// The `UNB` header, as [`InterchangeHeader::parse`] types it.
+    pub header: InterchangeHeader,
+    /// Interchange unit count declared in `UNZ` DE 0036; `0` when it is not a
+    /// count (reported as `E008`/`E048`/`E049`).
     ///
     /// - When no functional groups are present: count of messages (`UNH`/`UNT` pairs).
     /// - When functional groups are present: count of groups (`UNG`/`UNE` pairs).
-    ///
-    /// Use [`ValidatedInterchange::messages`] for a flat count of all messages
-    /// regardless of group structure.
     pub declared_unit_count: u32,
     /// Actual unit count observed (groups if groups present; messages otherwise).
     pub actual_unit_count: u32,
 }
 
 impl InterchangeEnvelope {
-    /// Returns `true` when the test indicator (`UNB` DE 0035) is set to `"1"`.
+    /// Whether the test indicator (`UNB` DE 0035) is set.
     ///
-    /// Production systems must check this flag before dispatching any message
-    /// to business logic, billing, or downstream integrations.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// // UNB element [10] is the test indicator; "1" means test.
-    /// // UNB+UNOA:3+S+R+200101:0900+1++++++1'  ← last element = "1" → is_test() == true
-    /// let input = b"UNB+UNOA:3+S+R+200101:0900+CTRL++++++1'\
-    ///               UNH+1+ORDERS:D:96A:UN'\
-    ///               BGM+220+PO-001+9'\
-    ///               UNT+3+1'\
-    ///               UNZ+1+CTRL'";
-    /// let segs: Vec<_> = edifact::from_bytes(input)
-    ///     .collect::<Result<Vec<_>, _>>()
-    ///     .unwrap();
-    /// let result = edifact::validate_envelope(&segs).unwrap();
-    /// assert!(result.interchange.is_test());
-    /// ```
+    /// Test interchanges must not be processed as production data.
     #[inline]
     #[must_use]
     pub fn is_test(&self) -> bool {
-        self.test_indicator
+        self.header.is_test()
     }
 
-    /// Returns `true` when the acknowledgement request flag (UNB DE 0031) is set.
-    ///
-    /// When `true`, the sender expects a `CONTRL` acknowledgement from the recipient.
+    /// Whether the sender requests an acknowledgement (`UNB` DE 0031).
     #[inline]
     #[must_use]
     pub fn ack_requested(&self) -> bool {
-        self.acknowledgement_request
+        self.header.ack_requested()
     }
 }
 
@@ -207,11 +116,11 @@ impl std::fmt::Display for InterchangeEnvelope {
         write!(
             f,
             "{sender} -> {recipient} [{ctrl}] ({syntax}:{ver})",
-            sender = self.sender_id,
-            recipient = self.recipient_id,
-            ctrl = self.control_ref,
-            syntax = self.syntax_identifier,
-            ver = self.syntax_version,
+            sender = escape_control(&self.header.sender.id),
+            recipient = escape_control(&self.header.recipient.id),
+            ctrl = escape_control(&self.header.control_ref),
+            syntax = self.header.charset.syntax_identifier(),
+            ver = self.header.syntax_version.number(),
         )
     }
 }
@@ -248,13 +157,13 @@ pub struct MessageEnvelope {
     pub sequence_of_transfers: Option<u32>,
     /// Transfer position indicator (UNH S010 DE 0073, element index 3 comp 1), if present.
     ///
-    /// Values per ISO 9735-1 Annex C.3.4 (DE 0073): `"C"` = continuation, `"F"` = first, `"L"` = last.
+    /// Values per ISO 9735-10:2002 §5.3.5 (DE 0073): `"C"` = continuation, `"F"` = first, `"L"` = last.
     /// `None` when element \[3\] is absent.
     pub transfer_position: Option<String>,
-    /// Declared segment count from `UNT`.
-    pub declared_segment_count: u32,
+    /// Declared segment count from `UNT` DE 0074; `0` when it is not a count.
+    pub declared_segment_count: u64,
     /// Actual segment count between this `UNH` and its `UNT`.
-    pub actual_segment_count: u32,
+    pub actual_segment_count: u64,
     /// Byte range of this message's `UNH`.
     pub header_span: Span,
     /// Byte range of this message's `UNT`.
@@ -270,10 +179,10 @@ impl std::fmt::Display for MessageEnvelope {
         write!(
             f,
             "{msg_type}:{ver}:{rel} ref={msg_ref} seg={actual}/{declared}",
-            msg_type = self.message_type,
-            ver = self.version,
-            rel = self.release,
-            msg_ref = self.message_ref,
+            msg_type = escape_control(&self.message_type),
+            ver = escape_control(&self.version),
+            rel = escape_control(&self.release),
+            msg_ref = escape_control(&self.message_ref),
             actual = self.actual_segment_count,
             declared = self.declared_segment_count,
         )
@@ -321,7 +230,7 @@ pub struct FunctionalGroupEnvelope {
     /// application system — the group-level counterpart of the interchange's
     /// `recipient_password`.
     pub application_password: Option<String>,
-    /// Declared message count from `UNE` DE 0060.
+    /// Declared message count from `UNE` DE 0060; `0` when it is not a count.
     pub declared_message_count: u32,
     /// Actual number of `UNH`/`UNT` pairs found within this group.
     pub actual_message_count: u32,
@@ -442,11 +351,11 @@ impl std::fmt::Display for FunctionalGroupEnvelope {
         write!(
             f,
             "{gid} sender={sender} recipient={recip} [{gref}] ({agency}) msgs={actual}/{declared}",
-            gid = self.group_id,
-            sender = self.app_sender,
-            recip = self.app_recipient,
-            gref = self.group_ref,
-            agency = self.controlling_agency,
+            gid = escape_control(&self.group_id),
+            sender = escape_control(&self.app_sender),
+            recip = escape_control(&self.app_recipient),
+            gref = escape_control(&self.group_ref),
+            agency = escape_control(&self.controlling_agency),
             actual = self.actual_message_count,
             declared = self.declared_message_count,
         )
@@ -473,13 +382,52 @@ pub struct MessageIdentifier<'a> {
     pub association_code: &'a str,
 }
 
+impl<'a> MessageIdentifier<'a> {
+    /// A message reference and S009 (DE 0065, 0052, 0054, 0051), without an
+    /// association assigned code.
+    ///
+    /// ```
+    /// use edifact::{MessageIdentifier, from_bytes, parse_unh};
+    ///
+    /// let id = MessageIdentifier::new("1", "UTILMD", "D", "11A", "UN").with_association_code("S2.1");
+    /// let segments: Vec<edifact::Segment<'static>> =
+    ///     from_bytes(b"UNH+1+UTILMD:D:11A:UN:S2.1'").collect::<Result<_, _>>()?;
+    /// assert_eq!(parse_unh(&segments[0])?, id);
+    /// # Ok::<(), edifact::EdifactError>(())
+    /// ```
+    #[must_use]
+    pub const fn new(
+        message_ref: &'a str,
+        message_type: &'a str,
+        version: &'a str,
+        release: &'a str,
+        controlling_agency: &'a str,
+    ) -> Self {
+        Self {
+            message_ref,
+            message_type,
+            version,
+            release,
+            controlling_agency,
+            association_code: "",
+        }
+    }
+
+    /// Set the association assigned code (S009 DE 0057), e.g. `S2.1`.
+    #[must_use]
+    pub const fn with_association_code(mut self, code: &'a str) -> Self {
+        self.association_code = code;
+        self
+    }
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Extract identifier fields from a `UNH` segment.
 ///
 /// Every field borrows from `unh`; a successful call allocates nothing
 /// (asserted by the `allocation_budget` test `parse_unh_allocates_nothing`).
-pub fn parse_unh<'a>(unh: &'a Segment<'a>) -> Result<MessageIdentifier<'a>, EdifactError> {
+pub fn parse_unh<'a>(unh: &'a Segment<'_>) -> Result<MessageIdentifier<'a>, EdifactError> {
     // Element [0]: DE 0062 — message reference number (required, simple DE)
     let message_ref = unh
         .get_element(0)
@@ -520,7 +468,7 @@ pub fn parse_unh<'a>(unh: &'a Segment<'a>) -> Result<MessageIdentifier<'a>, Edif
 /// original byte buffer.  Use this to route groups in streaming scenarios where
 /// you need to inspect group identity without full validation.
 ///
-/// # UNG element positions (ISO 9735-1 Annex C.1.5, 0-indexed)
+/// # UNG element positions (ISO 9735-10:2002 §5.1.5, UNG; 0-indexed)
 ///
 /// ```text
 /// [0] DE 0038  message group identification
@@ -565,7 +513,7 @@ pub struct GroupIdentifier<'a> {
 ///
 /// The symmetric counterpart to [`parse_unh`] for streaming scenarios that need
 /// to inspect or route functional groups before full validation.
-pub fn parse_ung<'a>(ung: &'a Segment<'a>) -> Result<GroupIdentifier<'a>, EdifactError> {
+pub fn parse_ung<'a>(ung: &'a Segment<'_>) -> Result<GroupIdentifier<'a>, EdifactError> {
     let group_id = ung
         .get_element(0)
         .and_then(|e| e.get_component(0))
@@ -621,8 +569,9 @@ pub fn parse_ung<'a>(ung: &'a Segment<'a>) -> Result<GroupIdentifier<'a>, Edifac
 
 /// Validate the EDIFACT interchange envelope, failing at the first violation.
 ///
-/// Supports direct-message interchanges and functional-group interchanges
-/// (ISO 9735-1 §7.2).  Returns [`ValidatedInterchange`] on success.
+/// Supports direct-message interchanges and functional-group interchanges, and
+/// checks every service-segment value against ISO 9735-10:2002 §5. Returns
+/// [`ValidatedInterchange`] on success.
 ///
 /// Accepts segments from either parsing path — `&[OwnedSegment]` coerces to
 /// `&[Segment<'_>]`.
@@ -711,12 +660,12 @@ pub fn validate_envelope_lenient(segments: &[Segment<'_>]) -> LenientResult {
 ///
 /// Extraction distinguishes two error classes:
 ///
-/// * *Recoverable* — the violation is recorded here and extraction substitutes a
-///   fallback value, so later checks still run.  Control-reference mismatches,
-///   missing mandatory components, and unparseable counts are all recoverable.
+/// * *Recoverable* — the violation is recorded here and extraction continues,
+///   so later checks still run: representation and presence findings, control
+///   reference and count mismatches, refused segments.
 /// * *Fatal* — the structure cannot be interpreted at all (no `UNB`/`UNZ`, a
 ///   stray segment outside any message, an unterminated message).  These are
-///   still returned via `Err` and abort extraction.
+///   returned via `Err` and abort extraction.
 ///
 /// Strict and lenient validation share one implementation over this sink, which
 /// is what keeps them from diverging: strict reports the first error the sink
@@ -724,9 +673,20 @@ pub fn validate_envelope_lenient(segments: &[Segment<'_>]) -> LenientResult {
 #[derive(Default)]
 struct ErrorSink {
     errors: Vec<EdifactError>,
+    /// Index of the segment under check, when the check is about one segment.
+    at: Option<usize>,
+    /// The segment index each error was found at, filled by [`Self::attribute`].
+    located: Vec<Option<usize>>,
 }
 
 impl ErrorSink {
+    /// Attribute the errors collected so far to the segment under check, then
+    /// check the segment at `index` next.
+    fn attribute(&mut self, index: Option<usize>) {
+        self.located.resize(self.errors.len(), self.at);
+        self.at = index;
+    }
+
     #[inline]
     fn push(&mut self, error: EdifactError) {
         self.errors.push(error);
@@ -743,16 +703,17 @@ impl ErrorSink {
             }
         }
     }
+}
 
-    /// Read a mandatory component, recording `MissingRequiredComponent` if absent.
-    #[inline]
-    fn required(&mut self, seg: &Segment<'_>, element: usize, component: usize) -> String {
-        self.recover(
-            seg.required_component(element, component)
-                .map(str::to_owned),
-            String::new(),
-        )
-    }
+/// The value at `(element, component)`, or `""` when absent.
+///
+/// Presence is reported once, by the service-segment check; extraction only
+/// reads.
+#[inline]
+fn text(seg: &Segment<'_>, element: usize, component: usize) -> String {
+    seg.component_str(element, component)
+        .unwrap_or("")
+        .to_owned()
 }
 
 /// Shared extraction used by both the strict and the lenient entry points.
@@ -761,233 +722,446 @@ impl ErrorSink {
 /// every violation found in discovery order.
 fn validate_envelope_collecting(
     segments: &[Segment<'_>],
-) -> (Option<ValidatedInterchange>, Vec<EdifactError>) {
-    let mut sink = ErrorSink::default();
-
-    let mut interchange_env = match extract_interchange(segments, &mut sink) {
-        Ok(env) => env,
-        Err(fatal) => {
-            sink.push(fatal);
-            return (None, sink.errors);
+) -> (Option<ValidatedInterchange>, ErrorSink) {
+    let single = |error| ErrorSink {
+        errors: vec![error],
+        at: None,
+        located: vec![None],
+    };
+    match segments.first() {
+        Some(first) if first.tag() == "UNB" => {}
+        // An interactive interchange opens with `UIB`: name it rather than
+        // reporting a missing `UNB`.
+        Some(first) => {
+            let error = classify_u_tag(first.tag(), first.span).unwrap_or_else(missing_unb);
+            return (None, single(error));
         }
+        None => return (None, single(missing_unb())),
+    }
+    let Some(end) = interchange_end(segments) else {
+        return (
+            None,
+            single(EdifactError::MissingSegment {
+                tag: "UNZ".to_owned(),
+                expected_position: "last segment of interchange".to_owned(),
+            }),
+        );
     };
 
-    let inner = if segments.len() >= 2 {
-        &segments[1..segments.len() - 1]
-    } else {
-        &[]
-    };
+    let mut sink = ErrorSink::default();
+    let interchange = &segments[..=end];
+    let result = validate_interchange(interchange, &mut sink);
+    // ISO 9735-2:2002 §5 scopes a `UNA` to the interchange it precedes; what
+    // follows the trailer is no part of this one, and is reported once.
+    if let Some(trailing) = segments.get(end + 1) {
+        sink.push(EdifactError::DataAfterInterchangeTrailer {
+            tag: trailing.tag().to_owned(),
+            span: trailing.span,
+        });
+    }
+    sink.attribute(None);
+    (result, sink)
+}
 
-    let (functional_groups, messages) = match extract_content(inner, &mut sink) {
+fn missing_unb() -> EdifactError {
+    EdifactError::MissingSegment {
+        tag: "UNB".to_owned(),
+        expected_position: "first segment of interchange".to_owned(),
+    }
+}
+
+/// Index of the `UNZ` that ends the interchange: the first `UNZ` outside a
+/// message. `None` when there is none.
+///
+/// A `UNZ` inside a message is no trailer; when it is the last segment it is
+/// taken as one, so extraction reports it as nested (`E011`) instead of the
+/// trailer as missing.
+fn interchange_end(segments: &[Segment<'_>]) -> Option<usize> {
+    let mut in_message = false;
+    for (index, seg) in segments.iter().enumerate().skip(1) {
+        match seg.tag() {
+            "UNH" => in_message = true,
+            "UNT" => in_message = false,
+            "UNZ" if !in_message => return Some(index),
+            _ => {}
+        }
+    }
+    (segments.len() > 1 && segments.last().is_some_and(|s| s.tag() == "UNZ"))
+        .then(|| segments.len() - 1)
+}
+
+/// Validate `interchange`, which runs from its `UNB` to its `UNZ`.
+fn validate_interchange(
+    interchange: &[Segment<'_>],
+    sink: &mut ErrorSink,
+) -> Option<ValidatedInterchange> {
+    let version = check_service_segments(interchange, sink);
+    let interchange_env = extract_interchange(interchange, sink);
+
+    let inner = &interchange[1..interchange.len() - 1];
+    let (functional_groups, messages) = match extract_content(inner, version, sink) {
         Ok(pair) => pair,
         Err(fatal) => {
             sink.push(fatal);
-            return (None, sink.errors);
+            return None;
         }
     };
+    let control_ref = interchange[0].component_str(4, 0).unwrap_or("").to_owned();
 
     // ISO 9735-1 §7.1: an interchange "shall contain at least one group, or one
     // message or one package".  An empty one is a delivery that says nothing —
     // and `UNZ+0` makes the counts agree, so nothing else would catch it.
     if functional_groups.is_empty() && messages.is_empty() {
-        sink.push(EdifactError::EmptyInterchange {
-            control_ref: interchange_env.control_ref.clone(),
-        });
+        sink.push(EdifactError::EmptyInterchange { control_ref });
     }
 
     // `UNZ` DE 0036 counts "the number of messages and packages in an interchange
-    // or, if used, the number of groups in an interchange" (Annex C.3.4).
+    // or, if used, the number of groups in an interchange" (ISO 9735-10:2002
+    // §5.3.5, DE 0036).
     let actual_unit_count = if functional_groups.is_empty() {
         messages.len()
     } else {
         functional_groups.len()
     };
-    interchange_env.actual_unit_count = sink.recover(
+    let actual_unit_count = sink.recover(
         u32::try_from(actual_unit_count).map_err(|_| EdifactError::InterchangeTooLarge {
             count: actual_unit_count as u64,
         }),
         u32::MAX,
     );
 
-    if interchange_env.declared_unit_count != interchange_env.actual_unit_count {
-        sink.push(EdifactError::MessageCountMismatch {
-            expected: interchange_env.declared_unit_count,
-            actual: interchange_env.actual_unit_count,
-        });
-    }
-
-    for msg in &messages {
-        if msg.declared_segment_count != msg.actual_segment_count {
-            sink.push(EdifactError::SegmentCountMismatch {
-                expected: msg.declared_segment_count,
-                actual: msg.actual_segment_count,
-                message_ref: msg.message_ref.clone(),
-                span: msg.trailer_span,
+    let unz = &interchange[interchange.len() - 1];
+    let mut declared_unit_count = 0;
+    // n..6: always fits `u32`.
+    if let Some(declared) = control_count(unz, 6, sink).and_then(|d| u32::try_from(d).ok()) {
+        declared_unit_count = declared;
+        if declared != actual_unit_count {
+            sink.push(EdifactError::MessageCountMismatch {
+                expected: declared,
+                actual: actual_unit_count,
+                span: unz.span,
             });
         }
     }
 
-    (
-        Some(ValidatedInterchange {
-            interchange: interchange_env,
-            functional_groups,
-            messages,
-        }),
-        sink.errors,
-    )
+    let mut interchange_env = interchange_env?;
+    interchange_env.declared_unit_count = declared_unit_count;
+    interchange_env.actual_unit_count = actual_unit_count;
+    Some(ValidatedInterchange {
+        interchange: interchange_env,
+        functional_groups,
+        messages,
+    })
 }
 
 fn validate_envelope_impl(segments: &[Segment<'_>]) -> Result<ValidatedInterchange, EdifactError> {
     match validate_envelope_collecting(segments) {
-        (Some(result), errors) if errors.is_empty() => Ok(result),
-        (_, mut errors) => Err(errors
-            .drain(..)
-            .next()
-            .unwrap_or(EdifactError::MissingSegment {
-                tag: "UNB".to_owned(),
-                expected_position: "first segment of interchange".to_owned(),
-            })),
+        (Some(result), sink) if sink.errors.is_empty() => Ok(result),
+        (_, sink) => Err(sink.errors.into_iter().next().unwrap_or_else(missing_unb)),
     }
 }
 
 fn validate_envelope_lenient_impl(segments: &[Segment<'_>]) -> LenientResult {
-    let (interchange, errors) = validate_envelope_collecting(segments);
-    LenientResult {
-        interchange,
-        errors,
+    validate_envelope_located(segments).0
+}
+
+/// [`validate_envelope_lenient`], plus the index into `segments` of the
+/// segment each error was found at, when a per-segment check found it.
+pub(crate) fn validate_envelope_located(
+    segments: &[Segment<'_>],
+) -> (LenientResult, Vec<Option<usize>>) {
+    let (interchange, sink) = validate_envelope_collecting(segments);
+    (
+        LenientResult {
+            interchange,
+            errors: sink.errors,
+        },
+        sink.located,
+    )
+}
+
+// ── Service segment checks ────────────────────────────────────────────────────
+
+/// Interactive-EDI segments, ISO 9735-3:2002.
+const INTERACTIVE_TAGS: [&str; 5] = ["UIB", "UIH", "UIR", "UIT", "UIZ"];
+
+/// Security segments, ISO 9735-5/-7/-9:2002.
+const SECURITY_TAGS: [&str; 13] = [
+    "USA", "USB", "USC", "USD", "USE", "USF", "USH", "USL", "USR", "UST", "USU", "USX", "USY",
+];
+
+/// The `U` tag of a segment this crate refuses, as the finding naming it.
+///
+/// `E055` for interactive, `E056` for security segments, `E057` for any other
+/// tag starting with `U` that no batch service segment
+/// ([`service::lookup`](crate::service::lookup)) has (ISO 9735-1:2002 §7.7).
+/// `None` for every other tag, and for `UNA`, which the tokenizer reports.
+pub(crate) fn classify_u_tag(tag: &str, span: Span) -> Option<EdifactError> {
+    if !tag.starts_with('U') || tag == "UNA" || crate::service::lookup(tag).is_some() {
+        return None;
     }
+    let tag_owned = tag.to_owned();
+    Some(if INTERACTIVE_TAGS.contains(&tag) {
+        EdifactError::InteractiveSegmentNotSupported {
+            tag: tag_owned,
+            span,
+        }
+    } else if SECURITY_TAGS.contains(&tag) {
+        EdifactError::SecuritySegmentNotSupported {
+            tag: tag_owned,
+            span,
+        }
+    } else {
+        EdifactError::ReservedServiceSegmentTag {
+            tag: tag_owned,
+            span,
+        }
+    })
+}
+
+/// Whether `tag` is refused by [`classify_u_tag`]; such a segment is reported
+/// there and skipped by extraction.
+fn is_refused(seg: &Segment<'_>) -> bool {
+    classify_u_tag(seg.tag(), seg.span).is_some()
+}
+
+/// The syntax version `UNB` S001 DE 0002 declares, for selecting
+/// representations.
+///
+/// `Ok(Some(1..=4))`; `Ok(None)` when DE 0002 is absent (its presence is the
+/// service check's finding); `Err(E059)` for any other value, syntax `X`
+/// included.
+pub(crate) fn syntax_version(unb: &Segment<'_>) -> Result<Option<u8>, EdifactError> {
+    let value = unb.component_str(0, 1).unwrap_or("");
+    if value.is_empty() {
+        return Ok(None);
+    }
+    match crate::directory_validator::supported_syntax_version(value) {
+        Some(version) => Ok(Some(version)),
+        None => Err(EdifactError::UnsupportedSyntaxVersion {
+            value: value.to_owned(),
+            span: unb
+                .get_element(0)
+                .and_then(|e| e.component_span(1))
+                .unwrap_or(unb.span),
+        }),
+    }
+}
+
+/// Run the service-segment checks over `interchange` and return the syntax
+/// version that selects representations.
+///
+/// `E059` once for an unsupported DE 0002; presence, class and length of every
+/// `UNB`/`UNZ`/`UNG`/`UNE`/`UNH`/`UNT` position (ISO 9735-10:2002 §5); S004
+/// calendar validity; `E055`–`E057` for refused tags wherever they appear.
+fn check_service_segments(interchange: &[Segment<'_>], sink: &mut ErrorSink) -> Option<u8> {
+    let version = match syntax_version(&interchange[0]) {
+        Ok(version) => version,
+        Err(error) => {
+            sink.push(error);
+            None
+        }
+    };
+    for (index, seg) in interchange.iter().enumerate() {
+        sink.attribute(Some(index));
+        match seg.tag() {
+            "UNB" | "UNG" => {
+                crate::directory_validator::check_service_segment(seg, version, &mut sink.errors);
+                check_s004(seg, version, &mut sink.errors);
+                if seg.tag() == "UNB" {
+                    crate::header::check_flags(seg, &mut sink.errors);
+                }
+            }
+            "UNZ" | "UNE" | "UNH" | "UNT" => {
+                crate::directory_validator::check_service_segment(seg, version, &mut sink.errors);
+            }
+            tag => {
+                if let Some(error) = classify_u_tag(tag, seg.span) {
+                    sink.push(error);
+                }
+            }
+        }
+    }
+    sink.attribute(None);
+    version
+}
+
+/// Calendar validity of S004 (element 4) in `UNB` or `UNG` (`E060`).
+///
+/// Checked only for a value that passed its representation check — the
+/// version's digit count — so a malformed value is reported once, as
+/// `E048`/`E049`/`E050`.
+pub(crate) fn check_s004(seg: &Segment<'_>, version: Option<u8>, out: &mut Vec<EdifactError>) {
+    const S004: usize = 3;
+    let Some(element) = seg.get_element(S004) else {
+        return;
+    };
+    // A value of the wrong length or class is the representation check's
+    // finding; only a well-formed one is read as a date or a time.
+    let digits = |v: &str, len: usize| v.len() == len && v.bytes().all(|b| b.is_ascii_digit());
+    let date_valid = |v: &str| match version {
+        Some(4) => !digits(v, 8) || is_valid_ccyymmdd(v),
+        Some(_) => !digits(v, 6) || is_valid_yymmdd(v),
+        None => (!digits(v, 6) || is_valid_yymmdd(v)) && (!digits(v, 8) || is_valid_ccyymmdd(v)),
+    };
+    let time_valid = |v: &str| !digits(v, 4) || is_valid_hhmm(v);
+    for (component, valid) in [(0, &date_valid as &dyn Fn(&str) -> bool), (1, &time_valid)] {
+        let Some(value) = element.get_component(component) else {
+            continue;
+        };
+        if !valid(value) {
+            out.push(EdifactError::InvalidDateTime {
+                tag: seg.tag().to_owned(),
+                element_index: S004,
+                component_index: component,
+                value: value.to_owned(),
+                span: element.component_span(component).unwrap_or(seg.span),
+            });
+        }
+    }
+}
+
+/// Whether `year` is a Gregorian leap year.
+pub(crate) const fn is_leap_year(year: u16) -> bool {
+    year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
+}
+
+/// Days in `month` (1–12), `0` for any other month.
+pub(crate) const fn days_in_month(month: u8, leap: bool) -> u8 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+/// Whether `hour:minute` is a time on the 24-hour clock (00:00–23:59).
+pub(crate) const fn is_valid_time(hour: u16, minute: u16) -> bool {
+    hour < 24 && minute < 60
+}
+
+/// The value of `digits` (ASCII digits only), or `None`.
+fn decimal(digits: &[u8]) -> Option<u16> {
+    let mut value: u16 = 0;
+    for &b in digits {
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        value = value.checked_mul(10)?.checked_add(u16::from(b - b'0'))?;
+    }
+    Some(value)
+}
+
+/// `MMDD` of a year with leap status `leap`.
+fn is_valid_month_day(mmdd: &[u8], leap: bool) -> bool {
+    match (decimal(&mmdd[..2]), decimal(&mmdd[2..])) {
+        (Some(month), Some(day)) => {
+            day >= 1 && day <= u16::from(days_in_month(month as u8, leap)) && month <= 12
+        }
+        _ => false,
+    }
+}
+
+/// `YYMMDD` (DE 0017, syntax versions 1–3). The century is not transferred, so
+/// 29 February is valid in every year divisible by 4.
+pub(crate) fn is_valid_yymmdd(value: &str) -> bool {
+    let b = value.as_bytes();
+    b.len() == 6 && decimal(&b[..2]).is_some_and(|yy| is_valid_month_day(&b[2..], yy % 4 == 0))
+}
+
+/// `CCYYMMDD` (DE 0017, syntax version 4), Gregorian leap rule.
+pub(crate) fn is_valid_ccyymmdd(value: &str) -> bool {
+    let b = value.as_bytes();
+    b.len() == 8 && decimal(&b[..4]).is_some_and(|y| is_valid_month_day(&b[4..], is_leap_year(y)))
+}
+
+/// `HHMM` (DE 0019), 0000–2359.
+pub(crate) fn is_valid_hhmm(value: &str) -> bool {
+    let b = value.as_bytes();
+    b.len() == 4
+        && match (decimal(&b[..2]), decimal(&b[2..])) {
+            (Some(h), Some(m)) => is_valid_time(h, m),
+            _ => false,
+        }
+}
+
+/// A control count (`UNZ` 0036, `UNE` 0060, `UNT` 0074, element 1) of at most
+/// `max_digits` digits to compare, or `None` to skip the comparison.
+///
+/// The comparison is skipped only when the value is already reported: absent
+/// (`E008`), not numeric (`E048`) or too long (`E049`). A §10 numeric value that
+/// is no unsigned integer (`-1`, `1.5`, `1E2`) passes the representation, so it
+/// is reported here as `E048`. The count is exact: `max_digits` is at most 10.
+fn control_count(seg: &Segment<'_>, max_digits: usize, sink: &mut ErrorSink) -> Option<u64> {
+    let value = seg.component_str(0, 0).unwrap_or("");
+    if value.is_empty() {
+        return None;
+    }
+    if value.bytes().all(|b| b.is_ascii_digit()) {
+        return (value.len() <= max_digits)
+            .then(|| value.parse().ok())
+            .flatten();
+    }
+    if crate::directory_validator::Repr::n_up_to(6).permits_characters(value) {
+        sink.push(EdifactError::InvalidCharacterType {
+            tag: seg.tag().to_owned(),
+            element_index: 0,
+            component_index: 0,
+            repr: format!("n..{max_digits} (an unsigned count)"),
+            value: value.to_owned(),
+            span: seg
+                .get_element(0)
+                .and_then(|e| e.component_span(0))
+                .unwrap_or(seg.span),
+        });
+    }
+    None
 }
 
 // ── Interchange extraction ────────────────────────────────────────────────────
 
+/// The `UNB`/`UNZ` data of `interchange` (from its `UNB` to its `UNZ`).
+///
+/// `None` when the typed header cannot be built; the reasons are in `sink`.
 fn extract_interchange(
-    segments: &[Segment<'_>],
+    interchange: &[Segment<'_>],
     sink: &mut ErrorSink,
-) -> Result<InterchangeEnvelope, EdifactError> {
-    if segments.first().map(|s| s.tag()) != Some("UNB") {
-        return Err(EdifactError::MissingSegment {
-            tag: "UNB".to_owned(),
-            expected_position: "first segment of interchange".to_owned(),
-        });
-    }
-    if segments.last().map(|s| s.tag()) != Some("UNZ") {
-        return Err(EdifactError::MissingSegment {
-            tag: "UNZ".to_owned(),
-            expected_position: "last segment of interchange".to_owned(),
-        });
-    }
-
-    let unb = &segments[0];
-    let unz = &segments[segments.len() - 1];
-
-    let syntax_identifier = sink.required(unb, 0, 0);
-    let syntax_version = unb.component_str(0, 1).unwrap_or("").to_owned();
+) -> Option<InterchangeEnvelope> {
+    let unb = &interchange[0];
+    let unz = &interchange[interchange.len() - 1];
 
     // DE 0001 names a character repertoire, so `Charset` is the single source
-    // of which values exist — and it distinguishes "not a syntax identifier"
-    // from "a real repertoire this crate cannot decode".  A second list here
-    // would drift from it.
-    if !syntax_identifier.is_empty() {
-        if let Err(error) = crate::Charset::from_syntax_identifier(&syntax_identifier) {
-            sink.push(error);
-        }
+    // of which values exist.
+    let syntax_identifier = unb.component_str(0, 0).unwrap_or("");
+    if !syntax_identifier.is_empty()
+        && let Err(error) = crate::Charset::from_syntax_identifier(syntax_identifier)
+    {
+        sink.push(error);
     }
 
-    let sender_id = sink.required(unb, 1, 0);
-    let sender_qualifier = unb.component_str(1, 1).unwrap_or("").to_owned();
-    // UNB S002 comp[2]: DE 0008 — sender internal identification
-    let sender_routing_address = unb
-        .component_str(1, 2)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned);
-
-    let recipient_id = sink.required(unb, 2, 0);
-    let recipient_qualifier = unb.component_str(2, 1).unwrap_or("").to_owned();
-    // UNB S003 comp[2]: DE 0014 — recipient internal identification
-    let recipient_routing_address = unb
-        .component_str(2, 2)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned);
-
-    let date = sink.required(unb, 3, 0);
-    let time_raw = unb.component_str(3, 1).unwrap_or("");
-    let time = if time_raw.is_empty() {
-        None
-    } else {
-        Some(time_raw.to_owned())
-    };
-
-    let control_ref = sink.required(unb, 4, 0);
-
-    // UNB element [5]: S005 — recipient's reference/password (DE 0022, comp 0) + qualifier (DE 0025, comp 1)
-    let recipient_password = unb
-        .component_str(5, 0)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned);
-    let recipient_password_qualifier = unb
-        .component_str(5, 1)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned);
-    // UNB element [6]: DE 0026 — application reference
-    let app_ref = unb
-        .component_str(6, 0)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned);
-    // UNB element [7]: DE 0029 — processing priority code
-    let processing_priority = unb
-        .component_str(7, 0)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned);
-    // UNB element [8]: DE 0031 — acknowledgement request ("1" = requested)
-    let acknowledgement_request = unb.component_str(8, 0) == Some("1");
-    // UNB element [9]: DE 0032 — communications agreement ID
-    let communications_agreement_id = unb
-        .component_str(9, 0)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned);
-    // UNB element [10]: DE 0035 — test indicator ("1" = test)
-    let test_indicator = unb.component_str(10, 0) == Some("1");
-
-    let unz_control_ref = sink.required(unz, 1, 0);
-    if unz_control_ref != control_ref {
+    let control_ref = unb.component_str(4, 0).unwrap_or("");
+    let unz_control_ref = unz.component_str(1, 0).unwrap_or("");
+    // An absent reference is already reported as missing.
+    if !unz_control_ref.is_empty() && !control_ref.is_empty() && unz_control_ref != control_ref {
         sink.push(EdifactError::QualifierMismatch {
             tag: "UNZ".to_owned(),
-            actual: unz_control_ref,
-            expected: control_ref.clone(),
+            actual: unz_control_ref.to_owned(),
+            expected: control_ref.to_owned(),
             span: unz.span,
         });
     }
 
-    let declared_unit_count_raw = sink.required(unz, 0, 0);
-    let declared_unit_count: u32 = sink.recover(
-        declared_unit_count_raw
-            .parse()
-            .map_err(|_| EdifactError::InvalidText {
-                offset: unz.span.start,
-            }),
-        0,
-    );
-
-    Ok(InterchangeEnvelope {
-        syntax_identifier,
-        syntax_version,
-        sender_id,
-        sender_qualifier,
-        sender_routing_address,
-        recipient_id,
-        recipient_qualifier,
-        recipient_routing_address,
-        date,
-        time,
-        control_ref,
-        recipient_password,
-        recipient_password_qualifier,
-        app_ref,
-        processing_priority,
-        acknowledgement_request,
-        communications_agreement_id,
-        test_indicator,
-        declared_unit_count,
+    let header = InterchangeHeader::from_unb_lenient(unb);
+    if header.is_none() && sink.errors.is_empty() {
+        // Every reason the header cannot be typed is a finding of the checks
+        // above; this keeps `None` from ever arriving without one.
+        sink.push(InterchangeHeader::parse(unb).err()?);
+    }
+    Some(InterchangeEnvelope {
+        header: header?,
+        declared_unit_count: 0,
         actual_unit_count: 0,
     })
 }
@@ -996,13 +1170,17 @@ fn extract_interchange(
 
 fn extract_content(
     inner: &[Segment<'_>],
+    version: Option<u8>,
     sink: &mut ErrorSink,
 ) -> Result<(Vec<FunctionalGroupEnvelope>, Vec<MessageEnvelope>), EdifactError> {
-    // A UNG as the first inner segment means the interchange uses functional groups.
-    // Checking only the first tag is O(1) and correct: if UNG is present it must
-    // always be first; a stray UNE without a preceding UNG is caught downstream.
-    if inner.first().is_some_and(|s| s.tag == "UNG") {
-        let groups = extract_with_groups(inner, sink)?;
+    // A UNG as the first inner segment means the interchange uses functional
+    // groups; refused segments in front of it are already reported.
+    if inner
+        .iter()
+        .find(|s| !is_refused(s))
+        .is_some_and(|s| s.tag == "UNG")
+    {
+        let groups = extract_with_groups(inner, version, sink)?;
         let messages = groups
             .iter()
             .flat_map(|g| g.messages.iter().cloned())
@@ -1010,7 +1188,7 @@ fn extract_content(
         Ok((groups, messages))
     } else {
         let mut seen_refs = HashSet::new();
-        let messages = extract_messages_flat(inner, sink, &mut seen_refs)?;
+        let messages = extract_messages_flat(inner, version, sink, &mut seen_refs)?;
         Ok((vec![], messages))
     }
 }
@@ -1038,10 +1216,11 @@ fn find_matching_une(segments: &[Segment<'_>], start: usize) -> Result<usize, Ed
 
 fn extract_with_groups(
     inner: &[Segment<'_>],
+    version: Option<u8>,
     sink: &mut ErrorSink,
 ) -> Result<Vec<FunctionalGroupEnvelope>, EdifactError> {
     let mut groups: Vec<FunctionalGroupEnvelope> = Vec::new();
-    // DE 0048 must be unique within the interchange (ISO 9735-1 §7.2); DE 0062
+    // DE 0048 must be unique within the interchange (ISO 9735-1 §7.3); DE 0062
     // must be unique across the whole interchange, so the set spans all groups.
     let mut seen_group_refs: HashSet<String> = HashSet::new();
     let mut seen_message_refs: HashSet<String> = HashSet::new();
@@ -1055,47 +1234,19 @@ fn extract_with_groups(
                 let une_idx = find_matching_une(inner, ung_idx + 1)?;
 
                 let ung = &inner[ung_idx];
-                let group_id = ung.component_str(0, 0).unwrap_or("").to_owned();
-                let app_sender = ung.component_str(1, 0).unwrap_or("").to_owned();
-                let app_sender_qualifier = ung.component_str(1, 1).unwrap_or("").to_owned();
-                let app_recipient = ung.component_str(2, 0).unwrap_or("").to_owned();
-                let app_recipient_qualifier = ung.component_str(2, 1).unwrap_or("").to_owned();
-                let date = ung.component_str(3, 0).unwrap_or("").to_owned();
-                let time_raw = ung.component_str(3, 1).unwrap_or("");
-                let time = if time_raw.is_empty() {
-                    None
-                } else {
-                    Some(time_raw.to_owned())
-                };
-                // UNG DE 0048 — group reference number (mandatory per ISO 9735-1 §7.2)
-                let group_ref = sink.required(ung, 4, 0);
-                if !seen_group_refs.insert(group_ref.clone()) {
+                // UNG DE 0048 — group reference number, the only mandatory element.
+                let group_ref = text(ung, 4, 0);
+                if !group_ref.is_empty() && !seen_group_refs.insert(group_ref.clone()) {
                     sink.push(EdifactError::DuplicateReference {
                         tag: "UNG".to_owned(),
                         reference: group_ref.clone(),
                         span: ung.span,
                     });
                 }
-                let controlling_agency = ung.component_str(5, 0).unwrap_or("").to_owned();
-                // UNG S008 — version (DE 0052, comp 0) + release (DE 0054, comp 1).
-                let version = ung.component_str(6, 0).unwrap_or("").to_owned();
-                let release = ung.component_str(6, 1).unwrap_or("").to_owned();
-                // UNG DE 0058 — application password (Annex C.1.5, position 080).
-                let application_password = ung
-                    .component_str(7, 0)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_owned);
 
                 let une = &inner[une_idx];
-                let declared_str = sink.required(une, 0, 0);
-                let declared_message_count: u32 = sink.recover(
-                    declared_str.parse().map_err(|_| EdifactError::InvalidText {
-                        offset: une.span.start,
-                    }),
-                    0,
-                );
-                let une_ref = sink.required(une, 1, 0);
-                if une_ref != group_ref {
+                let une_ref = text(une, 1, 0);
+                if !une_ref.is_empty() && !group_ref.is_empty() && une_ref != group_ref {
                     sink.push(EdifactError::QualifierMismatch {
                         tag: "UNE".to_owned(),
                         actual: une_ref,
@@ -1105,7 +1256,8 @@ fn extract_with_groups(
                 }
 
                 let group_content = &inner[ung_idx + 1..une_idx];
-                let messages = extract_messages_flat(group_content, sink, &mut seen_message_refs)?;
+                let messages =
+                    extract_messages_flat(group_content, version, sink, &mut seen_message_refs)?;
                 let actual_message_count = sink.recover(
                     u32::try_from(messages.len()).map_err(|_| EdifactError::InterchangeTooLarge {
                         count: messages.len() as u64,
@@ -1113,27 +1265,52 @@ fn extract_with_groups(
                     u32::MAX,
                 );
 
-                if declared_message_count != actual_message_count {
-                    sink.push(EdifactError::MessageCountMismatch {
-                        expected: declared_message_count,
-                        actual: actual_message_count,
+                // ISO 9735-1:2002 §7.3: a group "shall contain at least one
+                // message or package".
+                if messages.is_empty() {
+                    sink.push(EdifactError::EmptyGroup {
+                        group_ref: group_ref.clone(),
+                        span: ung.span,
                     });
                 }
 
+                // n..6: always fits `u32`.
+                let declared = control_count(une, 6, sink).and_then(|d| u32::try_from(d).ok());
+                if let Some(declared) = declared
+                    && declared != actual_message_count
+                {
+                    sink.push(EdifactError::GroupCountMismatch {
+                        group_ref: group_ref.clone(),
+                        expected: declared,
+                        actual: actual_message_count,
+                        span: une.span,
+                    });
+                }
+
+                let optional = |element: usize| {
+                    ung.component_str(element, 0)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned)
+                };
                 groups.push(FunctionalGroupEnvelope {
-                    group_id,
-                    app_sender,
-                    app_sender_qualifier,
-                    app_recipient,
-                    app_recipient_qualifier,
-                    date,
-                    time,
+                    group_id: text(ung, 0, 0),
+                    app_sender: text(ung, 1, 0),
+                    app_sender_qualifier: text(ung, 1, 1),
+                    app_recipient: text(ung, 2, 0),
+                    app_recipient_qualifier: text(ung, 2, 1),
+                    date: text(ung, 3, 0),
+                    time: ung
+                        .component_str(3, 1)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned),
                     group_ref,
-                    controlling_agency,
-                    version,
-                    release,
-                    application_password,
-                    declared_message_count,
+                    controlling_agency: text(ung, 5, 0),
+                    // UNG S008 — version (DE 0052) + release (DE 0054).
+                    version: text(ung, 6, 0),
+                    release: text(ung, 6, 1),
+                    // UNG DE 0058 — application password.
+                    application_password: optional(7),
+                    declared_message_count: declared.unwrap_or(0),
                     actual_message_count,
                     messages,
                 });
@@ -1159,6 +1336,8 @@ fn extract_with_groups(
                     span: seg.span,
                 });
             }
+            // Already reported by its tag class.
+            _ if is_refused(seg) => i += 1,
             _ => {
                 return Err(EdifactError::InvalidSegmentForMessage {
                     tag: seg.tag.clone().into_owned(),
@@ -1175,6 +1354,7 @@ fn extract_with_groups(
 /// Extract `UNH`/`UNT` message pairs from a flat slice (no UNB/UNZ/UNG/UNE expected).
 fn extract_messages_flat(
     segments: &[Segment<'_>],
+    version: Option<u8>,
     sink: &mut ErrorSink,
     seen_refs: &mut HashSet<String>,
 ) -> Result<Vec<MessageEnvelope>, EdifactError> {
@@ -1183,6 +1363,11 @@ fn extract_messages_flat(
     // `Option` carries the whole "are we inside a message" state, so the index
     // cannot be read while absent.
     let mut unh_idx: Option<usize> = None;
+    // DE 0074 is n..6 in syntax versions 1–3 and n..10 in version 4.
+    let segment_count_digits = match version {
+        Some(1..=3) => 6,
+        _ => 10,
+    };
 
     for (i, seg) in segments.iter().enumerate() {
         match seg.tag() {
@@ -1200,44 +1385,17 @@ fn extract_messages_flat(
                 let msg_start_idx = unh_idx.take().expect("guarded by the match arm");
                 let unh = &segments[msg_start_idx];
 
-                let message_ref = sink.required(unh, 0, 0);
-                if !seen_refs.insert(message_ref.clone()) {
+                let message_ref = text(unh, 0, 0);
+                if !message_ref.is_empty() && !seen_refs.insert(message_ref.clone()) {
                     sink.push(EdifactError::DuplicateReference {
                         tag: "UNH".to_owned(),
                         reference: message_ref.clone(),
                         span: unh.span,
                     });
                 }
-                let message_type = sink.required(unh, 1, 0);
-                let version = sink.required(unh, 1, 1);
-                let release = sink.required(unh, 1, 2);
-                let controlling_agency = sink.required(unh, 1, 3);
-                let association_code = unh.component_str(1, 4).unwrap_or("").to_owned();
-                // UNH element [2]: DE 0068 — common access reference (optional)
-                let common_access_ref = unh
-                    .component_str(2, 0)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_owned);
-                // UNH element [3]: S010 composite — sequence of transfers (optional)
-                // comp[0] = DE 0070 (sequence number), comp[1] = DE 0073 (position indicator)
-                let sequence_of_transfers = unh
-                    .component_str(3, 0)
-                    .filter(|s| !s.is_empty())
-                    .and_then(|s| s.parse::<u32>().ok());
-                let transfer_position = unh
-                    .component_str(3, 1)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_owned);
 
-                let declared_raw = sink.required(seg, 0, 0);
-                let declared_segment_count: u32 = sink.recover(
-                    declared_raw.parse().map_err(|_| EdifactError::InvalidText {
-                        offset: seg.span.start,
-                    }),
-                    0,
-                );
-                let unt_ref = sink.required(seg, 1, 0);
-                if unt_ref != message_ref {
+                let unt_ref = text(seg, 1, 0);
+                if !unt_ref.is_empty() && !message_ref.is_empty() && unt_ref != message_ref {
                     sink.push(EdifactError::QualifierMismatch {
                         tag: "UNT".to_owned(),
                         actual: unt_ref,
@@ -1247,14 +1405,18 @@ fn extract_messages_flat(
                 }
 
                 let segment_span = i - msg_start_idx + 1;
-                let actual_segment_count = sink.recover(
-                    u32::try_from(segment_span).map_err(|_| EdifactError::InterchangeTooLarge {
-                        count: segment_span as u64,
-                    }),
-                    u32::MAX,
-                );
+                let actual_segment_count = segment_span as u64;
+                let declared = control_count(seg, segment_count_digits, sink);
+                if let Some(declared) = declared.filter(|d| *d != actual_segment_count) {
+                    sink.push(EdifactError::SegmentCountMismatch {
+                        expected: declared,
+                        actual: actual_segment_count,
+                        message_ref: message_ref.clone(),
+                        span: seg.span,
+                    });
+                }
 
-                // ISO 9735-1 §7.3: a message "shall contain at least one
+                // ISO 9735-1 §7.4: a message "shall contain at least one
                 // additional segment" beyond its header and trailer.  A bare
                 // `UNH'UNT+2+…'` is a well-formed envelope around nothing, and
                 // its own segment count confirms it — so only this rule sees it.
@@ -1267,15 +1429,27 @@ fn extract_messages_flat(
 
                 messages.push(MessageEnvelope {
                     message_ref,
-                    message_type,
-                    version,
-                    release,
-                    controlling_agency,
-                    association_code,
-                    common_access_ref,
-                    sequence_of_transfers,
-                    transfer_position,
-                    declared_segment_count,
+                    message_type: text(unh, 1, 0),
+                    version: text(unh, 1, 1),
+                    release: text(unh, 1, 2),
+                    controlling_agency: text(unh, 1, 3),
+                    association_code: text(unh, 1, 4),
+                    // UNH element [2]: DE 0068 — common access reference
+                    common_access_ref: unh
+                        .component_str(2, 0)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned),
+                    // UNH element [3]: S010 — sequence of transfers (DE 0070)
+                    // and first/last transfer (DE 0073)
+                    sequence_of_transfers: unh
+                        .component_str(3, 0)
+                        .filter(|s| !s.is_empty())
+                        .and_then(|s| s.parse::<u32>().ok()),
+                    transfer_position: unh
+                        .component_str(3, 1)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned),
+                    declared_segment_count: declared.unwrap_or(0),
                     actual_segment_count,
                     header_span: unh.span,
                     trailer_span: seg.span,
@@ -1288,11 +1462,11 @@ fn extract_messages_flat(
                     span: seg.span,
                 });
             }
-            // A package is a legal member of an interchange (§7.9), so reporting
-            // it as a stray segment would send the reader looking for a
-            // corruption that is not there.  The object between UNO and UNP is
-            // arbitrary binary and is not EDIFACT-encoded, which is the reason
-            // this crate declines it rather than the reason it is invalid.
+            // A package is a legal member of an interchange (ISO 9735-1 §7.10),
+            // so reporting it as a stray segment would send the reader looking
+            // for a corruption that is not there.  The object between UNO and
+            // UNP is arbitrary binary and is not EDIFACT-encoded, which is the
+            // reason this crate declines it rather than the reason it is invalid.
             "UNO" | "UNP" => {
                 return Err(EdifactError::PackageNotSupported {
                     tag: seg.tag.clone().into_owned(),
@@ -1306,6 +1480,8 @@ fn extract_messages_flat(
                     span: seg.span,
                 });
             }
+            // Already reported by its tag class.
+            _ if unh_idx.is_none() && is_refused(seg) => {}
             _ if unh_idx.is_none() => {
                 return Err(EdifactError::InvalidSegmentForMessage {
                     tag: seg.tag.clone().into_owned(),
@@ -1445,13 +1621,42 @@ mod tests {
     #[test]
     fn valid_envelope_parses_ok() {
         let result = parse_and_validate(VALID_INTERCHANGE).expect("envelope should be valid");
-        assert_eq!(result.interchange.sender_id, "SENDER");
-        assert_eq!(result.interchange.sender_qualifier, ""); // no qualifier in fixture
-        assert_eq!(result.interchange.recipient_id, "RECEIVER");
-        assert_eq!(result.interchange.recipient_qualifier, "");
-        assert_eq!(result.interchange.syntax_identifier, "UNOA");
-        assert_eq!(result.interchange.syntax_version, "3");
-        assert_eq!(result.interchange.control_ref, "00001");
+        assert_eq!(result.interchange.header.sender.id, "SENDER");
+        assert_eq!(
+            result
+                .interchange
+                .header
+                .sender
+                .qualifier
+                .as_deref()
+                .unwrap_or(""),
+            ""
+        ); // no qualifier in fixture
+        assert_eq!(result.interchange.header.recipient.id, "RECEIVER");
+        assert_eq!(
+            result
+                .interchange
+                .header
+                .recipient
+                .qualifier
+                .as_deref()
+                .unwrap_or(""),
+            ""
+        );
+        assert_eq!(
+            result.interchange.header.charset.syntax_identifier(),
+            "UNOA"
+        );
+        assert_eq!(
+            result
+                .interchange
+                .header
+                .syntax_version
+                .number()
+                .to_string(),
+            "3"
+        );
+        assert_eq!(result.interchange.header.control_ref, "00001");
         assert_eq!(result.interchange.declared_unit_count, 1);
         assert_eq!(result.interchange.actual_unit_count, 1);
         assert!(!result.interchange.is_test());
@@ -1466,7 +1671,7 @@ mod tests {
     #[test]
     fn valid_envelope_parses_ok_owned_path() {
         let result = parse_and_validate_owned(VALID_INTERCHANGE).expect("envelope should be valid");
-        assert_eq!(result.interchange.sender_id, "SENDER");
+        assert_eq!(result.interchange.header.sender.id, "SENDER");
         assert_eq!(result.interchange.actual_unit_count, 1);
         assert_eq!(result.messages[0].declared_segment_count, 4);
     }
@@ -1493,7 +1698,8 @@ mod tests {
                 result,
                 Err(EdifactError::MessageCountMismatch {
                     expected: 2,
-                    actual: 1
+                    actual: 1,
+                    ..
                 })
             ),
             "expected MessageCountMismatch(2,1), got {result:?}"
@@ -1509,10 +1715,23 @@ mod tests {
     #[test]
     fn extracts_una_interchange_correctly() {
         let result = parse_and_validate(VALID_INTERCHANGE).unwrap();
-        assert_eq!(result.interchange.syntax_identifier, "UNOA");
-        assert_eq!(result.interchange.syntax_version, "3");
-        assert_eq!(result.interchange.date, "230401");
-        assert_eq!(result.interchange.time.as_deref(), Some("0900"));
+        assert_eq!(
+            result.interchange.header.charset.syntax_identifier(),
+            "UNOA"
+        );
+        assert_eq!(
+            result
+                .interchange
+                .header
+                .syntax_version
+                .number()
+                .to_string(),
+            "3"
+        );
+        assert_eq!(
+            result.interchange.header.prepared,
+            crate::PreparationDateTime::from_two_digit_year(23, 4, 1, 9, 0).unwrap()
+        );
     }
 
     #[test]
@@ -1524,13 +1743,29 @@ mod tests {
                       UNT+3+1'\
                       UNZ+1+1'";
         let r = parse_and_validate(input).expect("GLN-qualified UNB must parse ok");
-        assert_eq!(r.interchange.sender_id, "1234567890123");
-        assert_eq!(r.interchange.sender_qualifier, "14");
-        assert_eq!(r.interchange.recipient_id, "9876543210987");
-        assert_eq!(r.interchange.recipient_qualifier, "14");
+        assert_eq!(r.interchange.header.sender.id, "1234567890123");
+        assert_eq!(
+            r.interchange
+                .header
+                .sender
+                .qualifier
+                .as_deref()
+                .unwrap_or(""),
+            "14"
+        );
+        assert_eq!(r.interchange.header.recipient.id, "9876543210987");
+        assert_eq!(
+            r.interchange
+                .header
+                .recipient
+                .qualifier
+                .as_deref()
+                .unwrap_or(""),
+            "14"
+        );
     }
 
-    // UNB DE 0026 (app_ref) is at element index 6 (ISO 9735-1 Annex C.1.5 (UNB)):
+    // UNB DE 0026 (app_ref) is at element index 6 (ISO 9735-10:2002 §5.1.5, UNB):
     // [4]=control_ref [5]=S005/password [6]=0026/app_ref [7]=0029 [8]=0031/ack [9]=0032/comms [10]=0035/test
 
     #[test]
@@ -1545,7 +1780,7 @@ mod tests {
                       UNZ+1+1'";
         let r = parse_and_validate(input).expect("test-flagged UNB must parse ok");
         assert!(
-            r.interchange.test_indicator,
+            r.interchange.header.test_indicator,
             "test_indicator should be true"
         );
         assert!(r.interchange.is_test(), "is_test() convenience must agree");
@@ -1554,7 +1789,7 @@ mod tests {
     #[test]
     fn no_test_indicator_defaults_false() {
         let r = parse_and_validate(VALID_INTERCHANGE).unwrap();
-        assert!(!r.interchange.test_indicator);
+        assert!(!r.interchange.header.test_indicator);
         assert!(!r.interchange.is_test());
     }
 
@@ -1567,13 +1802,16 @@ mod tests {
                       UNT+3+1'\
                       UNZ+1+1'";
         let r = parse_and_validate(input).expect("UNB with app_ref must parse ok");
-        assert_eq!(r.interchange.app_ref.as_deref(), Some("MYAPP"));
+        assert_eq!(
+            r.interchange.header.application_ref.as_deref(),
+            Some("MYAPP")
+        );
     }
 
     #[test]
     fn app_ref_is_none_when_absent() {
         let r = parse_and_validate(VALID_INTERCHANGE).unwrap();
-        assert!(r.interchange.app_ref.is_none());
+        assert!(r.interchange.header.application_ref.is_none());
     }
 
     #[test]
@@ -1585,13 +1823,16 @@ mod tests {
                       UNT+3+1'\
                       UNZ+1+1'";
         let r = parse_and_validate(input).expect("UNB with password must parse ok");
-        assert_eq!(r.interchange.recipient_password.as_deref(), Some("MYPASS"));
+        assert_eq!(
+            r.interchange.header.recipient_password.as_deref(),
+            Some("MYPASS")
+        );
     }
 
     #[test]
     fn recipient_password_is_none_when_absent() {
         let r = parse_and_validate(VALID_INTERCHANGE).unwrap();
-        assert!(r.interchange.recipient_password.is_none());
+        assert!(r.interchange.header.recipient_password.is_none());
     }
 
     #[test]
@@ -1604,14 +1845,14 @@ mod tests {
                       UNT+3+1'\
                       UNZ+1+1'";
         let r = parse_and_validate(input).expect("UNB with ack-request must parse ok");
-        assert!(r.interchange.acknowledgement_request);
+        assert!(r.interchange.header.acknowledgement_requested);
         assert!(r.interchange.ack_requested());
     }
 
     #[test]
     fn acknowledgement_request_defaults_false() {
         let r = parse_and_validate(VALID_INTERCHANGE).unwrap();
-        assert!(!r.interchange.acknowledgement_request);
+        assert!(!r.interchange.header.acknowledgement_requested);
         assert!(!r.interchange.ack_requested());
     }
 
@@ -1625,7 +1866,7 @@ mod tests {
                       UNZ+1+1'";
         let r = parse_and_validate(input).expect("UNB with comms-agreement must parse ok");
         assert_eq!(
-            r.interchange.communications_agreement_id.as_deref(),
+            r.interchange.header.communications_agreement_id.as_deref(),
             Some("AGREEMENT-1")
         );
     }
@@ -1654,8 +1895,8 @@ mod tests {
         let input = b"UNB+UNOA:3++R+200101:0900+1'UNH+1+ORDERS:D:11A:UN:EAN010'BGM+220+PO-1+9'UNT+3+1'UNZ+1+1'";
         let result = parse_and_validate(input);
         assert!(
-            matches!(result, Err(EdifactError::MissingRequiredComponent { ref tag, element_index: 1, component_index: 0 }) if tag == "UNB"),
-            "expected MissingRequiredComponent for empty sender, got: {result:?}"
+            matches!(result, Err(EdifactError::MissingRequiredElement { ref tag, element_index: 1 }) if tag == "UNB"),
+            "expected MissingRequiredElement for empty S002, got: {result:?}"
         );
     }
 
@@ -1727,7 +1968,8 @@ mod tests {
                 &errors[0],
                 EdifactError::MessageCountMismatch {
                     expected: 2,
-                    actual: 1
+                    actual: 1,
+                    ..
                 }
             ),
             "expected MessageCountMismatch(2,1), got {:?}",
@@ -1801,7 +2043,7 @@ mod tests {
         assert_eq!(result.functional_groups.len(), 1);
         assert_eq!(result.functional_groups[0].actual_message_count, 2);
         assert_eq!(result.messages.len(), 2);
-        // UNZ = 1 group (not 2 messages): ISO 9735-1 Annex C.3.4 (DE 0036)
+        // UNZ = 1 group (not 2 messages): ISO 9735-10:2002 §5.3.5 (DE 0036)
         assert_eq!(result.interchange.actual_unit_count, 1);
         assert_eq!(result.interchange.declared_unit_count, 1);
     }
@@ -1841,13 +2083,15 @@ mod tests {
         let result = parse_and_validate(input);
         assert!(
             matches!(
-                result,
-                Err(EdifactError::MessageCountMismatch {
+                &result,
+                Err(EdifactError::GroupCountMismatch {
+                    group_ref,
                     expected: 2,
-                    actual: 1
-                })
+                    actual: 1,
+                    ..
+                }) if group_ref == "1"
             ),
-            "expected MessageCountMismatch(2,1), got {result:?}"
+            "expected GroupCountMismatch(1, 2, 1), got {result:?}"
         );
     }
 
@@ -1908,13 +2152,16 @@ mod tests {
                       UNT+3+1'\
                       UNZ+1+1'";
         let r = parse_and_validate(input).expect("UNB with processing_priority must parse ok");
-        assert_eq!(r.interchange.processing_priority.as_deref(), Some("A"));
+        assert_eq!(
+            r.interchange.header.processing_priority.as_deref(),
+            Some("A")
+        );
     }
 
     #[test]
     fn processing_priority_is_none_when_absent() {
         let r = parse_and_validate(VALID_INTERCHANGE).unwrap();
-        assert!(r.interchange.processing_priority.is_none());
+        assert!(r.interchange.header.processing_priority.is_none());
     }
 
     #[test]
@@ -1927,10 +2174,10 @@ mod tests {
                       UNZ+1+1'";
         let r = parse_and_validate(input).expect("UNB with sender routing must parse ok");
         assert_eq!(
-            r.interchange.sender_routing_address.as_deref(),
+            r.interchange.header.sender.internal_id.as_deref(),
             Some("ROUTEA")
         );
-        assert!(r.interchange.recipient_routing_address.is_none());
+        assert!(r.interchange.header.recipient.internal_id.is_none());
     }
 
     #[test]
@@ -1942,9 +2189,9 @@ mod tests {
                       UNT+3+1'\
                       UNZ+1+1'";
         let r = parse_and_validate(input).expect("UNB with recipient routing must parse ok");
-        assert!(r.interchange.sender_routing_address.is_none());
+        assert!(r.interchange.header.sender.internal_id.is_none());
         assert_eq!(
-            r.interchange.recipient_routing_address.as_deref(),
+            r.interchange.header.recipient.internal_id.as_deref(),
             Some("ROUTEB")
         );
     }
@@ -1958,8 +2205,8 @@ mod tests {
                       UNT+3+1'\
                       UNZ+1+1'";
         let r = parse_and_validate(input).unwrap();
-        assert!(r.interchange.sender_routing_address.is_none());
-        assert!(r.interchange.recipient_routing_address.is_none());
+        assert!(r.interchange.header.sender.internal_id.is_none());
+        assert!(r.interchange.header.recipient.internal_id.is_none());
     }
 
     #[test]
@@ -2121,10 +2368,10 @@ mod tests {
     #[test]
     fn a_package_is_reported_as_a_package() {
         // Not as a stray segment: `UNO` is a legal member of an interchange
-        // (§7.9), and saying "invalid segment for message type ENVELOPE" sends
+        // (ISO 9735-1 §7.10), and saying "invalid segment for message type ENVELOPE" sends
         // the reader hunting for a corruption that is not there.
         let result = parse_and_validate(
-            b"UNB+UNOC:4+S+R+260101:0900+IC1'UNO+PKG1+AAF:1+ZZZ+1024'UNZ+1+IC1'",
+            b"UNB+UNOC:4+S+R+20260101:0900+IC1'UNO+PKG1+AAF:1+ZZZ+1024'UNZ+1+IC1'",
         );
         assert!(
             matches!(result, Err(EdifactError::PackageNotSupported { ref tag, .. }) if tag == "UNO"),
@@ -2143,9 +2390,12 @@ mod tests {
                       UNT+3+1'\
                       UNZ+1+1'";
         let r = parse_and_validate(input).expect("UNB with password+qualifier must parse ok");
-        assert_eq!(r.interchange.recipient_password.as_deref(), Some("MYPASS"));
         assert_eq!(
-            r.interchange.recipient_password_qualifier.as_deref(),
+            r.interchange.header.recipient_password.as_deref(),
+            Some("MYPASS")
+        );
+        assert_eq!(
+            r.interchange.header.recipient_password_qualifier.as_deref(),
             Some("AA")
         );
     }
@@ -2153,7 +2403,7 @@ mod tests {
     #[test]
     fn recipient_password_qualifier_is_none_when_absent() {
         let r = parse_and_validate(VALID_INTERCHANGE).unwrap();
-        assert!(r.interchange.recipient_password_qualifier.is_none());
+        assert!(r.interchange.header.recipient_password_qualifier.is_none());
     }
 
     // ── UNH S010 sequence-of-transfers ───────────────────────────────────────
@@ -2251,7 +2501,8 @@ mod tests {
             &errors[0],
             EdifactError::MessageCountMismatch {
                 expected: 2,
-                actual: 1
+                actual: 1,
+                ..
             }
         ));
     }
@@ -2261,9 +2512,7 @@ mod tests {
     #[test]
     fn parse_unh_direct_extracts_all_s009_fields() {
         // parse_unh is called internally by extract_messages_flat; all S009 fields
-        // it extracts surface in the resulting MessageEnvelope.  We verify them here
-        // rather than calling parse_unh(&seg) from a Vec<Segment<'_>>, which would
-        // conflict with the SmallVec-based Element drop-check (see API docs).
+        // it extracts surface in the resulting MessageEnvelope.
         let input = b"UNB+UNOA:3+S+R+200101:0900+1'\
                       UNH+REF99+ORDERS:D:96A:UN:EAN010'\
                       BGM+220+PO-001+9'\
@@ -2328,7 +2577,8 @@ mod tests {
 
     #[test]
     fn ung_missing_group_ref_returns_err() {
-        // UNG with element [4] (group ref) empty — must error, not silently use ""
+        // UNG with element [4] (group ref) empty — must error, not silently use "".
+        // DE 0048 is a simple element, so its absence is the element's.
         let input = b"UNB+UNOA:3+S+R+200101:0900+1'\
                       UNG+ORDERS+S+R+200101:0900++UN+D:96A'\
                       UNH+1+ORDERS:D:96A:UN'\
@@ -2339,10 +2589,10 @@ mod tests {
         let result = parse_and_validate(input);
         assert!(
             matches!(result,
-                Err(EdifactError::MissingRequiredComponent { ref tag, element_index: 4, component_index: 0 })
+                Err(EdifactError::MissingRequiredElement { ref tag, element_index: 4 })
                 if tag == "UNG"
             ),
-            "expected MissingRequiredComponent for empty UNG group_ref, got {result:?}"
+            "expected MissingRequiredElement for empty UNG group_ref, got {result:?}"
         );
     }
 
@@ -2439,5 +2689,86 @@ mod tests {
         let invalid = validate_envelope_lenient(&owned2);
         assert!(!invalid.is_valid());
         assert!(invalid.has_errors());
+    }
+
+    // ── S004 calendar ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn calendar_helpers_follow_the_standard() {
+        // YYMMDD: the century is not transferred, so every YY % 4 == 0 is leap.
+        assert!(is_valid_yymmdd("000229"));
+        assert!(is_valid_yymmdd("960229"));
+        assert!(!is_valid_yymmdd("010229"));
+        assert!(!is_valid_yymmdd("261399"));
+        assert!(!is_valid_yymmdd("260100"));
+        assert!(!is_valid_yymmdd("260431"));
+        // CCYYMMDD: Gregorian.
+        assert!(is_valid_ccyymmdd("20000229"));
+        assert!(!is_valid_ccyymmdd("19000229"));
+        assert!(is_valid_ccyymmdd("20240229"));
+        assert!(!is_valid_ccyymmdd("20261301"));
+        // HHMM.
+        assert!(is_valid_hhmm("0000"));
+        assert!(is_valid_hhmm("2359"));
+        assert!(!is_valid_hhmm("2400"));
+        assert!(!is_valid_hhmm("1260"));
+        // Malformed input is invalid, never a panic.
+        for value in [
+            "",
+            "1",
+            "2026010",
+            "99999999999999999999",
+            "ab0101",
+            "ü1234",
+        ] {
+            assert!(!is_valid_yymmdd(value) && !is_valid_ccyymmdd(value) && !is_valid_hhmm(value));
+        }
+    }
+
+    #[test]
+    fn s004_is_checked_only_after_its_representation_passed() {
+        let check = |input: &[u8]| {
+            let segments = parse(input);
+            let mut out = Vec::new();
+            check_s004(
+                &segments[0],
+                syntax_version(&segments[0]).ok().flatten(),
+                &mut out,
+            );
+            out.iter()
+                .map(EdifactError::stable_code)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(check(b"UNB+UNOC:3+S+R+261399:2599+1'"), ["E060", "E060"]);
+        // Too long for n6 / n4: the representation check reports it, not this.
+        assert!(check(b"UNB+UNOC:3+S+R+20261399:25999+1'").is_empty());
+        // Unknown version: either length is a date.
+        assert_eq!(check(b"UNB+UNOC:9+S+R+20261399:0900+1'"), ["E060"]);
+    }
+
+    #[test]
+    fn the_syntax_version_is_one_to_four() {
+        let version = |input: &[u8]| syntax_version(&parse(input)[0]);
+        assert_eq!(version(b"UNB+UNOC:1+S+R+260101:0900+1'"), Ok(Some(1)));
+        assert_eq!(version(b"UNB+UNOC:4+S+R+20260101:0900+1'"), Ok(Some(4)));
+        assert_eq!(version(b"UNB+UNOC+S+R+260101:0900+1'"), Ok(None));
+        assert_eq!(
+            version(b"UNB+UNOC:X+S+R+260101:0900+1'"),
+            Err(EdifactError::UnsupportedSyntaxVersion {
+                value: "X".into(),
+                span: Span::new(9, 10),
+            })
+        );
+    }
+
+    #[test]
+    fn u_tags_are_classified() {
+        let code = |tag: &str| classify_u_tag(tag, Span::new(0, 3)).map(|e| e.stable_code());
+        assert_eq!(code("UIB"), Some("E055"));
+        assert_eq!(code("USH"), Some("E056"));
+        assert_eq!(code("UXX"), Some("E057"));
+        for tag in ["UNA", "UNB", "UNS", "UGH", "UCI", "BGM", "XYZ"] {
+            assert_eq!(code(tag), None, "{tag}");
+        }
     }
 }

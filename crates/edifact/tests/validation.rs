@@ -783,3 +783,168 @@ mod issue_model {
         assert_eq!(issue.pack(), None);
     }
 }
+
+// ── envelope and directory findings are not reported twice ───────────────────
+
+mod envelope_dedupe {
+    use edifact::{
+        ComponentRef, DirectoryValidator, ElementRef, SegmentDefinition, Status, ValidationContext,
+        ValidationLayer, from_bytes, service,
+    };
+
+    const C002: &[ComponentRef] = &[
+        ComponentRef::new(1, "1001", Status::Mandatory),
+        ComponentRef::new(2, "1000", Status::Conditional),
+    ];
+    const BGM_ELEMENTS: &[ElementRef] =
+        &[ElementRef::composite(1, "C002", Status::Mandatory, 1, C002)];
+    static BGM: SegmentDefinition =
+        SegmentDefinition::new("BGM", "Beginning of message", BGM_ELEMENTS);
+
+    fn lookup(tag: &str) -> Option<&'static SegmentDefinition> {
+        if tag == "BGM" {
+            Some(&BGM)
+        } else {
+            service::lookup(tag)
+        }
+    }
+
+    fn directory() -> DirectoryValidator {
+        DirectoryValidator::new(
+            "orders",
+            lookup,
+            |_, _| true,
+            |_, _| None,
+            |_, _| None,
+            None,
+        )
+    }
+
+    fn issues(input: &[u8]) -> Vec<(String, Option<String>)> {
+        let segments: Vec<_> = from_bytes(input).collect::<Result<_, _>>().expect("parses");
+        ValidationContext::builder()
+            .with_envelope_validation()
+            .with_validator(ValidationLayer::Structure, directory())
+            .build()
+            .validate(&segments)
+            .errors()
+            .iter()
+            .map(|i| {
+                (
+                    i.error_code().unwrap_or_default().to_owned(),
+                    i.segment_tag().map(str::to_owned),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_spanned_finding_both_layers_make_is_reported_once() {
+        // DE 0062 is an..14; the envelope and the directory both see the UNH.
+        let found = issues(
+            b"UNB+UNOC:3+S+R+260101:0900+1'UNH+ABCDEFGHIJKLMNO+ORDERS:D:96A:UN'BGM+220'UNT+3+ABCDEFGHIJKLMNO'UNZ+1+1'",
+        );
+        let e049: Vec<_> = found.iter().filter(|(code, _)| code == "E049").collect();
+        assert_eq!(e049.len(), 2, "one on UNH, one on UNT: {found:?}");
+        assert!(e049.iter().any(|(_, tag)| tag.as_deref() == Some("UNH")));
+        assert!(e049.iter().any(|(_, tag)| tag.as_deref() == Some("UNT")));
+    }
+
+    #[test]
+    fn a_v3_date_of_nine_digits_is_one_e049() {
+        let found = issues(
+            b"UNB+UNOC:3+S+R+202601011:0900+1'UNH+1+ORDERS:D:96A:UN'BGM+220'UNT+3+1'UNZ+1+1'",
+        );
+        assert_eq!(found, [("E049".to_owned(), Some("UNB".to_owned()))]);
+    }
+
+    fn located(input: &[u8]) -> Vec<(String, Option<String>, Option<u32>)> {
+        let segments: Vec<_> = from_bytes(input).collect::<Result<_, _>>().expect("parses");
+        ValidationContext::builder()
+            .with_envelope_validation()
+            .with_validator(ValidationLayer::Structure, directory())
+            .build()
+            .validate(&segments)
+            .errors()
+            .iter()
+            .map(|i| {
+                (
+                    i.error_code().unwrap_or_default().to_owned(),
+                    i.segment_tag().map(str::to_owned),
+                    i.segment_position(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_spanless_finding_both_layers_make_is_reported_once() {
+        // Both UNH lack S009 DE 0051: one E021 per message, at position 1.
+        let found = located(
+            b"UNB+UNOC:3+S+R+260101:0900+1'UNH+1+ORDERS:D:96A'BGM+220'UNT+3+1'\
+              UNH+2+ORDERS:D:96A'BGM+220'UNT+3+2'UNZ+2+1'",
+        );
+        let e021: Vec<_> = found.iter().filter(|(code, ..)| code == "E021").collect();
+        let unh = ("E021".to_owned(), Some("UNH".to_owned()), Some(1));
+        assert_eq!(e021, [&unh, &unh], "{found:?}");
+
+        // A spanless finding outside every message is kept, unplaced.
+        let found =
+            located(b"UNB+UNOC:3+S++260101:0900+1'UNH+1+ORDERS:D:96A:UN'BGM+220'UNT+3+1'UNZ+1+1'");
+        let e008: Vec<_> = found.iter().filter(|(code, ..)| code == "E008").collect();
+        assert_eq!(
+            e008,
+            [&("E008".to_owned(), Some("UNB".to_owned()), None)],
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn spanless_findings_are_never_dropped() {
+        // UNH lacks S009 DE 0051, BGM lacks C002 DE 1001: both E021 survive.
+        let found =
+            issues(b"UNB+UNOC:3+S+R+260101:0900+1'UNH+1+ORDERS:D:96A'BGM+:X'UNT+3+1'UNZ+1+1'");
+        assert!(
+            found.contains(&("E021".to_owned(), Some("UNH".to_owned()))),
+            "{found:?}"
+        );
+        assert!(
+            found.contains(&("E021".to_owned(), Some("BGM".to_owned()))),
+            "{found:?}"
+        );
+    }
+}
+
+#[test]
+fn positions_count_from_each_messages_unh() {
+    use edifact::{DirectoryValidator, from_bytes, service};
+
+    let input = b"UNB+UNOC:3+S+R+260101:0900+1'UNH+1+ORDERS:D:96A:UN'BGM+220'UNT+3+1'\
+                  UNH+2+ORDERS:D:96A:UN'BGM+220'UNT+3+2'UNZ+2+1'";
+    let segments: Vec<_> = from_bytes(input).collect::<Result<_, _>>().expect("parses");
+    for envelope in [false, true] {
+        let mut builder = ValidationContext::builder();
+        if envelope {
+            builder = builder.with_envelope_validation();
+        }
+        let directory = DirectoryValidator::new(
+            "orders",
+            service::lookup,
+            |_, _| true,
+            |_, _| None,
+            |_, _| None,
+            None,
+        );
+        let report = builder
+            .with_validator(ValidationLayer::Structure, directory)
+            .build()
+            .validate(&segments);
+        let bgm: Vec<_> = report
+            .errors()
+            .iter()
+            .filter(|i| i.error_code() == Some("E011") && i.segment_tag() == Some("BGM"))
+            .map(|i| i.segment_position())
+            .collect();
+        assert_eq!(bgm, [Some(2), Some(2)], "envelope layer {envelope}");
+    }
+}

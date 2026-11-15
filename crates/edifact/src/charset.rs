@@ -62,6 +62,7 @@ use std::io::Read;
 /// [`EdifactError::UnsupportedCharset`] for them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Charset {
     /// `UNOA` — ISO 9735 level A: upper-case letters, digits, space, and a fixed
     /// punctuation set. Decoded as ASCII; see [`permits`][Self::permits].
@@ -300,6 +301,9 @@ impl Charset {
     /// Returns [`Cow::Borrowed`] — and copies nothing — when `bytes` is pure
     /// ASCII, whatever the declared repertoire.
     ///
+    /// Every byte is transcoded, a leading byte order mark included;
+    /// [`decode_interchange`] keeps the interchange prologue verbatim.
+    ///
     /// # Errors
     ///
     /// [`EdifactError::InvalidText`] when a byte falls in a slot the repertoire
@@ -370,6 +374,9 @@ impl Charset {
     /// path through [`from_bytes`][crate::from_bytes] is preserved for ASCII and
     /// `UNOY` payloads.
     ///
+    /// Every byte is transcoded, a leading byte order mark included;
+    /// [`decode_interchange`] keeps the interchange prologue verbatim.
+    ///
     /// # Spans
     ///
     /// Byte offsets in the decoded buffer do **not** line up with the original
@@ -393,6 +400,9 @@ impl Charset {
     /// [`transcode_to_utf8`][Self::transcode_to_utf8]: memory stays one buffer
     /// (see below) instead of the whole `UNOC`…`UNOK` interchange.
     ///
+    /// Every byte is transcoded, a leading byte order mark included;
+    /// [`decode_reader`] keeps the interchange prologue verbatim.
+    ///
     /// # Resource bounds
     ///
     /// As [`DecodingReader`]: one 8 KiB buffer, no limit of its own; the
@@ -412,15 +422,24 @@ impl Charset {
     /// assert_eq!(segments[1].element_str(1), Some("Müller"));
     /// # Ok::<(), edifact::EdifactError>(())
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// The reader fails on a byte the repertoire leaves undefined, with
+    /// [`EdifactError::InvalidText`] at its offset in the raw input (see
+    /// [`DecodingReader`]).
     pub fn decoding_reader<R: Read>(self, reader: R) -> DecodingReader<R> {
         DecodingReader {
             inner: reader,
             charset: self,
             src: Vec::new(),
             src_pos: 0,
+            consumed: 0,
             spill: [0; 4],
             spill_len: 0,
             spill_pos: 0,
+            verbatim: 0,
+            beyond_window: None,
         }
     }
 }
@@ -441,16 +460,30 @@ impl std::fmt::Display for Charset {
 /// it applies no limit of its own. Bound the parse that reads from it with a
 /// [`ReaderConfig`][crate::ReaderConfig] — its limits then count **decoded**
 /// bytes, and a Latin-1 interchange can be up to twice as long once decoded.
+///
+/// # Errors
+///
+/// A byte the repertoire leaves undefined fails the read with an
+/// [`std::io::Error`] carrying [`EdifactError::InvalidText`] at the byte's
+/// offset in the raw input; [`EdifactError::from`] unwraps it. Later reads
+/// repeat the error.
 pub struct DecodingReader<R> {
     inner: R,
     charset: Charset,
     /// Source bytes read but not yet transcoded.
     src: Vec<u8>,
     src_pos: usize,
+    /// Source bytes taken so far: the raw offset of the next byte.
+    consumed: usize,
     /// A character that did not fit in the caller's buffer on the previous call.
     spill: [u8; 4],
     spill_len: u8,
     spill_pos: u8,
+    /// Bytes at the head of the stream copied untranscoded: the prologue.
+    verbatim: usize,
+    /// While the stream is prologue past the sniff window: the offset of the
+    /// next byte. Any byte that is not whitespace is refused.
+    beyond_window: Option<usize>,
 }
 
 impl<R: Read> Read for DecodingReader<R> {
@@ -488,6 +521,26 @@ impl<R: Read> Read for DecodingReader<R> {
 
             let byte = self.src[self.src_pos];
             self.src_pos += 1;
+            self.consumed += 1;
+
+            if self.verbatim > 0 {
+                self.verbatim -= 1;
+                out[written] = byte;
+                written += 1;
+                continue;
+            }
+            if let Some(offset) = &mut self.beyond_window {
+                if !matches!(byte, b' ' | b'\t' | b'\r' | b'\n') {
+                    // Stay on the byte, so every later read refuses it too.
+                    self.src_pos -= 1;
+                    self.consumed -= 1;
+                    if written > 0 {
+                        return Ok(written);
+                    }
+                    return Err(std::io::Error::other(sniff_window_exceeded(*offset)));
+                }
+                *offset += 1;
+            }
 
             // `UNOY` is already UTF-8, and `UNOA`/`UNOB` are ASCII subsets whose
             // conformant payloads are too — there is nothing to map, and mapping
@@ -500,15 +553,17 @@ impl<R: Read> Read for DecodingReader<R> {
                 continue;
             }
 
-            let ch = self.charset.decode_byte(byte).ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!(
-                        "byte 0x{byte:02X} is undefined in {}",
-                        self.charset.syntax_identifier()
-                    ),
-                )
-            })?;
+            let Some(ch) = self.charset.decode_byte(byte) else {
+                // Stay on the byte, so every later read refuses it too.
+                self.src_pos -= 1;
+                self.consumed -= 1;
+                if written > 0 {
+                    return Ok(written);
+                }
+                return Err(std::io::Error::other(EdifactError::InvalidText {
+                    offset: self.consumed,
+                }));
+            };
             let mut buf = [0u8; 4];
             let encoded = ch.encode_utf8(&mut buf).as_bytes();
             let room = out.len() - written;
@@ -535,45 +590,139 @@ impl<R: Read> Read for DecodingReader<R> {
 /// characters, segment tags, and DE 0001 itself are ASCII in every repertoire
 /// (ISO 9735-1 §6), so this scan is always safe.
 ///
+/// The scan starts after the prologue the parser skips — a UTF-8 byte order
+/// mark and any ASCII whitespace — and an optional `UNA`.
+///
 /// Returns `Ok(None)` when the input carries no `UNB` — an interchange fragment,
-/// or a bare message.
+/// a bare message, or nothing but prologue.
+///
+/// # Sniff window
+///
+/// The prologue may be at most 4 KiB, and the `UNB` syntax identifier must end
+/// within the 4 KiB after it. Input that has more before its first segment, or
+/// whose identifier the window cuts, is refused rather than passed through
+/// undecoded.
 ///
 /// # Errors
 ///
 /// As [`Charset::from_syntax_identifier`], plus [`EdifactError::InvalidUna`] when
-/// a `UNA` header is present but malformed.
+/// a `UNA` header is present but malformed, and [`EdifactError::LimitExceeded`]
+/// with `limit: "sniff_window"` when the syntax identifier lies outside the
+/// sniff window.
+///
+/// # Example
+///
+/// ```
+/// use edifact::{Charset, sniff_charset};
+///
+/// let raw = b"\xEF\xBB\xBF\r\nUNB+UNOC:3+S+R+260101:0900+IC1'UNZ+0+IC1'";
+/// assert_eq!(sniff_charset(raw)?, Some(Charset::UnoC));
+/// # Ok::<(), edifact::EdifactError>(())
+/// ```
 pub fn sniff_charset(input: &[u8]) -> Result<Option<Charset>, EdifactError> {
-    let ssa = crate::tokenizer::ServiceStringAdvice::from_bytes(input)?;
-    let mut pos = if input.len() >= 9 && &input[..3] == b"UNA" {
-        9
-    } else {
-        0
-    };
-    while pos < input.len() && matches!(input[pos], b' ' | b'\t' | b'\r' | b'\n') {
-        pos += 1;
+    match sniff(input, true)? {
+        Sniff::Found { charset, .. } => Ok(Some(charset)),
+        Sniff::NoUnb | Sniff::Undecided => Ok(None),
     }
-    if input.len() < pos + 4 || &input[pos..pos + 3] != b"UNB" || input[pos + 3] != ssa.element_sep
-    {
-        return Ok(None);
-    }
-    let start = pos + 4;
-    let end = input[start..]
-        .iter()
-        .position(|&b| b == ssa.component_sep || b == ssa.element_sep || b == ssa.segment_term)
-        .map_or(input.len(), |i| start + i);
-    let identifier = std::str::from_utf8(&input[start..end])
-        .map_err(|_| EdifactError::InvalidText { offset: start })?;
-    if identifier.is_empty() {
-        return Ok(None);
-    }
-    Charset::from_syntax_identifier(identifier).map(Some)
 }
 
-/// How many leading bytes [`decode_reader`] buffers in order to find the `UNB`.
+/// The size of the sniff window: the prologue may be this long, and the `UNB`
+/// syntax identifier must end within this many bytes after it.
 ///
 /// A `UNA` is nine bytes and a `UNB` is a few hundred at the very most, so this
 /// is generous by an order of magnitude while still being a fixed, small cost.
 const SNIFF_PROBE_BYTES: usize = 4096;
+
+/// What a sniff over the head of an interchange found.
+enum Sniff {
+    /// `UNB` names `charset`; the first `prologue` bytes are prologue.
+    Found { charset: Charset, prologue: usize },
+    /// No `UNB`: the input is a fragment, a bare message or only prologue.
+    NoUnb,
+    /// The head seen so far is prologue (or `UNA` and whitespace) past the
+    /// window's end, and more input may follow: any byte that is not
+    /// whitespace is refused.
+    Undecided,
+}
+
+/// [`sniff_charset`] over `input`, which is the whole interchange when
+/// `complete`, or else the head of a stream at least `2 * SNIFF_PROBE_BYTES`
+/// long.
+fn sniff(input: &[u8], complete: bool) -> Result<Sniff, EdifactError> {
+    let only_prologue = || {
+        if complete {
+            Sniff::NoUnb
+        } else {
+            Sniff::Undecided
+        }
+    };
+    let (prologue, head) = crate::tokenizer::classify_head(input);
+    if prologue > SNIFF_PROBE_BYTES {
+        return if prologue == input.len() {
+            Ok(only_prologue())
+        } else {
+            Err(sniff_window_exceeded(prologue))
+        };
+    }
+    let ssa = crate::tokenizer::ServiceStringAdvice::from_bytes(input)?;
+    let mut pos = prologue;
+    if let crate::tokenizer::Head::Una(_) = head {
+        pos += 9;
+        while pos < input.len() && matches!(input[pos], b' ' | b'\t' | b'\r' | b'\n') {
+            pos += 1;
+        }
+    }
+    if pos == input.len() {
+        return Ok(only_prologue());
+    }
+    let window_end = prologue + SNIFF_PROBE_BYTES;
+    if pos >= window_end {
+        return Err(sniff_window_exceeded(pos));
+    }
+    // The window ends before the input does: what it cuts is unknown.
+    let cut = input.len() >= window_end;
+    let window = &input[..input.len().min(window_end)];
+
+    let unb = [b'U', b'N', b'B', ssa.element_sep];
+    let seen = &window[pos..window.len().min(pos + 4)];
+    if !unb.starts_with(seen) {
+        return Ok(Sniff::NoUnb);
+    }
+    if seen.len() < unb.len() {
+        return if cut {
+            Err(sniff_window_exceeded(pos))
+        } else {
+            Ok(Sniff::NoUnb)
+        };
+    }
+    let start = pos + 4;
+    let end = match window[start..]
+        .iter()
+        .position(|&b| b == ssa.component_sep || b == ssa.element_sep || b == ssa.segment_term)
+    {
+        Some(i) => start + i,
+        None if cut => return Err(sniff_window_exceeded(start)),
+        None => window.len(),
+    };
+    let identifier = std::str::from_utf8(&window[start..end])
+        .map_err(|_| EdifactError::InvalidText { offset: start })?;
+    if identifier.is_empty() {
+        return Ok(Sniff::NoUnb);
+    }
+    Ok(Sniff::Found {
+        charset: Charset::from_syntax_identifier(identifier)?,
+        prologue,
+    })
+}
+
+/// The refusal for a syntax identifier outside the sniff window.
+fn sniff_window_exceeded(offset: usize) -> EdifactError {
+    EdifactError::LimitExceeded {
+        limit: "sniff_window",
+        max: SNIFF_PROBE_BYTES as u64,
+        offset,
+    }
+}
 
 /// Wrap a reader so it yields UTF-8, reading the repertoire from the stream's own
 /// `UNB`.
@@ -581,16 +730,18 @@ const SNIFF_PROBE_BYTES: usize = 4096;
 /// The streaming counterpart of [`decode_interchange`], and the one to reach for
 /// when the repertoire is not known in advance:
 /// [`Charset::decoding_reader`] requires naming it, because a `Read` cannot be
-/// rewound after peeking.  This buffers the first 4 KiB, reads `UNB` S001 out of
-/// them, and chains them back in front of the rest — so nothing is lost, and the
-/// memory held does not grow with the interchange (see the bounds below).
+/// rewound after peeking. This buffers the head of the stream, reads `UNB` S001
+/// out of it as [`sniff_charset`] does, and chains it back in front of the rest —
+/// so nothing is lost, and the memory held does not grow with the interchange.
 ///
+/// The prologue (byte order mark and whitespace) passes through untranscoded.
 /// A stream with no `UNB` is passed through unchanged.
 ///
 /// # Resource bounds
 ///
-/// Reads at most the 4 KiB probe before returning, then holds the probe and
-/// one 8 KiB decoding buffer. It applies no limit of its own: bound the parse
+/// Reads at most 8 KiB before returning — the sniff window of a 4 KiB prologue
+/// and the 4 KiB after it — then holds that head and one 8 KiB decoding buffer.
+/// It applies no limit of its own: bound the parse
 /// with [`from_reader_with_config`][crate::from_reader_with_config], whose
 /// limits then count **decoded** bytes (up to twice the raw length for
 /// Latin-1).
@@ -600,7 +751,7 @@ const SNIFF_PROBE_BYTES: usize = 4096;
 /// ```
 /// use edifact::{decode_reader, from_reader};
 ///
-/// let mut raw = b"UNB+UNOC:3+S+R+260101:0900+IC1'NAD+BY+M".to_vec();
+/// let mut raw = b"\xEF\xBB\xBFUNB+UNOC:3+S+R+260101:0900+IC1'NAD+BY+M".to_vec();
 /// raw.push(0xFC); // `ü` in ISO 8859-1
 /// raw.extend_from_slice(b"ller'UNZ+0+IC1'");
 ///
@@ -613,26 +764,46 @@ const SNIFF_PROBE_BYTES: usize = 4096;
 ///
 /// # Errors
 ///
-/// As [`sniff_charset`], plus any I/O error raised while reading the probe.
+/// As [`sniff_charset`], plus any I/O error raised while reading the head. The
+/// returned reader fails on a byte the repertoire leaves undefined with
+/// [`EdifactError::InvalidText`] at its offset in the raw input. When
+/// the head is prologue that runs past the sniff window, the sniff-window
+/// [`EdifactError::LimitExceeded`] arrives from the returned reader instead, at
+/// the first byte that is not whitespace.
 #[allow(clippy::type_complexity)]
 pub fn decode_reader<R: Read>(
     mut reader: R,
 ) -> Result<DecodingReader<std::io::Chain<std::io::Cursor<Vec<u8>>, R>>, EdifactError> {
-    let mut head = vec![0u8; SNIFF_PROBE_BYTES];
+    let mut head = vec![0u8; 2 * SNIFF_PROBE_BYTES];
     let mut filled = 0;
     while filled < head.len() {
-        // `read` is free to return short; loop until the probe is full or the
+        // `read` is free to return short; loop until the head is full or the
         // stream ends, or a `UNB` split across two reads would go unnoticed.
         match reader.read(&mut head[filled..])? {
             0 => break,
             n => filled += n,
         }
     }
+    let complete = filled < head.len();
     head.truncate(filled);
 
-    // No `UNB` means nothing declares a repertoire; pass the bytes through.
-    let charset = sniff_charset(&head)?.unwrap_or(Charset::UnoY);
-    Ok(charset.decoding_reader(std::io::Cursor::new(head).chain(reader)))
+    let sniffed = sniff(&head, complete)?;
+    let seen = head.len();
+    let mut decoding = Charset::UnoY.decoding_reader(std::io::Cursor::new(head).chain(reader));
+    match sniffed {
+        Sniff::Found { charset, prologue } => {
+            decoding.charset = charset;
+            decoding.verbatim = prologue;
+        }
+        // Nothing declares a repertoire; pass the bytes through.
+        Sniff::NoUnb => {}
+        // The head is checked; the guard takes over after it.
+        Sniff::Undecided => {
+            decoding.verbatim = seen;
+            decoding.beyond_window = Some(seen);
+        }
+    }
+    Ok(decoding)
 }
 
 /// Decode a whole interchange to UTF-8, reading the repertoire from its own `UNB`.
@@ -641,16 +812,48 @@ pub fn decode_reader<R: Read>(
 /// (and copies nothing) for ASCII and `UNOY` input, and converts `UNOC`…`UNOK`
 /// payloads that the rest of the crate would otherwise reject as invalid UTF-8.
 ///
-/// An input with no `UNB` is returned unchanged, so wrapping a bare message in
-/// this call is harmless.
+/// The prologue (byte order mark and whitespace) is kept verbatim, so spans of
+/// an ASCII payload equal those [`from_bytes`][crate::from_bytes] reports for the
+/// raw input. An input with no `UNB` is returned unchanged, so wrapping a bare
+/// message in this call is harmless.
 ///
 /// # Errors
 ///
-/// As [`sniff_charset`] and [`Charset::decode`].
+/// As [`sniff_charset`] and [`Charset::decode`]; offsets index `input`.
 pub fn decode_interchange(input: &[u8]) -> Result<Cow<'_, [u8]>, EdifactError> {
-    match sniff_charset(input)? {
-        Some(charset) => charset.transcode_to_utf8(input),
-        None => Ok(Cow::Borrowed(input)),
+    let Sniff::Found { charset, prologue } = sniff(input, true)? else {
+        return Ok(Cow::Borrowed(input));
+    };
+    transcode_after_prologue(input, charset, prologue)
+}
+
+/// [`decode_interchange`] as the decoding parse entry points apply it.
+///
+/// A payload that is UTF-8 unchanged (`UNOA`, `UNOB`, `UNOY`) is left for the
+/// parser to validate, as [`DecodingReader`] leaves it, so the slice and reader
+/// paths report the same first error.
+pub(crate) fn decode_for_parse(input: &[u8]) -> Result<Cow<'_, [u8]>, EdifactError> {
+    match sniff(input, true)? {
+        Sniff::Found { charset, prologue } if !charset.is_utf8() => {
+            transcode_after_prologue(input, charset, prologue)
+        }
+        _ => Ok(Cow::Borrowed(input)),
+    }
+}
+
+/// Transcode `input` after its first `prologue` bytes, which are kept verbatim.
+fn transcode_after_prologue(
+    input: &[u8],
+    charset: Charset,
+    prologue: usize,
+) -> Result<Cow<'_, [u8]>, EdifactError> {
+    let (head, rest) = input.split_at(prologue);
+    match charset
+        .transcode_to_utf8(rest)
+        .map_err(|e| e.rebased(prologue))?
+    {
+        Cow::Borrowed(_) => Ok(Cow::Borrowed(input)),
+        Cow::Owned(text) => Ok(Cow::Owned([head, &text].concat())),
     }
 }
 

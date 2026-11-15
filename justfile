@@ -14,7 +14,7 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
 # The MSRV, kept in step with `rust-version` in Cargo.toml and the msrv-check job.
-msrv := "1.85.0"
+msrv := "1.88.0"
 
 # CI passes --locked so a stale Cargo.lock fails the build rather than being
 # silently rewritten.  Clear it locally while changing dependencies.
@@ -22,6 +22,12 @@ locked := "--locked"
 
 # Enables the derive trybuild suite, which is off by default because it is slow.
 ui_env := "EDIFACT_UI_TESTS=1"
+
+# The cargo-semver-checks release the `semver` CI job installs.
+semver_checks_version := "0.51.0"
+
+# Printed by every semver run: the derive's contract has a different gate.
+derive_note := "edifact-derive is a proc-macro crate and is not semver-analysed; its contract is covered by the derive UI suite (EDIFACT_UI_TESTS=1)."
 
 [private]
 default:
@@ -135,6 +141,18 @@ test-no-default:
 test-all-features:
     cargo test -p edifact --all-features {{ locked }}
 
+# The `dtm` codec alone, in debug and release (range edges); `dtm` must add no
+# crate to the dependency tree.
+test-dtm:
+    cargo test -p edifact --no-default-features --features dtm {{ locked }}
+    cargo test -p edifact --release --no-default-features --features dtm {{ locked }} --test dtm_compare
+    diff <(cargo tree -p edifact -e normal --no-default-features --prefix none {{ locked }}) \
+         <(cargo tree -p edifact -e normal --no-default-features --features dtm --prefix none {{ locked }})
+
+# The `time` conversions without the default features.
+test-dtm-time:
+    cargo test -p edifact --no-default-features --features dtm-time {{ locked }}
+
 # Compile and run the cookbook examples.
 test-examples:
     cargo test -p edifact --all-features --examples {{ locked }}
@@ -144,7 +162,7 @@ build-benches:
     cargo test -p edifact --benches --no-run {{ locked }}
 
 # Every feature-matrix entry, in CI's order.
-feature-matrix: check test test-no-default test-all-features ui test-examples build-benches
+feature-matrix: check test test-no-default test-all-features test-dtm test-dtm-time ui test-examples build-benches
 
 # ── MSRV (the `msrv-check` CI job) ───────────────────────────────────────────
 
@@ -160,7 +178,7 @@ nightly-install:
 msrv:
     {{ ui_env }} cargo +{{ msrv }} test --workspace --all-features {{ locked }} --no-fail-fast
 
-# ── audits and release (the `deny` and `release-check` CI jobs) ───────────────
+# ── audits and release (the `deny`, `release-check` and `semver` CI jobs) ──────
 
 # --all-features decides whether the optional miette subtree is in the graph;
 # without it the audit covers a graph CI never sees.
@@ -178,16 +196,18 @@ deny-install:
 # because otherwise `just ci` would be unusable mid-change — the one time you
 # most want to know whether a new file made it into the package.
 
-[doc("Verify the derive crate packages cleanly.")]
+[doc("Verify both crates package cleanly and carry README and licences.")]
 publish-check:
     #!/usr/bin/env bash
     set -euo pipefail
+    rm -f target/package/*.crate target/package/tmp-crate/*.crate
     if [[ -n "$(git status --porcelain 2>/dev/null)" ]]; then
         echo "note: working tree is dirty — packaging it as-is (--allow-dirty)"
-        cargo publish --dry-run -p edifact-derive --allow-dirty
+        cargo publish --dry-run --workspace --allow-dirty
     else
-        cargo publish --dry-run -p edifact-derive {{ locked }}
+        cargo publish --dry-run --workspace {{ locked }}
     fi
+    bash scripts/package-contents-check.sh
 
 # They are released as a pair, and the main crate depends on the derive by
 # exact version.
@@ -208,14 +228,61 @@ versions-match:
         exit 1
     fi
 
-# Everything the `release-check` CI job verifies.
-release-check: publish-check versions-match
+# The `semver` CI job.  Needs network: the baseline is the newest non-yanked
+# `edifact` on crates.io (never the old `edifact-rs`).  The release type comes
+# from the workspace version: equal to or a patch above the baseline rejects
+# breaking changes, the next minor allows them.
+
+[doc("Install the pinned cargo-semver-checks.")]
+semver-install:
+    cargo install cargo-semver-checks --locked --version {{ semver_checks_version }}
+
+[doc("Fail on a breaking change to `edifact` at a non-breaking version.")]
+semver-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    found=$(cargo semver-checks --version 2>/dev/null || true)
+    if [[ "$found" != "cargo-semver-checks {{ semver_checks_version }}" ]]; then
+        echo "cargo-semver-checks {{ semver_checks_version }} required (found: ${found:-none}) — run \`just semver-install\`" >&2
+        exit 1
+    fi
+    hint="Breaking change at a non-breaking version: bump workspace.package.version to the next minor (and the edifact-derive requirement in crates/edifact/Cargo.toml) and add a Migration note under [Unreleased]."
+    status=0
+    cargo semver-checks -p edifact --all-features || status=$?
+    if [[ "$status" -eq 0 ]]; then
+        cargo semver-checks -p edifact --default-features || status=$?
+    fi
+    echo "{{ derive_note }}"
+    if [[ "$status" -eq 100 ]]; then
+        echo "error: $hint" >&2
+    elif [[ "$status" -ne 0 ]]; then
+        echo "error: semver check could not run (crates.io baseline unreachable or build failed)" >&2
+    fi
+    exit "$status"
+
+[doc("Advisory: list every break against the last release; never fails.")]
+semver-report:
+    -cargo semver-checks -p edifact --all-features --release-type minor
+
+# Everything the `release-check` and `semver` CI jobs verify.
+release-check: publish-check versions-match semver-check
 
 # ── property tests and benchmarks ────────────────────────────────────────────
 
 # The `fuzz-smoke` CI job: bolero targets in release, with a long random sweep.
 fuzz ITERATIONS="50000":
-    BOLERO_RANDOM_ITERATIONS="{{ ITERATIONS }}" cargo test -p edifact --release --test bolero_harness {{ locked }}
+    BOLERO_RANDOM_ITERATIONS="{{ ITERATIONS }}" cargo test -p edifact --release --features dtm --test bolero_harness {{ locked }}
+
+# The slice and reader paths agree on every input: the bolero parity targets
+# at CI depth, then the exhaustive sweep over short inputs (release: length <= 5).
+fuzz-parity ITERATIONS="1000000":
+    BOLERO_RANDOM_ITERATIONS="{{ ITERATIONS }}" cargo test -p edifact --release --test bolero_harness {{ locked }} fuzz_parity
+    cargo test -p edifact --release --test parse_path_parity {{ locked }} exhaustive
+
+# Resource bounds at the default limits (256 MiB streams) and the heap
+# factor, in release.
+test-release-limits:
+    cargo test -p edifact --release --test resource_limits --test allocation_budget {{ locked }}
 
 # Divan microbenchmarks.
 bench:
@@ -238,7 +305,7 @@ bench-compare FROM="main" TO="pr":
 # Benchmarks and the MSRV job are not included — see `ci-full`.
 
 [doc("Everything CI runs, on this toolchain.")]
-ci: fmt-check clippy concepts-check feature-matrix doc doc-docsrs deny release-check fuzz
+ci: fmt-check clippy concepts-check feature-matrix doc doc-docsrs deny release-check fuzz fuzz-parity test-release-limits
 
 # `ci` plus the MSRV job and the benchmark smoke run: the full pre-release gate.
 ci-full: ci msrv bench-smoke

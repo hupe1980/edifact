@@ -27,7 +27,7 @@ fn grouped(value: usize) -> String {
     let digits = value.to_string();
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(' ');
         }
         out.push(c);
@@ -98,4 +98,31 @@ fn evidence_table_names_existing_tests() {
         }
     }
     assert!(checked > 10, "only {checked} test references found");
+}
+
+#[test]
+fn guides_quote_default_limits() {
+    use edifact::ReaderConfig;
+    let factor = format!("{} ×", committed("HEAP_FACTOR"));
+    let limits = [
+        grouped(ReaderConfig::DEFAULT_MAX_SEGMENT_BYTES),
+        grouped(ReaderConfig::DEFAULT_MAX_INPUT_BYTES as usize),
+        grouped(ReaderConfig::DEFAULT_MAX_MESSAGE_BYTES as usize),
+    ];
+    for name in ["performance.md", "parsing.md"] {
+        let text = read(&root().join("../../site/content/docs").join(name));
+        for figure in limits.iter().chain([&factor]) {
+            assert!(
+                text.contains(figure.as_str()),
+                "{name} does not quote `{figure}`"
+            );
+        }
+    }
+    let rustdoc = read(&root().join("src/parser.rs"));
+    for figure in limits.iter().chain([&factor]) {
+        assert!(
+            rustdoc.contains(figure.as_str()),
+            "the ReaderConfig rustdoc does not quote `{figure}`"
+        );
+    }
 }

@@ -4,33 +4,22 @@ description = "Generate the ISO 9735-4 syntax and service report message from a 
 weight = 85
 +++
 
-`CONTRL` is how you tell a partner what happened to their interchange: that it
-arrived, that it was syntactically accepted, or that it was rejected and exactly
-where. It is defined by **ISO 9735-4**, part of the syntax standard rather than
-of a directory release — so, like the envelope segments, the standard decides
-its shape. Its own `UNH` follows the syntax version of the interchange it
-answers (see [Choosing the message identifier](#choosing-the-message-identifier)).
+`CONTRL` tells a partner that their interchange arrived, was syntactically
+accepted, or was rejected and where. It is defined by **ISO 9735-4**, part of
+the syntax standard, not of a directory release. `edifact` builds one from a
+[`ValidationReport`](@/docs/validation.md), so the acknowledgement you send and
+the findings you log cannot disagree.
 
-`edifact` builds one from a [`ValidationReport`](@/docs/validation.md), which
-means the acknowledgement you send and the findings you logged cannot disagree.
-
----
-
-## What CONTRL does and does not say
-
-ISO 9735-4 §5.2 is explicit: acknowledging an interchange with `CONTRL` reports
-on **syntax**, not on content. A `CONTRL` saying "acknowledged" means the
-interchange parsed and its envelope was consistent. It does not mean anyone
-agreed to the order.
-
-Application-level replies — `APERAK`, `ORDRSP`, and the rest — are separate
-messages and are not this crate's business.
+A `CONTRL` reports on **syntax**, not content (§5.2): "acknowledged" means the
+interchange parsed and its envelope was consistent, not that anyone agreed to
+the order. Application replies (`APERAK`, `ORDRSP`, …) are out of scope.
 
 ---
 
-## The two messages
+## Receipt, acknowledgement, rejection
 
-§5.3.1 allows at most two `CONTRL` messages per subject interchange:
+§5.3.1 allows at most two `CONTRL` messages per subject interchange: an
+optional receipt, then the result of the check.
 
 | | Action code | When | Built with |
 |---|---|---|---|
@@ -38,9 +27,8 @@ messages and are not this crate's business.
 | **Acknowledgement** | `7` | After a clean syntax check | `Contrl::acknowledgement` |
 | **Rejection** | `4` | After a failed syntax check | `Contrl::from_report` |
 
-The receipt is optional. The second message is mandatory whenever the subject
-interchange asked for an acknowledgement in `UNB` DE 0031 — check
-`interchange.ack_requested()` before deciding whether you owe one.
+The second message is mandatory when the subject's `UNB` DE 0031 requests an
+acknowledgement: check `interchange.ack_requested()`.
 
 ```rust
 use edifact::{Contrl, from_bytes, validate_envelope};
@@ -63,21 +51,17 @@ assert_eq!(
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-A clean interchange needs no `UCM` per message: §5.3.4 makes the `UCI`'s
-acknowledgement cover every message inside it, and a redundant `UCM` adds
-nothing.
+A clean interchange gets no `UCM` per message: the `UCI` acknowledgement
+covers every message inside it (§5.3.4).
 
 ---
 
 ## Reporting a failed check
 
-`Contrl::from_report` takes the subject interchange, its segments, and the
-report. The segments are what turn a finding's byte span into the segment
-position `UCS` DE 0096 needs, so errors land where they happened instead of
-piling up on the interchange.
-
-Use the **lenient** path: it is the only one that yields both an interchange and
-its faults, which is precisely what a `CONTRL` reports.
+`Contrl::from_report` takes the subject interchange, its segments and the
+report. The segments turn a finding's byte span into the `UCS` DE 0096 segment
+position. Use the **lenient** envelope path: it yields both the interchange and
+its faults.
 
 ```rust
 use edifact::{Contrl, ValidationContext, from_bytes, validate_envelope_lenient};
@@ -105,8 +89,7 @@ assert!(wire.contains("UCD+12+2:1'"));
 ```
 
 Warnings are reported but do not reject: the interchange above stays
-acknowledged (`7`) while still naming the offending value. §5.3.3 allows exactly
-that — "errors may be reported even if the referenced-level is acknowledged".
+acknowledged (`7`) and still names the value (§5.3.3).
 
 ---
 
@@ -123,19 +106,12 @@ UCI   the interchange          → UNB / UNZ
     UCD a data element         → by position within that segment
 ```
 
-Which levels appear follows the subject interchange. §5.3.1 makes segment groups
-1 and 3 mutually exclusive: an interchange that uses `UNG`/`UNE` is reported
-through `UCF`, and one that does not gets `UCM` directly under the `UCI`. There
-is nothing to configure — `from_report` reads the shape off the subject.
+The levels follow the subject: an interchange with `UNG`/`UNE` is reported
+through `UCF`, one without gets `UCM` directly under `UCI` (§5.3.1).
 
-§5.3.3 asks for the **lowest** level that can express a fault, and forbids
-repeating the code further up. But Annex A decides which level may carry which
-code, and the two rules can pull in opposite directions: "duplicate detected"
-(`26`) is meaningless below the message, so pushing it down would emit a `UCS`
-that says a segment is wrong without saying how.
-
-`edifact` resolves that the way the standard requires — the lowest level that
-is *both* able to locate the fault and permitted to carry the code:
+A fault is reported on the lowest level that can both locate it and, per
+Annex A, carry its code (§5.3.3); the code is not repeated further up.
+"Duplicate detected" (`26`), for instance, is not permitted below the message:
 
 ```rust
 use edifact::contrl::{ReportingLevel, SyntaxError};
@@ -171,14 +147,13 @@ position either way. When the erroneous element is known, S011 follows:
 The `UCM` copies the subject's DE 0062 and S009 in full — DE 0057 included,
 so `UNH+1+UTILMD:D:11A:UN:S2.1` is named `UCM+1+UTILMD:D:11A:UN:S2.1+…`.
 
-`with_interchange_error` applies the same rule: a code Annex A forbids at the
-interchange level is dropped rather than written, because a `CONTRL` carrying an
-illegal code is one the partner's translator rejects.
+`with_interchange_error` drops a code Annex A forbids at the interchange
+level.
 
 ### Groups
 
-A fault in a group's own `UNG`/`UNE` rejects that group and, implicitly,
-everything in it — while the interchange around it stays acknowledged:
+A fault in a group's own `UNG`/`UNE` rejects that group and everything in it;
+the interchange around it stays acknowledged:
 
 ```rust
 # use edifact::{Contrl, ValidationContext, from_bytes, validate_envelope_lenient};
@@ -219,10 +194,10 @@ it answers (`UNB` S001 DE 0002):
 | `1`, `2`, `3` | `CONTRL:D:3:UN` |
 | empty or unknown | `CONTRL:4:1:UN` — the `CONTRL` is how code `2` "syntax version not supported" is reported, so it is built rather than refused |
 
-Every constructor derives it that way. A partner agreement that wants something
-else — an association assigned code such as EANCOM's `EAN005`, or `4:1:UN` for
-a syntax 3 subject — sets it explicitly with `ContrlIdentifier`, either in
-`ContrlOptions` or on a built `CONTRL` with `with_identifier`:
+Every constructor derives it. A partner agreement that wants something else —
+an association assigned code such as EANCOM's `EAN005`, or `4:1:UN` for a
+syntax 3 subject — sets `ContrlIdentifier` in `ContrlOptions` or with
+`with_identifier`:
 
 ```rust
 use edifact::contrl::{Contrl, ContrlIdentifier, ContrlOptions};
@@ -260,11 +235,10 @@ longer than three characters, DE 0057 empty or longer than six — is
 
 ## Community rules: action codes and whole-interchange rejection
 
-ISO 9735-4 rejects per level: a faulty message is rejected on its `UCM` while
-the `UCI` above it stays at `7`. Some communities rule otherwise — an interchange
-is either acknowledged or rejected as a whole, and only some action codes are
-admitted at each level. `ContrlOptions` expresses those rules; the library ships
-no community preset.
+ISO 9735-4 rejects per level: a faulty message is rejected on its `UCM`, the
+`UCI` above stays at `7`. Some communities accept or reject an interchange as a
+whole and admit only some action codes per level. `ContrlOptions` expresses
+those rules; no community preset ships.
 
 | Option | Default | Effect |
 |---|---|---|
@@ -273,8 +247,8 @@ no community preset.
 | `rejection` | `RejectionScope::PerLevel` | `RejectionScope::Interchange`: every level above a rejected one carries `4` without DE 0085, and only rejected messages get a `UCM` |
 | `report_warnings` | `true` | `false` leaves warnings out — a guide that admits only `4` on `UCM` cannot express a warning's `7` |
 
-An action the policy forbids is an error, `EdifactError::ActionNotPermitted`
-naming the segment and the code — never silently emitted, never rewritten. The
+An action the policy forbids is `EdifactError::ActionNotPermitted`, naming the
+segment and the code; it is never emitted or rewritten. The
 `_with` constructors (`receipt_with`, `acknowledgement_with`,
 `from_report_with`, `from_recovered`) take the options and return a `Result`;
 the option-less ones keep the defaults and cannot fail.
@@ -337,28 +311,29 @@ action codes and passes `validate_envelope`.
 
 ## Error-code mapping
 
-Every `EdifactError` maps to the narrowest Annex A code that is true of it.
-§5.3.3 asks for exactly that: "if a precise error code is defined, a more general
-(and imprecise) error code should not be used."
+Every `EdifactError` maps to the narrowest Annex A code that is true of it
+(§5.3.3).
 
 | Finding | `CONTRL` code |
 |---|---|
-| `MessageCountMismatch`, `SegmentCountMismatch` | `29` control count does not match |
+| `MessageCountMismatch`, `GroupCountMismatch`, `SegmentCountMismatch` | `29` control count does not match (`GroupCountMismatch` on the group's `UCF`) |
 | `QualifierMismatch` (control references) | `28` references do not match |
 | `DuplicateReference` | `26` duplicate detected |
 | `MissingRequiredElement`, `MissingSegment` | `13` missing |
-| `InvalidCodeValue`, `BlankDataElementValue` | `12` invalid value |
-| `InvalidSegmentForMessage` | `15` not supported in this position |
+| `InvalidCodeValue`, `BlankDataElementValue`, `InvalidDateTime` | `12` invalid value |
+| `InvalidSegmentForMessage`, `ReservedServiceSegmentTag` | `15` not supported in this position |
+| `UnsupportedSyntaxVersion` | `2` syntax version or level not supported, on `UCI` naming `UNB` S001 |
 | `InvalidElementCount`, `InvalidComponentCount` | `16` too many constituents |
 | `UnrecognisedSyntaxIdentifier`, `UnsupportedCharset` | `46` character set not supported |
 | `CharacterNotInRepertoire`, `InvalidText` | `21` invalid character(s) |
 | `InvalidUna`, `InvalidDelimiter` | `22` invalid service character(s) |
-| `EmptyInterchange` | `32` lower level empty |
+| `EmptyInterchange`, `EmptyGroup` | `32` lower level empty (`EmptyGroup` on the group's `UCF`) |
 | `EmptyMessage` | `13` missing, on the message's `UCM` (Annex A permits `32` only on `UCI`/`UCF`) |
-| `PackageNotSupported` | `47` envelope functionality not supported |
+| `PackageNotSupported`, `InteractiveSegmentNotSupported`, `SecuritySegmentNotSupported` | `47` envelope functionality not supported |
+| `DataAfterInterchangeTrailer` | `33` invalid occurrence outside message, package or group, on `UCI` |
 | anything else | `18` unspecified error |
 
-Where the location changes the honest code, the location wins: an invalid
+Where the location changes the code, the location wins: an invalid
 segment tag (`E006`) or a stray data token (`E028`) inside a message is `12`
 "invalid value" on data element position 1 — the tag is the invalid value —
 while outside a message it stays `33`; an invalid `UNA` (`E007`) is `20`
@@ -367,24 +342,20 @@ at the lowest level that locates the fault climbs to the next level that
 permits it (message → group → interchange), so a `CONTRL` never carries a code
 its level may not use.
 
-`SyntaxError::for_issue` does the same job from a `ValidationIssue`'s stable
-code, so findings from **any** validator map correctly — including third-party
-ones that know nothing about `CONTRL`. An issue with no stable code, such as a
-profile-rule finding, becomes `18`, which is what the annex provides for a fault
-it does not name.
+`SyntaxError::for_issue` maps a `ValidationIssue` by its stable code, so
+findings from any validator map. An issue with no stable code, such as a
+profile-rule finding, becomes `18`.
 
 ---
 
 ## Answering an interchange that does not parse
 
-`from_report` needs a validated interchange, and the strict parser stops at the
-first fault — so an interchange whose messages do not tokenize yields neither.
-A `CONTRL` is still owed for it, addressed to the `UNB` parties and pointing at
-the broken segment.
+The strict parser stops at the first fault, so an interchange whose messages
+do not tokenize yields no validated interchange. A `CONTRL` is still owed,
+addressed to the `UNB` parties and pointing at the broken segment.
 
 `RecoveredInterchange::scan` runs the same parser, records a fault where it
-refuses a segment, and resumes after that segment's terminator. From the result
-it reads the `UNB` addressing, the message windows with their `UNH` identity,
+refuses a segment, and resumes after that segment's terminator. It reads the `UNB` addressing, the message windows with their `UNH` identity,
 and a `ContrlLocation` for every fault — reporting level, message, `UCS`
 DE 0096, `UCD` DE 0098 / DE 0104, the service segment and the DE 0085 code:
 
@@ -422,8 +393,9 @@ What the scan guarantees:
   the same bytes; the first fault carries the strict parser's error. After a
   fault it resumes after the next unreleased segment terminator, searching no
   further than `max_segment_bytes`.
-- **Bounded.** Every `ReaderConfig` limit applies (faults count as segments,
-  every consumed byte against `max_input_bytes`), plus
+- **Bounded.** Every `ReaderConfig` limit applies — by default 64 KiB per
+  segment, 16 MiB per message, 256 MiB in total (faults count as message
+  bytes, every consumed byte against `max_input_bytes`) — plus
   `RecoveryConfig::max_faults` (default 1 000).
 - **Nothing invented.** A message without `UNT` closes at the next `UNH` or
   `UNZ` with no trailer; an unreadable `UNB` sender, recipient or control
@@ -499,9 +471,8 @@ assert_eq!(
 
 ## Sending it
 
-A `CONTRL` must travel in an interchange of its own and never inside a group
-(§5.3). `to_interchange_bytes` builds that envelope, swapping sender and
-recipient so the reply goes back the way it came:
+A `CONTRL` travels in an interchange of its own, never inside a group (§5.3).
+`to_interchange_bytes` builds that envelope with sender and recipient swapped:
 
 ```rust
 # use edifact::{Contrl, from_bytes, validate_envelope};
@@ -516,8 +487,12 @@ assert!(wire.ends_with("UNZ+1+ACK-1'"));
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-`UNT` DE 0074 and `UNZ` DE 0036 are computed from what was actually emitted, so
-the counts are right by construction.
+The reply `UNB` is an `InterchangeHeader` written with
+`Writer::begin_interchange`: a subject without a sender or recipient is
+`E008`/`E021`, a party the repertoire cannot carry `E038`, and no bytes are
+written. Identity values read back as the subject's. `UNT` DE 0074 and `UNZ`
+DE 0036 are computed from what was emitted; the bytes are in the declared
+repertoire (`to_interchange_string` decodes them).
 
 ---
 
@@ -552,15 +527,12 @@ assert!(!report.has_errors());
 
 ## Scope
 
-This module generates and reads the `CONTRL` **message**. It does not implement
-the two other service messages of the ISO 9735 family — `AUTACK` (part 6) and
-`KEYMAN` (part 9) — which belong to the security parts this crate does not
-cover.
+This module generates and reads `CONTRL`. `AUTACK` (part 6) and `KEYMAN`
+(part 9) belong to the security parts, which this crate does not cover.
 
-`UNO`…`UNP` **packages** are reported rather than acknowledged: their object is
-arbitrary binary data this crate does not tokenize, so a subject interchange
-carrying one raises `E044` and maps to code `47`, "envelope functionality not
-supported" — which is the honest answer rather than a silent acknowledgement.
+`UNO`…`UNP` **packages** carry binary data this crate does not tokenize: a
+subject carrying one raises `E044`, reported as `47` "envelope functionality
+not supported".
 
 ---
 

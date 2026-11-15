@@ -342,16 +342,15 @@ fn declared_components_cap_a_composite_arity() {
 }
 
 #[test]
-fn absent_optional_component_serializes_as_an_empty_slot() {
-    // A missing trailing component must still hold its position, exactly as the
-    // positional derive emits it.
+fn absent_trailing_component_is_truncated() {
+    // ISO 9735-1 §8.7.2: a trailing empty component and its separator are omitted.
     let party = SenderParty {
         party_id: "9900112233445".to_owned(),
         agency: None,
     };
     assert_eq!(
         edifact::to_edifact_string(&party).expect("serialize"),
-        "NAD+MS+9900112233445::'"
+        "NAD+MS+9900112233445'"
     );
 }
 
@@ -628,7 +627,7 @@ mod layout_audit {
         // width its definition declares.  Not a valid interchange, and not
         // meant to be: the audit reads segments, not envelopes.
         let input: &[u8] = b"\
-UNB+UNOA:4:SCD:XML+SENDER:14:REV:SUB+RECIPIENT:14:FWD:SUB+20260101:0900+IC4711+PW:AA+APPREF+A+1+COMMS+1'\
+UNB+UNOA:4:SCD:XML:01+SENDER:14:REV:SUB+RECIPIENT:14:FWD:SUB+20260101:0900+IC4711+PW:AA+APPREF+A+1+COMMS+1'\
 UNG+ORDERS+APPSND:14+APPRCV:14+20260101:0900+GRP1+UN+D:96A:EAN008+APPPW'\
 UNH+MSG1+ORDERS:D:96A:UN:EAN008:CLD1:SUB+CAR+1:C+SUBSET:1:0:UN+GUIDE:1:0:UN+SCEN:1:0:UN'\
 UNS+D'\

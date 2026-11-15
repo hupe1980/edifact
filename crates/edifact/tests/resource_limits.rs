@@ -236,8 +236,32 @@ fn max_segment_bytes_passes_for_short_segments() {
 }
 
 #[test]
+fn default_limits_are_the_documented_constants() {
+    assert_eq!(ReaderConfig::DEFAULT_MAX_SEGMENT_BYTES, 65_536);
+    assert_eq!(ReaderConfig::DEFAULT_MAX_INPUT_BYTES, 268_435_456);
+    assert_eq!(ReaderConfig::DEFAULT_MAX_MESSAGE_BYTES, 16_777_216);
+    let recovery = RecoveryConfig::default();
+    for config in [ReaderConfig::default(), *recovery.reader_config()] {
+        assert_eq!(
+            config.max_segment_bytes,
+            ReaderConfig::DEFAULT_MAX_SEGMENT_BYTES
+        );
+        assert_eq!(
+            config.max_input_bytes,
+            Some(ReaderConfig::DEFAULT_MAX_INPUT_BYTES)
+        );
+        assert_eq!(
+            config.max_message_bytes,
+            Some(ReaderConfig::DEFAULT_MAX_MESSAGE_BYTES)
+        );
+        assert_eq!(config.max_segments, None);
+        assert_eq!(config.max_messages, None);
+    }
+}
+
+#[test]
 fn default_max_segment_bytes_is_64_kib() {
-    const LIMIT: usize = 65_536;
+    const LIMIT: usize = ReaderConfig::DEFAULT_MAX_SEGMENT_BYTES;
     assert_eq!(ReaderConfig::default().max_segment_bytes, LIMIT);
 
     // The limit counts the segment body from the tag, terminator excluded;
@@ -394,14 +418,15 @@ fn recovering_scan_counts_whitespace_against_max_input_bytes() {
 }
 
 #[test]
-fn recovering_scan_applies_max_segments_per_message() {
-    // Faults are segments on the wire, so a faulted segment inside a message
-    // counts against its cap like any other.
+fn recovering_scan_applies_max_message_bytes() {
+    // Faulted bytes are message bytes, so a faulted segment inside a message
+    // counts against its cap like any other: `UNH`, `BGM` and `bad` fill the
+    // 34 bytes, and the `DTM` would end past them.
     let input = b"UNH+1+ORDERS:D:96A:UN'BGM+220'bad'DTM+137:1:102'UNT+5+1'";
-    let reader = ReaderConfig::default().max_segments_per_message(3);
+    let reader = ReaderConfig::default().max_message_bytes(34);
     let items = recover(input, RecoveryConfig::new().reader(reader));
     let fault = terminal(&items);
-    let offset = assert_limit_error(fault.error(), "max_segments_per_message", 3);
+    let offset = assert_limit_error(fault.error(), "max_message_bytes", 34);
     assert_eq!(&input[offset..offset + 3], b"DTM");
 }
 
@@ -578,6 +603,16 @@ fn assert_same_on_both_paths(input: &[u8], config: ReaderConfig) -> Outcomes {
     slice
 }
 
+/// `max_message_bytes` that fits `UNH` and `segments - 1` `FTX` exactly.
+fn window_cap(segments: usize) -> u64 {
+    (UNH.len() + (segments - 1) * FTX.len()) as u64
+}
+
+/// The per-message cap of the unterminated-window tests: 1 000 segments.
+fn msg_cap() -> u64 {
+    window_cap(1_000)
+}
+
 /// Byte offset of the `n`th (1-based) segment of a window that starts right
 /// after `UNB` with `UNH` followed by `FTX` segments.
 fn window_segment_offset(n: usize) -> usize {
@@ -605,11 +640,11 @@ fn the_generator_unit_is_63_bytes() {
 fn assert_unterminated_message_is_stopped(
     stream: impl FnOnce(Generator, ReaderConfig) -> (Vec<String>, Option<EdifactError>),
 ) {
-    let config = ReaderConfig::default().max_segments_per_message(1_000);
+    let config = ReaderConfig::default().max_message_bytes(msg_cap());
     let (generator, served) = Generator::new(&[UNB, UNH].concat(), FTX, WINDOW_STOP);
     let (_, error) = stream(generator, config);
     let error = error.expect("the per-message cap must stop the stream");
-    let offset = assert_limit_error(&error, "max_segments_per_message", 1_000);
+    let offset = assert_limit_error(&error, "max_message_bytes", msg_cap());
     assert_eq!(offset, window_segment_offset(1_001));
     assert!(
         served.get() < WINDOW_STOP,
@@ -679,7 +714,7 @@ fn conveniences_match_default_config_variants_within_limits() {
     let generous = ReaderConfig::default()
         .max_segments(1_000)
         .max_messages(10)
-        .max_segments_per_message(100)
+        .max_message_bytes(1 << 16)
         .max_input_bytes(1 << 20);
     let defaults = Outcomes {
         segments: outcome(edifact::from_bytes(&input).map(|r| r.map(Segment::into_owned))),
@@ -707,7 +742,7 @@ fn limit_error_terminates_windows_and_typed_iterators() {
     // `outcome` asserts that `next()` is `None` twice after the error, for
     // every iterator `assert_same_on_both_paths` runs: the two segment
     // iterators, both `MessageWindows`, and the four typed iterators.
-    let config = ReaderConfig::default().max_segments_per_message(10);
+    let config = ReaderConfig::default().max_message_bytes(window_cap(10));
     let outcomes = assert_same_on_both_paths(&unterminated(50), config);
     for (_, error) in [
         &outcomes.segments,
@@ -717,8 +752,8 @@ fn limit_error_terminates_windows_and_typed_iterators() {
     ] {
         assert_limit_error(
             error.as_ref().expect("limit error"),
-            "max_segments_per_message",
-            10,
+            "max_message_bytes",
+            window_cap(10),
         );
     }
 }
@@ -731,7 +766,7 @@ fn max_messages_alone_does_not_bound_a_window() {
 
     // `max_messages(1)` admits the one message — and buffers all of it.
     let (generator, served) = Generator::new(&header, FTX, stop);
-    let config = ReaderConfig::default().max_messages(1);
+    let config = ReaderConfig::unbounded().max_messages(1);
     let (windows, error) = outcome(message_windows_from_reader_with_config(generator, config));
     assert!(windows.is_empty());
     assert_eq!(error.as_ref().map(EdifactError::stable_code), Some("E001"));
@@ -739,9 +774,9 @@ fn max_messages_alone_does_not_bound_a_window() {
 
     // The per-message cap is what stops it.
     let (generator, served) = Generator::new(&header, FTX, stop);
-    let config = config.max_segments_per_message(1_000);
+    let config = config.max_message_bytes(msg_cap());
     let (_, error) = outcome(message_windows_from_reader_with_config(generator, config));
-    let offset = assert_limit_error(&error.expect("E036"), "max_segments_per_message", 1_000);
+    let offset = assert_limit_error(&error.expect("E036"), "max_message_bytes", msg_cap());
     assert_eq!(offset, window_segment_offset(1_001));
     assert!(served.get() < stop);
 }
@@ -788,14 +823,14 @@ fn peak_heap_bounded_by_limits_unterminated() {
     // One window of at most 1 000 owned 63-byte segments, the window vector and
     // an 8 KiB read buffer: about 1 MB, asserted below 2 MiB — and the same
     // whether the generator could serve 1 MiB or 10 MiB more.
-    let config = ReaderConfig::default().max_segments_per_message(1_000);
+    let config = ReaderConfig::default().max_message_bytes(msg_cap());
     let header = [UNB, UNH].concat();
     let run = |stop: u64| {
         let (peak, windows, error) = peak_heap(&header, FTX, stop, |generator| {
             message_windows_from_reader_with_config(generator, config)
         });
         assert_eq!(windows, 0);
-        assert_limit_error(&error.expect("E036"), "max_segments_per_message", 1_000);
+        assert_limit_error(&error.expect("E036"), "max_message_bytes", msg_cap());
         peak
     };
     let short = run(1 << 20);
@@ -834,25 +869,34 @@ fn long_lived(count: usize, last: Option<usize>) -> (Vec<u8>, usize) {
     (input, unt)
 }
 
+/// Byte length of `long_lived`'s last message of `last` segments.
+fn last_message_len(last: usize) -> u64 {
+    (UNH.len() + (last - 2) * FTX.len() + format!("UNT+{last}+1'").len()) as u64
+}
+
 #[test]
 fn per_message_cap_on_long_lived_stream() {
     // No whole-input limit: only the oversized message is refused, after the
     // 3 000 good ones — which `max_segments` could not do.
-    let config = ReaderConfig::default().max_segments_per_message(50);
+    let cap = last_message_len(51) - 1;
+    let config = ReaderConfig::unbounded().max_message_bytes(cap);
     let (input, unt) = long_lived(3_000, Some(51));
     let outcomes = assert_same_on_both_paths(&input, config);
     assert_eq!(outcomes.windows.0.len(), 3_000);
     let offset = assert_limit_error(
         outcomes.windows.1.as_ref().expect("E036"),
-        "max_segments_per_message",
-        50,
+        "max_message_bytes",
+        cap,
     );
-    assert_eq!(offset, unt, "at the start of the 51st segment, its UNT");
+    assert_eq!(
+        offset, unt,
+        "at the start of the segment that overflows, its UNT"
+    );
 }
 
 #[test]
 fn per_message_cap_exact_fit() {
-    let config = ReaderConfig::default().max_segments_per_message(50);
+    let config = ReaderConfig::default().max_message_bytes(last_message_len(50));
     let (input, _) = long_lived(3, Some(50));
     let outcomes = assert_same_on_both_paths(&input, config);
     assert_eq!(outcomes.windows, (outcomes.windows.0.clone(), None));
@@ -863,7 +907,8 @@ fn per_message_cap_exact_fit() {
 fn envelope_segments_do_not_count() {
     let input = b"UNB+UNOC:3+S+R+260101:0900+IC1'UNG+ORDERS+S+R+260101:0900+G1+UN+D:96A'\
 UNH+1+ORDERS:D:96A:UN'BGM+220+1'UNT+3+1'UNE+1+G1'UNZ+1+IC1'";
-    let config = ReaderConfig::default().max_segments_per_message(3);
+    // Exactly the 41 bytes of `UNH+1+ORDERS:D:96A:UN'BGM+220+1'UNT+3+1'`.
+    let config = ReaderConfig::default().max_message_bytes(41);
     let outcomes = assert_same_on_both_paths(input, config);
     assert_eq!(outcomes.segments.0.len(), 7);
     assert_eq!(outcomes.segments.1, None);
@@ -873,15 +918,16 @@ UNH+1+ORDERS:D:96A:UN'BGM+220+1'UNT+3+1'UNE+1+G1'UNZ+1+IC1'";
 fn unh_inside_open_message_restarts_count() {
     let input = b"UNH+1+ORDERS:D:96A:UN'FTX+AAA+++A'FTX+AAA+++B'\
 UNH+2+ORDERS:D:96A:UN'FTX+AAA+++C'FTX+AAA+++D'UNT+6+2'";
-    let config = ReaderConfig::default().max_segments_per_message(3);
+    // `UNH` and two 12-byte `FTX` fill 46 bytes.
+    let config = ReaderConfig::default().max_message_bytes(46);
     let outcomes = assert_same_on_both_paths(input, config);
     // The segment stream restarts the count at the second UNH (otherwise it
-    // would be the fourth segment), and refuses that message's UNT.
+    // would end the window at 68 bytes), and refuses that message's UNT.
     assert_eq!(outcomes.segments.0.len(), 6);
     let offset = assert_limit_error(
         outcomes.segments.1.as_ref().expect("E036"),
-        "max_segments_per_message",
-        3,
+        "max_message_bytes",
+        46,
     );
     assert_eq!(&input[offset..offset + 3], b"UNT");
     // Message windows still report the unclosed first message.
@@ -894,7 +940,7 @@ UNH+2+ORDERS:D:96A:UN'FTX+AAA+++C'FTX+AAA+++D'UNT+6+2'";
 #[cfg(target_pointer_width = "64")]
 #[test]
 fn peak_heap_bounded_by_limits_long_lived() {
-    let config = ReaderConfig::default().max_segments_per_message(50);
+    let config = ReaderConfig::default().max_message_bytes(4_096);
     let unit = format!("{}BGM+220+1'UNT+3+1'", std::str::from_utf8(UNH).unwrap()).into_bytes();
     let run = |messages: u64| {
         let stop = UNB.len() as u64 + messages * unit.len() as u64;
@@ -996,14 +1042,18 @@ fn stray_terminators_count() {
     );
     assert_eq!(offset, UNB.len());
 
-    // Stray terminators inside the budget are skipped by the reader, and still
-    // counted. (The slice path refuses the first stray terminator with E002, a
-    // divergence that predates the byte budget and is not a limit question.)
+    // Inside the budget, the first stray terminator is an empty segment:
+    // `E002` at its offset, on both paths.
     let config = ReaderConfig::default().max_input_bytes(1_000);
-    let (items, error) = outcome(from_reader_with_config(&input[..], config));
-    assert_eq!(items.len(), 1);
-    let offset = assert_limit_error(&error.expect("E036"), "max_input_bytes", 1_000);
-    assert_eq!(offset, 1_000);
+    let outcomes = assert_same_on_both_paths(&input, config);
+    assert_eq!(outcomes.segments.0.len(), 1);
+    assert_eq!(
+        outcomes.segments.1,
+        Some(EdifactError::InvalidDelimiter {
+            byte: b'\'',
+            offset: UNB.len(),
+        })
+    );
 }
 
 #[test]
@@ -1140,4 +1190,259 @@ fn peak_heap_bounded_by_limits_whitespace() {
     assert_eq!(items, 1);
     assert_limit_error(&error.expect("E036"), "max_input_bytes", 1_000);
     assert!(peak <= 64 << 10, "peak heap {peak} B exceeds 64 KiB");
+}
+
+// ══ Defaults ════════════════════════════════════════════════════════════════
+//
+// Every entry point without a configuration is bounded: endless input stops at
+// `DEFAULT_MAX_INPUT_BYTES`, an unterminated message at
+// `DEFAULT_MAX_MESSAGE_BYTES`, identically on the slice and reader paths.
+
+/// A generator stop past the default byte budget plus any read-ahead.
+const DEFAULT_STOP: u64 = ReaderConfig::DEFAULT_MAX_INPUT_BYTES + (1 << 20);
+
+/// Assert `(items, error)` is `n` items and then the default byte budget.
+#[track_caller]
+fn assert_default_input_budget<T>((items, error): (Vec<T>, Option<EdifactError>), n: usize) {
+    let max = ReaderConfig::DEFAULT_MAX_INPUT_BYTES;
+    let offset = assert_limit_error(&error.expect("E036"), "max_input_bytes", max);
+    assert_eq!(offset as u64, max);
+    assert_eq!(items.len(), n);
+}
+
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "streams 256 MiB per entry point; runs in release (`just test-release-limits`)"
+)]
+fn every_default_entry_point_stops_endless_input() {
+    // `UNB` then endless whitespace: outside any message, so only the byte
+    // budget can stop it.
+    let endless = || Generator::new(UNB, b" ", DEFAULT_STOP).0;
+    assert_default_input_budget(outcome(edifact::from_reader(endless())), 1);
+    assert_default_input_budget(outcome(edifact::from_bufread(BufReader::new(endless()))), 1);
+    assert_default_input_budget(outcome(edifact::from_reader_decoded(endless())), 1);
+    assert_default_input_budget(
+        outcome(deserialize_each_from_reader::<Ftx, _>(endless())),
+        0,
+    );
+    assert_default_input_budget(outcome(message_windows_from_reader(endless())), 0);
+    assert_default_input_budget(
+        outcome(deserialize_messages_from_reader::<Tags, _>(endless())),
+        0,
+    );
+
+    // The same bytes in memory, one past the budget: the slice path, the
+    // collecting conveniences and the recovering scan agree.
+    let mut input = UNB.to_vec();
+    input.resize(ReaderConfig::DEFAULT_MAX_INPUT_BYTES as usize + 1, b' ');
+    assert_default_input_budget(
+        outcome(edifact::from_bytes(&input).map(|r| r.map(Segment::into_owned))),
+        1,
+    );
+    assert_default_input_budget(outcome(message_windows(&input)), 0);
+    let max = ReaderConfig::DEFAULT_MAX_INPUT_BYTES;
+    for error in [
+        edifact::from_bytes_decoded(&input).map(|_| ()).unwrap_err(),
+        edifact::deserialize::<Tags>(&input)
+            .map(|_| ())
+            .unwrap_err(),
+    ] {
+        assert_limit_error(&error, "max_input_bytes", max);
+    }
+    let items = recover(&input, RecoveryConfig::default());
+    assert_limit_error(terminal(&items).error(), "max_input_bytes", max);
+}
+
+/// `UNB`, `UNH` and enough `FTX` that the window passes the default
+/// per-message budget; also returns the offset of the first `FTX` that ends
+/// beyond it.
+fn past_default_window() -> (Vec<u8>, usize) {
+    let max = ReaderConfig::DEFAULT_MAX_MESSAGE_BYTES as usize;
+    let fitting = (max - UNH.len()) / FTX.len();
+    (
+        unterminated(fitting + 2),
+        UNB.len() + UNH.len() + fitting * FTX.len(),
+    )
+}
+
+#[test]
+fn every_default_window_stops_unterminated_message() {
+    let max = ReaderConfig::DEFAULT_MAX_MESSAGE_BYTES;
+    let (input, offset) = past_default_window();
+    let check = |error: Option<EdifactError>| {
+        let at = assert_limit_error(&error.expect("E036"), "max_message_bytes", max);
+        assert_eq!(at, offset);
+    };
+    check(outcome(message_windows(&input)).1);
+    check(outcome(deserialize_messages::<Tags>(&input)).1);
+    check(outcome(message_windows_from_reader(&input[..])).1);
+    check(outcome(deserialize_messages_from_reader::<Tags, _>(&input[..])).1);
+    let items = recover(&input, RecoveryConfig::default());
+    let at = assert_limit_error(terminal(&items).error(), "max_message_bytes", max);
+    assert_eq!(at, offset);
+
+    // A message of exactly the budget parses: pad the last `FTX` so that the
+    // `UNT` ends the window at `max`.
+    let unt = b"UNT+3+1'";
+    let body = max as usize - UNH.len() - unt.len();
+    let count = (body - 1_000) / FTX.len();
+    let mut exact = unterminated(count);
+    let pad = body - count * FTX.len();
+    exact.extend_from_slice(b"FTX+");
+    exact.resize(exact.len() + pad - 5, b'X');
+    exact.extend_from_slice(b"'");
+    exact.extend_from_slice(unt);
+    assert_eq!((exact.len() - UNB.len()) as u64, max);
+    let (windows, error) = outcome(message_windows(&exact));
+    assert_eq!((windows.len(), error), (1, None));
+    let (windows, error) = outcome(message_windows_from_reader(&exact[..]));
+    assert_eq!((windows.len(), error), (1, None));
+}
+
+#[test]
+fn max_message_bytes_boundaries() {
+    // `UNH` (22) + `FTX+…'` (5 + n) + `UNT+3+1'` (8).
+    let message = |n: usize, gap: &str| {
+        format!(
+            "UNH+1+ORDERS:D:96A:UN'{gap}FTX+{}'{gap}UNT+3+1'",
+            "X".repeat(n)
+        )
+    };
+    let config = ReaderConfig::default().max_message_bytes(64);
+    let run = |input: &[u8], config: ReaderConfig| {
+        let outcomes = assert_same_on_both_paths(input, config);
+        // The recovering scan ends with the same limit, or with none.
+        let items = recover(input, RecoveryConfig::new().reader(config));
+        let scanned = items
+            .iter()
+            .find_map(|item| item.as_fault())
+            .map(|fault| fault.error());
+        assert_eq!(scanned, outcomes.segments.1.as_ref());
+        outcomes.segments
+    };
+
+    // Exactly 64 bytes: fine.
+    let exact = message(29, "");
+    assert_eq!(exact.len(), 64);
+    assert_eq!(run(exact.as_bytes(), config).1, None);
+
+    // 65 bytes: the `UNT` would end past the budget and is refused at its start.
+    let over = message(30, "");
+    let (items, error) = run(over.as_bytes(), config);
+    let offset = assert_limit_error(&error.expect("E036"), "max_message_bytes", 64);
+    assert_eq!(&over.as_bytes()[offset..offset + 3], b"UNT");
+    assert_eq!(items.len(), 2);
+
+    // Whitespace inside a message counts: 64 bytes of segments plus two of
+    // line breaks.
+    let spaced = message(29, "\n");
+    let (_, error) = run(spaced.as_bytes(), config);
+    let offset = assert_limit_error(&error.expect("E036"), "max_message_bytes", 64);
+    assert_eq!(&spaced.as_bytes()[offset..offset + 3], b"UNT");
+
+    // Envelope segments outside the message do not count.
+    let enveloped = format!(
+        "UNB+UNOC:3+SENDER:14+RECEIVER:14+260101:0900+IC1'UNG+ORDERS+S+R+260101:0900+G1+UN+D:96A'{}UNE+1+G1'UNZ+1+IC1'",
+        message(29, "")
+    );
+    assert_eq!(run(enveloped.as_bytes(), config).1, None);
+
+    // When both limits trip on the same unit, the byte budget wins.
+    let both = ReaderConfig::default()
+        .max_message_bytes(64)
+        .max_input_bytes(over.len() as u64 - 1);
+    let (_, error) = run(over.as_bytes(), both);
+    assert_limit_error(
+        &error.expect("E036"),
+        "max_input_bytes",
+        over.len() as u64 - 1,
+    );
+}
+
+#[test]
+fn unbounded_lifts_every_limit() {
+    // One 70 KiB `FTX`: over the default `max_segment_bytes`.
+    let mut input = [UNB, UNH, b"FTX+"].concat();
+    input.resize(input.len() + 70 * 1024, b'X');
+    input.extend_from_slice(b"'UNT+3+1'");
+    input.extend_from_slice(UNZ);
+
+    let defaults = edifact::from_bytes(&input).collect::<Result<Vec<_>, _>>();
+    assert_eq!(defaults.unwrap_err().stable_code(), "E020");
+
+    let unbounded = ReaderConfig::unbounded();
+    let slice = from_bytes_with_config(&input, unbounded)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("slice path");
+    assert_eq!(slice.len(), 5);
+    let reader = from_reader_with_config(&input[..], unbounded)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("reader path");
+    assert_eq!(reader.len(), 5);
+    let slow = from_bufread_with_config(BufReader::with_capacity(7, &input[..]), unbounded)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("reader slow path");
+    assert_eq!(slow.len(), 5);
+    let items = recover(&input, RecoveryConfig::new().reader(unbounded));
+    assert!(items.iter().all(|item| item.as_fault().is_none()));
+    assert_eq!(items.len(), 5);
+
+    // One limit composes on top of `unbounded()`.
+    let capped = ReaderConfig::unbounded().max_message_bytes(64);
+    assert_eq!(capped.max_segment_bytes, usize::MAX);
+    assert_eq!(capped.max_input_bytes, None);
+    let error = from_bytes_with_config(&input, capped)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_err();
+    let offset = assert_limit_error(&error, "max_message_bytes", 64);
+    assert_eq!(offset, UNB.len() + UNH.len());
+}
+
+#[test]
+fn decoding_paths_count_decoded_bytes() {
+    // `ü` is one byte in UNOC and two once decoded: the budget counts the
+    // decoded stream, so Latin-1 input can be half the budget in raw bytes.
+    let mut input = UNB.to_vec();
+    input.extend_from_slice(b"FTX+AAA+++");
+    input.extend(std::iter::repeat_n(0xFC, 1_000));
+    input.extend_from_slice(b"'UNZ+0+IC1'");
+    let raw = input.len() as u64;
+    let decoded = raw + 1_000;
+
+    let tight = ReaderConfig::default().max_input_bytes(raw);
+    let error = edifact::from_bytes_decoded_with_config(&input, tight).unwrap_err();
+    assert_limit_error(&error, "max_input_bytes", raw);
+    let (_, error) = outcome(edifact::from_reader_decoded_with_config(&input[..], tight));
+    assert_limit_error(&error.expect("E036"), "max_input_bytes", raw);
+
+    let exact = ReaderConfig::default().max_input_bytes(decoded);
+    assert_eq!(
+        edifact::from_bytes_decoded_with_config(&input, exact)
+            .expect("fits decoded")
+            .len(),
+        3
+    );
+    let (items, error) = outcome(edifact::from_reader_decoded_with_config(&input[..], exact));
+    assert_eq!((items.len(), error), (3, None));
+}
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn peak_heap_bounded_by_limits_decoding() {
+    // Endless Latin-1 segments through the decoding reader: one segment, the
+    // sniff head and two buffers, whatever the budget.
+    let unit = b"FTX+AAA+++M\xFCller'";
+    let run = |budget: u64| {
+        let config = ReaderConfig::default().max_input_bytes(budget);
+        let (peak, _, error) = peak_heap(UNB, unit, HARD_STOP, |generator| {
+            edifact::from_reader_decoded_with_config(generator, config)
+        });
+        assert_limit_error(&error.expect("E036"), "max_input_bytes", budget);
+        peak
+    };
+    let short = run(1 << 20);
+    let long = run(10 << 20);
+    assert!(short <= 64 << 10, "peak heap {short} B exceeds 64 KiB");
+    assert_within_ten_percent(short, long);
 }

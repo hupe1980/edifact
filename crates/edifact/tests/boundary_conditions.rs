@@ -45,25 +45,20 @@ fn una_only_input_yields_no_segments() {
 }
 
 #[test]
-fn truncated_una_is_not_treated_as_a_service_string_header() {
-    // A UNA header is exactly 9 bytes.  Anything shorter is not a header, so the
-    // default delimiters stay in force and the bytes are read as an ordinary
-    // segment tag — one that here has no terminator, and is rejected as the
-    // truncation it is rather than accepted as a complete segment.
-    assert!(matches!(
-        parse(b"UNA").unwrap_err(),
-        EdifactError::UnexpectedEof { .. }
-    ));
-
-    // Terminated, it is an ordinary element-less segment …
-    let segs = parse(b"UNA'").expect("a terminated 3-letter tag is a segment");
-    assert_eq!(segs.len(), 1);
-    assert_eq!(segs[0].tag, "UNA");
-    assert!(segs[0].elements.is_empty());
-
-    // … and the default delimiters remain active, so `+` still splits elements.
-    let segs = parse(b"UNA+X'").expect("default delimiters still apply");
-    assert_eq!(segs[0].element_str(0), Some("X"));
+fn truncated_una_is_an_unexpected_eof() {
+    // At the head of an interchange `UNA` opens the service string advice,
+    // which ISO 9735-1 Annex A has "immediately followed by six characters".
+    // Fewer is a truncated header — `E001` at the end of the input — however
+    // long the input is, so the verdict on the first bytes never depends on
+    // how much follows them.
+    for (input, offset) in [(&b"UNA"[..], 3), (b"UNA'", 4), (b"UNA+X'", 6)] {
+        assert_eq!(
+            parse(input).unwrap_err(),
+            EdifactError::UnexpectedEof { offset },
+            "{:?}",
+            String::from_utf8_lossy(input),
+        );
+    }
 }
 
 // ── lone and stray delimiters ─────────────────────────────────────────────────

@@ -18,7 +18,7 @@ pub(super) struct LayeredValidator {
 ///
 /// | Layer | [`ValidationLayer`] | Default | Checks | Provided by |
 /// |---|---|---|---|---|
-/// | Envelope | `Envelope` | off | `UNB`/`UNH`/`UNT`/`UNZ` structure and counts | [`EnvelopeValidator`] |
+/// | Envelope | `Envelope` | off | interchange structure, counts, references, service-segment values | [`EnvelopeValidator`] |
 /// | Syntax | `Syntax` | off (envelope switch) | directory-independent ISO 9735-1 rules | [`SyntaxValidator`][crate::SyntaxValidator] |
 /// | Charset | `Charset` | off (envelope switch) | declared character repertoire | [`CharsetValidator`] |
 /// | Structure | `Structure` | on | segment presence, order, arity | `DirectoryValidator` |
@@ -29,6 +29,13 @@ pub(super) struct LayeredValidator {
 /// beyond that. With the envelope layer on, `UNB`/`UNZ`/`UNG`/`UNE` are excluded
 /// from the slice the structure, code-list and profile layers see; envelope,
 /// syntax and charset validators always see the whole slice.
+///
+/// With the envelope layer on, an issue from another layer that repeats an
+/// `Envelope` issue — same stable code, segment tag, element and component
+/// index, and the same span or, without a span, the same segment position —
+/// is dropped, so `DirectoryValidator(service::lookup)` does not report a
+/// `UNH`/`UNT` value twice. Issues with neither a span nor a position are
+/// never dropped.
 ///
 /// Every issue a validator leaves without a [`layer`][crate::ValidationIssue::layer]
 /// is stamped with the layer that validator was registered under, in the flat
@@ -516,6 +523,10 @@ impl ValidationContext {
             }
         }
 
+        if envelope_active {
+            drop_envelope_duplicates(&mut report);
+        }
+
         if let Some(ref msg_ref) = self.message_ref {
             for issue in report
                 .errors
@@ -643,6 +654,59 @@ impl ValidationContext {
                 .iter()
                 .any(|lv| lv.layer.is_envelope_class())
     }
+}
+
+/// Drop every non-envelope issue that repeats an `Envelope`-layer issue: same
+/// stable code, segment tag, element and component index, and the same span
+/// or, for an issue without one, the same segment position.
+///
+/// `DirectoryValidator(service::lookup)` checks the service segments the
+/// envelope layer already checks, with the same code. An issue with neither a
+/// span nor a position is never dropped: "the same" cannot be told from
+/// "another one of the same kind".
+fn drop_envelope_duplicates(report: &mut ValidationReport) {
+    #[derive(PartialEq, Eq, Hash)]
+    enum Key {
+        Spanned(
+            String,
+            crate::Span,
+            Option<String>,
+            Option<u16>,
+            Option<u16>,
+        ),
+        Positioned(String, Option<String>, Option<u16>, Option<u16>, u32),
+    }
+    let key = |issue: &crate::ValidationIssue| -> Option<Key> {
+        let code = issue.error_code()?.to_owned();
+        let tag = issue.segment_tag().map(str::to_owned);
+        let (element, component) = (issue.element_index, issue.component_index);
+        match (issue.span, issue.segment_position) {
+            (Some(span), _) => Some(Key::Spanned(code, span, tag, element, component)),
+            (None, Some(position)) => {
+                Some(Key::Positioned(code, tag, element, component, position))
+            }
+            (None, None) => None,
+        }
+    };
+    let is_envelope =
+        |issue: &crate::ValidationIssue| issue.layer == Some(ValidationLayer::Envelope);
+    let envelope: std::collections::HashSet<Key> = report
+        .errors
+        .iter()
+        .chain(&report.warnings)
+        .chain(&report.infos)
+        .filter(|issue| is_envelope(issue))
+        .filter_map(key)
+        .collect();
+    if envelope.is_empty() {
+        return;
+    }
+    let duplicate = |issue: &crate::ValidationIssue| {
+        !is_envelope(issue) && key(issue).is_some_and(|k| envelope.contains(&k))
+    };
+    report.errors.retain(|issue| !duplicate(issue));
+    report.warnings.retain(|issue| !duplicate(issue));
+    report.infos.retain(|issue| !duplicate(issue));
 }
 
 /// Bucket lengths of a report before a validator runs, so the issues that

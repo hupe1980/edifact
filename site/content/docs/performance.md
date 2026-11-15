@@ -6,8 +6,8 @@ weight = 120
 
 ## Allocation per segment
 
-`from_bytes` borrows every tag and value from the input; only the element vector
-is allocated:
+`from_bytes` borrows every tag and value from the input and allocates only the
+element vector:
 
 ```rust
 let input: &[u8] = b"BGM+220+PO-4711+9'";
@@ -40,23 +40,27 @@ non-empty component values:
 | API | Holds at a time | Bound |
 |---|---|---|
 | `from_bytes` | one segment | the input slice is yours; streaming peak ≤ 2 704 B on the 1 MB fixture |
-| `from_bytes(..).collect()` | every segment | peak ≤ 25 217 536 B for the 964 250 B fixture (26.2 × input) |
+| `from_bytes(..).collect()`, `deserialize`, `from_bytes_decoded` | every segment | peak ≤ 25 217 536 B for the 964 250 B fixture (26.2 × input); ≤ 128 × input in the worst case (one-byte elements) |
 | `from_reader`, `from_bufread` | one segment and an 8 KiB read buffer | a segment is at most `max_segment_bytes` (64 KiB by default); streaming peak ≤ 9 347 B on the 1 MB fixture |
 | `deserialize_each_from_reader` | one segment and one `T` | as `from_reader` |
-| `message_windows_from_reader`, `deserialize_messages_from_reader` | one `UNH`…`UNT` window | unbounded without limits; the `_with_config` variants with `max_segments_per_message` bound it, independent of stream length |
+| `message_windows`, `message_windows_from_reader`, `deserialize_messages*` | one `UNH`…`UNT` window | at most `max_message_bytes` of input (16 777 216 by default), ≤ 128 × that in heap — independent of stream length |
 | `WriterEmitter<W>` | nothing — each event goes straight to `W` | 0 allocations per event; it does not buffer, so wrap a file or socket in `BufWriter` |
 | `to_bytes` / `to_edifact_string` | the output | the returned buffer |
 
-Iterate rather than `.collect()` when the interchange may not fit in memory.
-For a stream from an untrusted source, set the budgets described in
-[Parsing → DoS hardening](@/docs/parsing.md#dos-hardening-with-readerconfig):
+Every entry point is bounded by default: 65 536 bytes per segment,
+16 777 216 per message, 268 435 456 in total
+([Parsing → DoS hardening](@/docs/parsing.md#dos-hardening-with-readerconfig)).
+Heap grows per element, not per segment: a parsed window or a collected
+interchange takes at most 128 × its input bytes (measured 110 × slice,
+105 × reader for a message of one-byte elements). Iterate rather than
+`.collect()` untrusted input, and tighten the budgets to your traffic:
 
 ```rust
 use edifact::{ReaderConfig, message_windows_from_reader_with_config};
 
 let config = ReaderConfig::default()
-    .max_segments_per_message(10_000) // bounds each window
-    .max_input_bytes(64 << 20);       // bounds the whole stream
+    .max_message_bytes(1 << 20) // each window: ≤ 1 MiB input, ≤ 128 MiB heap
+    .max_input_bytes(64 << 20); // the whole stream
 let input = std::io::Cursor::new(b"UNH+1+ORDERS:D:96A:UN'BGM+220+1'UNT+3+1'".to_vec());
 for window in message_windows_from_reader_with_config(input, config) {
     let window = window?;
@@ -97,8 +101,9 @@ the measured value rises above the figure, or falls more than 20 % below it.
 | `from_reader` streaming peak 9 347 B (8 KiB `BufReader` included) | `allocation_budget`: `one_mb_peak_heap_reader_stream` |
 | `WriterEmitter` allocates nothing per event | `allocation_budget`: `writer_emitter_allocates_nothing_per_event` |
 | `parse_unh`, `parse_ung`, `iter_messages_by_type` allocate nothing | `allocation_budget`: `parse_unh_allocates_nothing`, `parse_ung_allocates_nothing`, `messages_by_type_iter_allocates_nothing` |
-| Default `max_segment_bytes` is 64 KiB | `resource_limits`: `default_max_segment_bytes_is_64_kib` |
-| A window is bounded by `max_segments_per_message`, its peak independent of stream length | `resource_limits`: `unterminated_message_message_windows`, `unterminated_message_deserialize_messages`, `unterminated_message_deserialize_each`, `per_message_cap_on_long_lived_stream`, `peak_heap_bounded_by_limits_unterminated`, `peak_heap_bounded_by_limits_long_lived` |
+| Default limits 65 536 / 268 435 456 / 16 777 216 bytes on every entry point | `resource_limits`: `default_limits_are_the_documented_constants`, `default_max_segment_bytes_is_64_kib`, `every_default_entry_point_stops_endless_input`, `every_default_window_stops_unterminated_message` |
+| A window is bounded by `max_message_bytes`, its peak independent of stream length | `resource_limits`: `max_message_bytes_boundaries`, `unterminated_message_message_windows`, `unterminated_message_deserialize_messages`, `unterminated_message_deserialize_each`, `per_message_cap_on_long_lived_stream`, `peak_heap_bounded_by_limits_unterminated`, `peak_heap_bounded_by_limits_long_lived` |
+| A window or collected interchange takes ≤ 128 × its input bytes | `allocation_budget`: `worst_case_window_heap_within_factor` |
 | `max_input_bytes` stops endless whitespace | `resource_limits`: `endless_whitespace_reader_stops`, `whitespace_slice`, `peak_heap_bounded_by_limits_whitespace` |
 
 `docs_claims` checks that the figures on this page match the committed
@@ -174,8 +179,8 @@ let _iter = from_bufread_with_config(cursor, config);
 ```
 
 A `max_segment_bytes` below your partners' longest segment (a long `FTX`, say)
-raises `E020 SegmentTooLong`. The other budgets are unset by default and raise
-`E036 LimitExceeded`; see
+raises `E020 SegmentTooLong`; the other budgets raise `E036 LimitExceeded`.
+`max_segments` and `max_messages` are unset by default; see
 [Parsing → DoS hardening](@/docs/parsing.md#dos-hardening-with-readerconfig).
 
 ---

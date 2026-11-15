@@ -4,8 +4,8 @@ description = "Serialize segments back to the EDIFACT wire format with Writer, a
 weight = 40
 +++
 
-This guide covers every way to produce EDIFACT output — from typed structs to
-raw segment construction and custom delimiter configuration.
+Produce EDIFACT from typed structs, segments or runtime values; build messages
+and interchanges with computed counts.
 
 ---
 
@@ -14,32 +14,47 @@ raw segment construction and custom delimiter configuration.
 | API | Best for |
 |---|---|
 | `to_edifact_string(value)` | Quick serialization of a single derived struct |
-| `ser::to_bytes(segments)` | Round-trip a parsed `Vec<Segment<'_>>` |
-| `to_bytes(segments)` | Free function alias for `ser::to_bytes` |
+| `segments_to_bytes(segments)` | Round-trip a parsed `Vec<Segment<'_>>` |
 | `Writer::write_segment(seg)` | Round-tripping a parsed or hand-built `Segment` |
 | `Writer::write_elements(tag, elements)` | **The general form** — segments mixing simple and composite data elements |
 | `Writer::write_composites(tag, elements)` | Every element is a list of components; borrowed *or* owned data |
 | `Writer::write_simple(tag, elements)` | Every element is one value — the commonest shape |
 | `Writer::with_service_string_advice(w, ssa)` | Custom delimiters, **no** `UNA` emitted |
 | `Writer::with_una(w, ssa)` | Custom delimiters, `UNA` written first |
+| `InterchangeBuilder::new(header)` | A complete interchange as bytes: `UNB`, messages, computed `UNZ` |
+| `Writer::begin_interchange(&header)` | The same, streamed: `UNZ` counted by the writer |
+| `MessageBuilder::new(id)` | One message as `Vec<OwnedSegment>`, `UNT` computed |
 
-Component boundaries are always **explicit**: no write method infers them by
-splitting a string, so a value containing the active component separator is
-release-escaped rather than silently promoted to a boundary.
+Component boundaries are always **explicit**: a value containing a delimiter is
+release-escaped, never split.
+
+Trailing empty data elements and components are never written (ISO 9735-1
+§8.7); an empty value between present ones keeps its separator:
+
+```rust
+use edifact::Writer;
+
+let mut w = Writer::new(Vec::new());
+w.write_simple("BGM", &["220", "", "9", ""])?;
+w.write_composites("DTM", &[&["137", "20260101", ""][..]])?;
+assert_eq!(w.finish()?, b"BGM+220++9'DTM+137:20260101'".to_vec());
+# Ok::<(), edifact::EdifactError>(())
+```
 
 ## What the writer will not write
 
-Everything the writer emits reparses. Two cases are refused before a byte
-reaches the sink, so a rejected segment leaves nothing half-written:
+Everything the writer emits reparses. These calls are refused before a byte
+reaches the sink; the writer stays usable:
 
 | Refused | Error |
 |---|---|
 | A tag that is not three ASCII uppercase letters | `InvalidSegmentTag` |
-| A repeating data element with no repetition separator declared | `RepetitionSeparatorNotDeclared` |
+| A repeating data element with no repetition separator declared | `RepetitionSeparatorNotDeclared` (`E037`) |
+| A header whose repertoire differs from the bound `Charset`'s | `CharacterRepertoireMismatch` |
+| A raw `UNB` or `UNZ` inside an interchange opened by `begin_interchange` | `InvalidEventSequence` |
+| An invalid header, a second `begin_interchange`, an `end_interchange` with nothing to close | see [Writing a full interchange](#writing-a-full-interchange) |
 
-A tag is written verbatim — EDIFACT has no way to escape one — so `bgm`,
-`BGMX` or `B+M` would produce bytes that do not read back as the segment they
-came from:
+A tag cannot be escaped, so `bgm`, `BGMX` or `B+M` are refused:
 
 ```rust
 use edifact::{EdifactError, Writer};
@@ -49,7 +64,9 @@ let err = writer.write_simple("bgm", &["220"]).unwrap_err();
 assert!(matches!(err, EdifactError::InvalidSegmentTag(_)));
 ```
 
-Delimiters *inside a value* are not a problem — those are release-escaped.
+Any other error — a failed write, a value the bound `Charset` cannot encode —
+can leave a partial segment in the sink, so it **poisons** the writer (see
+[Message guard and poisoning](#message-guard-and-poisoning)).
 
 ---
 
@@ -83,7 +100,7 @@ let bytes = ser::to_bytes(&bgm)?;
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-`None` fields produce empty elements in their positional slot:
+A `None` field is an empty element; at the end of the segment it is not written:
 
 ```rust
 # use edifact::to_edifact_string;
@@ -109,7 +126,7 @@ let bgm_no_func = Bgm {
     function_code: None,
 };
 let out = to_edifact_string(&bgm_no_func)?;
-assert_eq!(out, "BGM+220+PO-4711+'");
+assert_eq!(out, "BGM+220+PO-4711'");
 # Ok::<(), edifact::EdifactError>(())
 ```
 
@@ -128,12 +145,8 @@ assert_eq!(output, b"BGM+220+PO-4711+9'NAD+BY+4000001::9'");
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-`segments_to_bytes` is the entry point for a slice of parsed `Segment`s;
-`ser::to_bytes` is for a value that implements `EdifactSerialize`.
-
-> **Note**: `segments_to_bytes` writes with the **default** EDIFACT delimiters and
-> emits no `UNA` header, so the round-trip above is not byte-for-byte when the
-> input carried one. Use `Writer::with_una` to preserve a custom service string.
+`segments_to_bytes` writes default delimiters and no `UNA`; use
+`Writer::with_una` to keep a custom service string.
 
 ---
 
@@ -165,33 +178,42 @@ assert_eq!(text, "BGM+220+PO-4711+9'NAD+BY+4000001::9'");
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-`Writer::finish()` flushes the underlying writer and returns it.
+`Writer::finish()` flushes the sink and returns it.
 
-### Segment count tracking
+### Messages: `UNT` is computed
 
-`Writer` maintains an internal segment counter that is incremented on every
-`write_segment` call. Retrieve it with `writer.segment_count()` to fill the `UNT`
-segment's count field:
+`Writer::begin_message` writes `UNH` and returns a `MessageWriter`; its
+`finish()` writes `UNT` with the message's segment count. `MessageBuilder` does
+the same into owned segments, with nothing written:
 
 ```rust
-# use edifact::{Writer, Segment, Element};
-# let mut buf: Vec<u8> = Vec::new();
-# let mut writer = Writer::new(&mut buf);
-// ... write body segments ...
+use edifact::{MessageBuilder, MessageIdentifier, Writer};
 
-let count = writer.segment_count() + 2; // +2 for UNH and UNT themselves
-writer.write_simple("UNT", &[count.to_string().as_str(), "1"])?;
+let id = MessageIdentifier::new("1", "UTILMD", "D", "11A", "UN").with_association_code("S2.1");
+
+let mut w = Writer::new(Vec::new());
+let mut msg = w.begin_message(id)?;
+msg.write_simple("BGM", &["E01", "DOC-1"])?;
+msg.finish()?;
+
+let mut built = MessageBuilder::new(id)?;
+built.write_simple("BGM", &["E01", "DOC-1"])?;
+let segments = built.finish()?; // Vec<OwnedSegment>: UNH, BGM, UNT+3+1
+
+assert_eq!(edifact::segments_to_bytes(&segments)?, w.finish()?);
 # Ok::<(), edifact::EdifactError>(())
 ```
+
+`MessageBuilder` refuses what `Writer` refuses (`E006`, `E037`, `E038` under
+`with_charset`) before appending; `finish()` refuses a message without a body
+(`E043`).
 
 ---
 
 ## `write_elements` — mixed simple and composite elements
 
-Most real EDIFACT segments mix the two shapes: `NAD` takes a simple qualifier
-followed by a composite party identification, `DTM` takes a single composite.
-`write_elements` expresses that directly, with component boundaries given
-explicitly rather than inferred:
+`NAD` mixes a simple qualifier with a composite party identification;
+`write_elements` takes both shapes:
 
 ```rust
 use edifact::{DataElement, Writer};
@@ -215,10 +237,9 @@ assert_eq!(
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-The `elements!` macro is shorthand for the same thing. Each entry is an ordinary
-expression borrowed through the `AsDataElement` trait: a string becomes a simple
-data element, an array/slice/`Vec` of strings becomes a composite. Runtime values
-work exactly like literals, which is the point — builders rarely have literals:
+The `elements!` macro is shorthand. Each entry borrows through `AsDataElement`:
+a string is a simple element, an array, slice or `Vec` of strings a composite.
+Runtime values work like literals:
 
 ```rust
 use edifact::{Writer, elements};
@@ -243,9 +264,7 @@ assert_eq!(
 > Composite components must be string *slices*: a `[String; N]` cannot borrow as
 > `&[&str]` without allocating, so write `[id.as_str(), "", agency]`.
 
-Because boundaries are explicit, a value containing a literal component
-separator is **escaped** rather than silently promoted to a boundary — which is
-the failure mode of pre-joining components into one string:
+A literal component separator inside a value is escaped:
 
 ```rust
 # use edifact::{Writer, elements};
@@ -258,20 +277,16 @@ assert_eq!(String::from_utf8(buf).unwrap(), "NAD+MS+ACME?:INC'");
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-`MessageWriter` — the `UNH`/`UNT` guard from `Writer::begin_message` — carries
-the same four methods (`write_simple`, `write_composites`, `write_elements`,
-`write_segment`), so every segment you write inside a message is counted into the
-`UNT` DE 0074 total.
+`MessageWriter` carries the same four methods (`write_simple`,
+`write_composites`, `write_elements`, `write_segment`); each segment counts
+into `UNT` DE 0074.
 
 ---
 
 ## `write_simple` and `write_composites` — runtime string data
 
-When building segments from runtime data — database rows, a mapping layer —
-these two avoid constructing `Segment` / `Element` values at all.
-
-`write_simple` is the all-simple shape: one value per data element, and a
-component separator inside a value stays part of the value.
+Both avoid building `Segment` values. `write_simple` takes one value per data
+element; a component separator inside a value stays part of it.
 
 ```rust
 use edifact::Writer;
@@ -287,9 +302,8 @@ assert_eq!(buf, b"BGM+220+PO-4711+9'FTX+AAA+ACME?:INC'".to_vec());
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-`write_composites` takes the components explicitly, and its bounds accept
-borrowed and owned data through the same call — `&[&[&str]]`, `&[Vec<String>]`,
-`&[[String; 3]]`:
+`write_composites` takes explicit components, borrowed or owned —
+`&[&[&str]]`, `&[Vec<String>]`, `&[[String; 3]]`:
 
 ```rust
 use edifact::Writer;
@@ -334,18 +348,14 @@ writer.write_simple("BGM", &["220", "PO-4711", "9"])?;
 writer.finish()?;
 
 let text = String::from_utf8(buf).unwrap();
-// UNA header first (9 bytes, including the space "not used" repetition slot),
-// then the segment with the custom delimiters.
 assert_eq!(text, "UNA;|.? !BGM|220|PO-4711|9!");
 # Ok::<(), edifact::EdifactError>(())
 ```
 
 ### Delimiters without a `UNA`
 
-A syntax-version-4 interchange can carry repeating data elements and no `UNA` at
-all — the version in `UNB` S001 DE 0002 is what declares the separator. Writing
-one back through `with_una` would invent a header the original never had, so
-declare the delimiters to the writer directly instead:
+A version 4 interchange declares `*` through `UNB` S001 DE 0002, not a `UNA`.
+Declare the delimiters to the writer without emitting one:
 
 ```rust
 use edifact::{ServiceStringAdvice, Writer, from_bytes};
@@ -367,11 +377,8 @@ assert_eq!(writer.finish()?, input.to_vec());
 
 ## Repeating data elements
 
-ISO 9735-1 §8.7 repetitions are written with the repetition separator from UNA
-position 050, so the writer needs a `ServiceStringAdvice` that declares one.
-Writing a repeating element through a writer that has none is
-`EdifactError::RepetitionSeparatorNotDeclared`, checked before the first byte is
-emitted so a rejected segment leaves nothing half-written behind it:
+Repetitions (ISO 9735-1 §8.7) need a `ServiceStringAdvice` that declares a
+repetition separator:
 
 ```rust
 use edifact::{Element, Segment, ServiceStringAdvice, Writer};
@@ -390,21 +397,12 @@ assert!(String::from_utf8(buf).unwrap().ends_with("RFF+ON:1*ON:2'"));
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-Writing a repeating element through a writer that has **no** declared separator
-is refused with `EdifactError::RepetitionSeparatorNotDeclared` (`E037`) rather
-than silently joined with the space sentinel — which would read back as a single
-occurrence.
-
-The refusal is checked before the first byte leaves the writer, so a rejected
-segment writes **nothing**. The writer stays usable: log the error, skip the
-segment, and keep going — the next segment starts at a clean boundary rather
-than after a dangling `RFF+`.
+Without one, the segment is refused with `RepetitionSeparatorNotDeclared`
+(`E037`): nothing is written and the writer stays usable.
 
 ### Through the event layer
 
-`EdifactEvent::RepeatElement` is the write-side mirror of the parser's
-repetition split, so a value that arrives as several occurrences can leave as
-several occurrences:
+`EdifactEvent::RepeatElement` writes a further occurrence:
 
 ```rust
 use edifact::{EdifactEvent, EventEmitter, ServiceStringAdvice, WriterEmitter};
@@ -422,20 +420,28 @@ assert_eq!(emitter.finish()?, b"UNA:+.?*'RFF+ON:1*ON:2'".to_vec());
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-The same `E037` refusal applies: a `RepeatElement` under a writer with no
-declared separator is rejected before the separator byte is written.
+The same `E037` refusal applies.
 
 ---
 
-## Writing in a non-UTF-8 repertoire
+## Character repertoires
 
-`Writer::with_charset` binds the writer to the repertoire named in `UNB` S001, so
-a `UNOC` interchange goes out as ISO 8859-1 rather than as UTF-8 — and a
-character the repertoire cannot carry is refused instead of being written as
-bytes the receiver decodes as something else.
+`Writer::with_charset` binds the writer to the repertoire `UNB` S001 names: a
+`UNOC` interchange goes out as ISO 8859-1. A character the repertoire cannot
+carry is `CharacterNotInRepertoire` (`E038`); a header declaring another
+repertoire is `CharacterRepertoireMismatch` (`E041`).
 
-The typed path reaches it through `WriterEmitter::with_charset`, so a
-`#[derive(EdifactSerialize)]` struct is bound the same way:
+```rust
+use edifact::{Charset, Writer};
+
+let mut writer = Writer::new(Vec::new()).with_charset(Charset::UnoC);
+writer.write_composites("NAD", &[&["BY"], &["Müller"]])?;
+// `ü` goes out as the single ISO 8859-1 byte 0xFC.
+assert_eq!(writer.finish()?, b"NAD+BY+M\xFCller'".to_vec());
+# Ok::<(), edifact::EdifactError>(())
+```
+
+`WriterEmitter::with_charset` binds the typed path the same way:
 
 ```rust
 use edifact::{Charset, EdifactEvent, EventEmitter, WriterEmitter};
@@ -450,40 +456,14 @@ assert_eq!(emitter.finish()?, b"NAD+M\xFCller'".to_vec());
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-See [Character Sets](@/docs/character-sets.md) for the full repertoire table.
-
----
-
-## Character repertoires
-
-`UNB` S001 names the repertoire the payload is written in. A writer that emits
-UTF-8 into a `UNOC` interchange produces mojibake at the far end with nothing in
-the file to explain it, so bind the writer to the repertoire and let it encode:
-
-```rust
-use edifact::{Charset, Writer};
-
-let mut writer = Writer::new(Vec::new()).with_charset(Charset::UnoC);
-writer.write_composites("NAD", &[&["BY"], &["Müller"]])?;
-// `ü` goes out as the single ISO 8859-1 byte 0xFC.
-assert_eq!(writer.finish()?, b"NAD+BY+M\xFCller'".to_vec());
-# Ok::<(), edifact::EdifactError>(())
-```
-
-A character the repertoire cannot carry is refused with
-`EdifactError::CharacterNotInRepertoire` (`E038`), and a `UNB` declaring a
-repertoire the writer does not encode is refused with
-`CharacterRepertoireMismatch` (`E041`) — the header cannot lie about the body.
-
-See [Character Sets](@/docs/character-sets.md) for the read side and for
-repertoire validation.
+See [Character Sets](@/docs/character-sets.md) for the repertoires, the read
+side and repertoire validation.
 
 ---
 
 ## Escape handling
 
-`Writer` **automatically escapes** any character in a component value that collides
-with the current delimiter set. You never need to pre-escape data:
+`Writer` escapes every active delimiter inside a value; never pre-escape:
 
 ```rust
 use edifact::{Writer, Segment, Element};
@@ -503,21 +483,15 @@ assert_eq!(text, "FTX+AAI+Price?: 100?+VAT'");
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-Characters escaped by default:
-- `'` (segment terminator)
-- `+` (element separator)
-- `:` (component separator)
-- `?` (the release character itself)
-
-Plus the repetition separator, when the active `UNA` declares one. The space
-"not used" sentinel at UNA position 7 is never escaped.
+Escaped: the segment terminator, element and component separators, the release
+character, and the repetition separator when one is active. A space "not used"
+repetition slot is never escaped.
 
 ---
 
 ## Event-based writing (`WriterEmitter`)
 
-For advanced use cases — such as writing segments produced by `EdifactSerialize`
-derived types to a `Write` sink without buffering — use `WriterEmitter`:
+`WriterEmitter` streams `EdifactSerialize` output to a `Write` sink:
 
 ```rust
 use edifact::{ser, WriterEmitter, EdifactSerialize, Writer};
@@ -528,49 +502,157 @@ use edifact::{ser, WriterEmitter, EdifactSerialize, Writer};
 let bgm = Bgm { code: "220".into() };
 
 let mut buf: Vec<u8> = Vec::new();
-// `WriterEmitter::new` takes the `io::Write` sink directly and constructs its
-// own `Writer` internally — do not wrap the sink in a `Writer` first.
+// Takes the `io::Write` sink itself, not a `Writer`.
 let mut emitter = WriterEmitter::new(&mut buf);
 
 bgm.edifact_serialize(&mut emitter)?;
 
-// `finish` flushes and hands back the sink that was passed in.
 let _sink = emitter.finish()?;
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-`WriterEmitter` allocates nothing per event and keeps no buffer: each
-`EdifactEvent` goes straight to the underlying `Write`, so wrap a file or socket
-in `BufWriter`.
+It allocates nothing per event and keeps no buffer; wrap a file or socket in
+`BufWriter`.
 
 ---
 
 ## Writing a full interchange
 
+The `UNB` is an `InterchangeHeader`. `InterchangeBuilder` takes it, the
+messages — owned segments or `UNH`…`UNT` text — and returns bytes that pass
+`validate_envelope`, or an error and no bytes:
+
 ```rust
-use edifact::{Writer, Segment, Element};
-use std::io::Cursor;
+use edifact::{Charset, InterchangeBuilder, InterchangeHeader, MessageBuilder, MessageIdentifier,
+              Party, PreparationDateTime, SyntaxVersion};
 
-let mut buf: Vec<u8> = Vec::new();
-let mut w = Writer::new(&mut buf);
-
-// Interchange header
-w.write_simple("UNB", &["UNOA:1", "SENDER:14", "RECEIVER:14", "200101:0900", "1"])?;
-// Message header
-w.write_simple("UNH", &["1", "ORDERS:D:96A:UN"])?;
-// Body
-w.write_simple("BGM", &["220", "PO-4711", "9"])?;
-w.write_simple("NAD", &["BY", "4000001::9"])?;
-// Message trailer (segment count includes UNH and UNT)
-let body_segments = w.segment_count(); // BGM + NAD
-let unt_count = body_segments + 2;
-w.write_simple("UNT", &[unt_count.to_string().as_str(), "1"])?;
-// Interchange trailer
-w.write_simple("UNZ", &["1", "1"])?;
-
-w.finish()?;
+let header = InterchangeHeader::new(Charset::UnoC, SyntaxVersion::V3,
+    Party::new("SENDER").with_qualifier("14"), Party::new("RECEIVER").with_qualifier("14"),
+    PreparationDateTime::new(2026, 8, 2, 9, 15)?, "REF001");
+let mut msg = MessageBuilder::new(MessageIdentifier::new("1", "ORDERS", "D", "96A", "UN"))?;
+msg.write_simple("BGM", &["220", "PO-1", "9"])?;
+let bytes = InterchangeBuilder::new(header).message_segments(msg.finish()?).build()?;
+assert!(bytes.starts_with(b"UNB+UNOC:3+SENDER:14+RECEIVER:14+260802:0915+REF001'"));
+assert!(bytes.ends_with(b"UNZ+1+REF001'"));
 # Ok::<(), edifact::EdifactError>(())
 ```
+
+Versions 1–3 write the date as `YYMMDD`, version 4 as `CCYYMMDD`. A `UNA` is
+written exactly when `with_service_string_advice` differs from the version's
+defaults. No message is `E042`; a header value too long for the version is its
+representation finding (`E049` for a 15-character control reference).
+
+The streaming form: `begin_interchange` validates the header, binds an unbound
+writer to its repertoire and writes `UNB`; the writer counts messages (or raw
+`UNG`s) and `end_interchange()` writes `UNZ`:
+
+```rust
+use edifact::{Charset, InterchangeHeader, MessageIdentifier, Party, PreparationDateTime,
+              SyntaxVersion, Writer};
+
+let header = InterchangeHeader::new(Charset::UnoA, SyntaxVersion::V3,
+    Party::new("SENDER"), Party::new("RECEIVER"),
+    PreparationDateTime::new(2020, 1, 1, 9, 0)?, "IC1");
+let mut w = Writer::new(Vec::new());
+w.begin_interchange(&header)?;
+let mut msg = w.begin_message(MessageIdentifier::new("1", "ORDERS", "D", "96A", "UN"))?;
+msg.write_simple("BGM", &["220", "PO-4711", "9"])?;
+msg.write_elements("NAD", edifact::elements!["BY", ["4000001", "", "9"]])?;
+msg.finish()?;
+w.end_interchange()?;
+assert_eq!(
+    w.finish()?,
+    b"UNB+UNOA:3+SENDER+RECEIVER+200101:0900+IC1'\
+      UNH+1+ORDERS:D:96A:UN'BGM+220+PO-4711+9'NAD+BY+4000001::9'UNT+4+1'\
+      UNZ+1+IC1'"
+        .to_vec(),
+);
+# Ok::<(), edifact::EdifactError>(())
+```
+
+| Refused before the first byte | Error |
+|---|---|
+| `begin_interchange` while one is open; `end_interchange` with none open or inside a message | `E024` |
+| A header value missing, of the wrong class or length for its version | `E008`, `E021`, `E048`–`E050` |
+| A two-digit year under version 4 | `E060` |
+| A writer bound to another repertoire | `E041` |
+| Versions 1–3 with an active repetition separator | `E007` |
+| No message; grouped and ungrouped messages mixed; a count too long for DE 0036 | `E042`, `E052`, `E049` |
+| A raw `UNE` whose DE 0060 is not its group's message count | `E054` |
+
+### Wrapping message text
+
+`InterchangeBuilder::message` takes one rendered `UNH`…`UNT` as UTF-8 text in
+the interchange's service characters, with a body, a consistent `UNT` and an
+unused reference. Surrounding ASCII whitespace is dropped; anything else is
+refused. The text is encoded strictly into the header's repertoire:
+
+```rust
+use edifact::{Charset, EdifactError, InterchangeBuilder, InterchangeHeader, Party,
+              PreparationDateTime, SyntaxVersion};
+
+let header = InterchangeHeader::new(Charset::UnoC, SyntaxVersion::V3,
+    Party::new("SENDER"), Party::new("RECEIVER"), PreparationDateTime::new(2026, 1, 1, 9, 0)?, "IC1");
+
+let ok = InterchangeBuilder::new(header.clone())
+    .message("UNH+1+ORDERS:D:96A:UN'FTX+AAA+Müller'UNT+3+1'\n")
+    .build()?;
+assert!(ok.windows(2).any(|w| w == b"M\xFC")); // `ü` as one Latin-1 byte
+assert!(!ok.contains(&b'\n'));
+
+let text = "UNH+1+ORDERS:D:96A:UN'FTX+AAA+a—b'UNT+3+1'";
+let err = InterchangeBuilder::new(header).message(text).build().unwrap_err();
+assert!(matches!(
+    err,
+    EdifactError::CharacterNotInRepertoire { character: '—', offset: 31, .. }
+));
+# Ok::<(), EdifactError>(())
+```
+
+### Message guard and poisoning
+
+An error path never produces output that looks complete:
+
+- Dropping a `MessageWriter` without a successful `finish()` — an early `?`, a
+  panic — writes **nothing** and poisons the writer. The output keeps a `UNH`
+  without `UNT`, which no envelope check accepts.
+- A failed write, or an error after a call wrote bytes (such as
+  `CharacterNotInRepertoire` mid-value), poisons the writer too.
+- A poisoned writer returns `WriterPoisoned` from every write, `begin_*`,
+  `end_interchange`, `finish` and `finish_unt`, and writes nothing more.
+  `is_poisoned()` reports the state; `into_inner()` returns the sink with the
+  partial output, unflushed.
+
+```rust
+use edifact::{EdifactError, MessageIdentifier, Writer};
+
+fn map_order(w: &mut Writer<Vec<u8>>, fail: bool) -> Result<(), EdifactError> {
+    let mut msg = w.begin_message(MessageIdentifier::new("1", "ORDERS", "D", "96A", "UN"))?;
+    msg.write_simple("BGM", &["220", "PO-4711", "9"])?;
+    if fail {
+        // The caller's own error: the guard is dropped unfinished.
+        return Err(EdifactError::InvalidUtf8);
+    }
+    msg.finish()
+}
+
+let mut w = Writer::new(Vec::new());
+assert!(map_order(&mut w, true).is_err());
+
+assert!(w.is_poisoned());
+assert!(matches!(
+    w.end_interchange(),
+    Err(EdifactError::WriterPoisoned { .. })
+));
+// No `UNT`, no `UNZ`: the partial interchange cannot pass for a complete one.
+let partial = w.into_inner();
+assert!(partial.ends_with(b"BGM+220+PO-4711+9'"));
+# Ok::<(), EdifactError>(())
+```
+
+`WriterEmitter` follows the same rules per event, and its `finish()` returns
+`InvalidEventSequence` while a segment is open; `WriterEmitter::into_inner`
+returns the sink.
 
 ---
 

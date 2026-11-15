@@ -6,17 +6,15 @@ weight = 25
 
 # Character Sets
 
-An EDIFACT interchange says which character repertoire it is written in:
-`UNB` S001 component 1, the **syntax identifier**. The service characters,
-segment tags, and that identifier itself are ASCII in every repertoire, so the
-header can always be read before the encoding is known.
+`UNB` S001 component 1, the **syntax identifier**, names the interchange's
+repertoire. Service characters, tags and the identifier are ASCII in every
+repertoire, so the header is readable before the encoding is known.
 
-## The problem this solves
+## Why decode
 
-**UTF-8 is not a superset of `UNOC`.** `UNOC` is ISO 8859-1, where `ü` is the
-single byte `0xFC`. That byte is not valid UTF-8. A German `ORDERS` carrying
-`Müller` is a perfectly conformant `UNOC` interchange that a UTF-8-only reader
-rejects outright:
+**UTF-8 is not a superset of `UNOC`.** In ISO 8859-1, `ü` is the single byte
+`0xFC`, which is invalid UTF-8. A conformant `UNOC` interchange carrying
+`Müller` fails the UTF-8 parser:
 
 ```rust
 use edifact::from_bytes;
@@ -29,13 +27,13 @@ raw.extend_from_slice(b"ller'UNZ+0+IC1'");
 assert!(from_bytes(&raw).collect::<Result<Vec<_>, _>>().is_err());
 ```
 
-The same holds for every `UNOD`…`UNOK` interchange. The rest of `edifact` is
-UTF-8 throughout, so the fix is to decode at the boundary.
+The same holds for `UNOD`…`UNOK`. `edifact` is UTF-8 throughout: decode at
+the boundary.
 
 ## Decoding a whole interchange
 
-`decode_interchange` reads the repertoire out of the interchange's own `UNB`
-and converts the payload to UTF-8:
+`decode_interchange` reads the repertoire from the interchange's own `UNB` and
+converts the payload to UTF-8:
 
 ```rust
 use edifact::{decode_interchange, from_bytes};
@@ -51,9 +49,8 @@ assert_eq!(segments[1].element_str(1), Some("Müller"));
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-It is safe to call unconditionally. An ASCII payload, a `UNOY` (UTF-8) payload,
-and an input with no `UNB` at all are returned **borrowed** — nothing is copied,
-and the zero-copy path through `from_bytes` is preserved:
+Call it unconditionally: an ASCII payload, a `UNOY` payload and input without
+`UNB` come back **borrowed**, nothing copied:
 
 ```rust
 use edifact::decode_interchange;
@@ -64,15 +61,43 @@ assert!(matches!(decode_interchange(ascii)?, Cow::Borrowed(_)));
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-> **Spans index the decoded buffer.** When transcoding actually happens, one
-> `0xFC` becomes two bytes, so offsets shift. Every `Span` produced downstream
-> points into the buffer `decode_interchange` returned — the one you are holding,
-> and the one diagnostics render against.
+**Spans index the decoded buffer.** Transcoding turns `0xFC` into two bytes, so
+every downstream `Span` points into the buffer `decode_interchange` returned.
+
+## Byte order mark and leading whitespace
+
+The repertoire is read after the prologue the parser skips — a UTF-8 byte order
+mark and whitespace — which is kept verbatim:
+
+```rust
+use edifact::{Charset, from_bytes_decoded, sniff_charset};
+
+let mut raw = b"\xEF\xBB\xBF\r\nUNB+UNOC:3+S+R+260101:0900+IC1'NAD+BY+M".to_vec();
+raw.push(0xFC);
+raw.extend_from_slice(b"ller'UNZ+0+IC1'");
+
+assert_eq!(sniff_charset(&raw)?, Some(Charset::UnoC));
+assert_eq!(from_bytes_decoded(&raw)?[1].element_str(1), Some("Müller"));
+# Ok::<(), edifact::EdifactError>(())
+```
+
+The **sniff window** is fixed: at most 4 KiB of prologue, then the `UNB` syntax
+identifier within the next 4 KiB (a `UNA` and whitespace may precede it). A
+header outside the window is
+[`E036`](@/docs/error-reference.md#e036-limitexceeded) with
+`limit: "sniff_window"` on every decoding entry point, never passed through
+undecoded. Input that is only prologue passes through. When `max_input_bytes`
+ends inside the prologue, the `*_decoded_with_config` functions report that
+limit instead.
+
+`Charset::decode`, `transcode_to_utf8` and `decoding_reader` transcode every
+byte they are given, a leading byte order mark included.
 
 ## Decoding a stream
 
-`decode_reader` reads a 4 KiB probe to find the `UNB`, takes the repertoire
-from it, and streams the rest through one 8 KiB decoding buffer:
+`decode_reader` reads at most 8 KiB (the sniff window) to find the `UNB`, then
+streams the rest through one 8 KiB buffer. It applies no limit of its own;
+`from_reader_with_config` limits count decoded bytes:
 
 ```rust
 use edifact::{decode_reader, from_reader};
@@ -88,11 +113,8 @@ assert_eq!(segments[1].element_str(1), Some("Müller"));
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-Like `decode_interchange`, it is safe to wrap around any stream: a UTF-8
-interchange and one with no `UNB` at all pass through unchanged.
-
-When the repertoire is already known — from the trading-partner agreement, say —
-`Charset::decoding_reader` skips the probe:
+UTF-8 streams and streams without `UNB` pass through unchanged. When the
+repertoire is known in advance, `Charset::decoding_reader` skips the sniff:
 
 ```rust
 use edifact::{Charset, from_reader};
@@ -108,9 +130,8 @@ let segments: Vec<_> = from_reader(reader).collect::<Result<_, _>>()?;
 
 ## Writing
 
-The write side is symmetric, and getting it wrong is the failure that is hardest
-to diagnose: a `UNOC` header with a UTF-8 body arrives as mojibake with nothing
-in the interchange to explain why. Bind the writer to the repertoire:
+A `UNOC` header over a UTF-8 body arrives as mojibake. Bind the writer to the
+repertoire:
 
 ```rust
 use edifact::{Charset, Writer};
@@ -124,8 +145,7 @@ assert_eq!(writer.finish()?, b"NAD+BY+M\xFCller'".to_vec());
 ```
 
 A character the repertoire cannot carry is refused
-([`E038`](@/docs/error-reference.md#e038-characternotinrepertoire)) rather than
-written as something the receiver reads differently:
+([`E038`](@/docs/error-reference.md#e038-characternotinrepertoire)):
 
 ```rust
 use edifact::{Charset, EdifactError, Writer};
@@ -136,15 +156,14 @@ let err = writer.write_composites("NAD", &[&["BY"], &["Müller"]]).unwrap_err();
 assert!(matches!(err, EdifactError::CharacterNotInRepertoire { .. }));
 ```
 
-And a `UNB` that declares a repertoire the writer does not encode is refused too
-([`E041`](@/docs/error-reference.md#e041-characterrepertoiremismatch)), so the
-header cannot lie about the body.
+A `UNB` declaring a repertoire other than the writer's is refused
+([`E041`](@/docs/error-reference.md#e041-characterrepertoiremismatch)).
+`begin_interchange` binds an unbound writer to its header's repertoire.
 
 ## Validating the payload against the header
 
-Partners enforce the repertoire, and they do it *after* you have sent the file. A
-`UNOA` interchange carrying a lower-case letter is conformant-looking and will
-still be rejected. `CharsetValidator` checks it locally:
+Partners reject a `UNOA` interchange carrying a lower-case letter.
+`CharsetValidator` finds it before you send:
 
 ```rust
 use edifact::{ValidationContext, from_bytes};
@@ -164,15 +183,13 @@ assert_eq!(issue.segment_tag.as_deref(), Some("NAD"));
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-Use `with_charset_validation_for(Charset::UnoA)` to pin a repertoire instead —
-for message-level slices that carry no `UNB`, or to hold a partner to something
-stricter than they declare.
+`with_charset_validation_for(Charset::UnoA)` pins a repertoire — for slices
+without `UNB`, or a partner stricter than its header.
 
 **Decoding is permissive; validation is strict.** `decode_interchange` treats
-`UNOA` and `UNOB` as ASCII rather than enforcing their restricted repertoires,
-because real interchanges routinely carry a character or two outside level A and
-refusing to *parse* them would hide every other finding behind an encoding error.
-The repertoire check is a separate, suppressible validation issue.
+`UNOA` and `UNOB` as ASCII, so one stray character does not hide every other
+finding behind a parse error. The repertoire check is a separate, suppressible
+issue.
 
 ## The repertoires
 
@@ -180,7 +197,7 @@ The repertoire check is a separate, suppressible validation issue.
 |---|---|---|
 | `UNOA` | ISO 9735 level A | `A`–`Z`, `0`–`9`, space, `.,-()/='+:?!"%&*;<>` |
 | `UNOB` | ISO 9735 level B | Level A plus `a`–`z` |
-| `UNOC` | ISO 8859-1 | Latin-1 — by far the most common non-ASCII repertoire |
+| `UNOC` | ISO 8859-1 | Latin-1 |
 | `UNOD` | ISO 8859-2 | Latin-2, Central European |
 | `UNOE` | ISO 8859-5 | Latin/Cyrillic |
 | `UNOF` | ISO 8859-7 | Latin/Greek |
@@ -191,30 +208,41 @@ The repertoire check is a separate, suppressible validation issue.
 | `UNOK` | ISO 8859-9 | Latin-5, Turkish |
 | `UNOY` | ISO 10646-1 | UTF-8 — the identity transform |
 
-`UNOX` (ISO/IEC 2022 code extension) and `KECA` (a Korean identifier outside
-ISO 9735) are **not** supported. Both
-are stateful or multi-byte in ways that break the byte-level delimiter scanning
-every other repertoire permits — a `+` byte inside a multi-byte sequence would be
-mistaken for an element separator. They report
-[`E039`](@/docs/error-reference.md#e039-unsupportedcharset) rather than being
-silently mis-decoded.
+`UNOX` (ISO/IEC 2022) and `KECA` are **not** supported: their stateful or
+multi-byte encodings break byte-level delimiter scanning. They report
+[`E039`](@/docs/error-reference.md#e039-unsupportedcharset).
 
-Bytes that a repertoire leaves undefined (ISO 8859-6 has 45 such slots) are an
-error, not a substituted replacement character:
+Syntax versions `1`–`4` are supported in `UNB` S001 DE 0002; any other value is
+[`E059`](@/docs/error-reference.md#e059-unsupportedsyntaxversion) from envelope
+validation.
+
+A byte the repertoire leaves undefined (ISO 8859-6 has 45) is an error, never a
+replacement character. Every decoding entry point
+(`Charset::decode`, `decoding_reader`, `decode_reader`, `from_bytes_decoded`,
+`from_reader_decoded`) reports [`E003`](@/docs/error-reference.md#e003-invalidtext)
+at the byte's offset in the raw input; the streaming paths yield the segments
+before it first.
 
 ```rust
 use edifact::{Charset, EdifactError};
+use std::io::Read;
 
 // 0xA1 is undefined in ISO 8859-6.
 let err = Charset::UnoI.decode(b"AB\xA1CD").unwrap_err();
 assert!(matches!(err, EdifactError::InvalidText { offset: 2 }));
+
+let mut out = Vec::new();
+let err = Charset::UnoI
+    .decoding_reader(&b"AB\xA1CD"[..])
+    .read_to_end(&mut out)
+    .unwrap_err();
+assert!(matches!(EdifactError::from(err), EdifactError::InvalidText { offset: 2 }));
 ```
 
 ## Checking a value before you build a message
 
-`Charset::permits` and `Charset::first_violation` answer the question without
-writing anything, which is what you want when the fix is to transliterate rather
-than to fail:
+`Charset::permits` and `Charset::first_violation` check without writing — for
+when the fix is to transliterate:
 
 ```rust
 use edifact::Charset;

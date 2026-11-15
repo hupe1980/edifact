@@ -22,7 +22,7 @@
       "name": "What is EDIFACT?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "EDIFACT (Electronic Data Interchange For Administration, Commerce and Transport) is the UN standard for structured business messages, defined in ISO 9735. An interchange is flat text: segments separated by a terminator, each carrying data elements and components. It is used across supply chain, logistics, energy, healthcare, and banking."
+        "text": "EDIFACT (Electronic Data Interchange For Administration, Commerce and Transport) is the UN standard for structured business messages, defined in ISO 9735. An interchange is flat text: segments separated by a terminator, each carrying data elements and components. It is used in supply chain, logistics, energy, healthcare and banking."
       }
     },
     {
@@ -30,7 +30,7 @@
       "name": "Does edifact parse without allocating?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "Segment tags and component values borrow directly from the input byte slice. Each segment allocates its element vector once, and an owned string is created only for values that contained a release-character escape. The allocation budget is enforced by tests."
+        "text": "Tags and values borrow from the input slice. Each segment allocates its element vector once; a value is copied only where a release escape was resolved. Tests enforce the allocation budget."
       }
     },
     {
@@ -38,15 +38,31 @@
       "name": "Can edifact stream files larger than memory?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "Yes. The reader-based APIs hold one owned segment at a time, at most max_segment_bytes. Message windows hold one UNH..UNT message, which ReaderConfig::max_segments_per_message caps however long the stream runs."
+        "text": "Yes. A reader iterator holds one segment (at most 64 KiB) and a read buffer. A message window holds one UNH..UNT message of at most max_message_bytes (16 MiB by default), parsed into at most 128 times that in heap."
       }
     },
     {
       "@type": "Question",
-      "name": "Does edifact support EDIFACT syntax version 4 repeating data elements?",
+      "name": "Is it safe against hostile input?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "Yes. The repetition separator is read from the UNA service string advice, or — when an interchange has no UNA — from the syntax version in UNB S001, which makes it an asterisk for syntax version 4. Repeating data elements are then split into separate occurrences rather than left glued into the value, per ISO 9735-1:2002 clause 8.7."
+        "text": "Every entry point is bounded by default: 64 KiB per segment, 16 MiB per message, 256 MiB per input. A limit is an error, never a quiet end of input. Error text escapes control and bidirectional characters. The crate denies unsafe code and is property- and fuzz-tested. The threat model lists each threat, its status and its test evidence."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can the writer produce a broken interchange?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "The writer computes UNT and UNZ from what it wrote and validates the typed UNB header. A message dropped without finish() gets no UNT, and after a failed write the writer is poisoned (E072) instead of appending to a broken stream."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does edifact support syntax version 4 repeating data elements?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. The repetition separator comes from the UNA, or without one from the syntax version in UNB S001 (an asterisk for version 4). Repeating data elements are split into occurrences per ISO 9735-1:2002 clause 8.7."
       }
     }
   ]
@@ -60,9 +76,9 @@
     <p class="eyebrow">ISO 9735 · Rust</p>
     <h1>EDIFACT for Rust that refuses to guess.</h1>
     <p class="hero-lede">
-      Zero-copy parsing, streaming deserialization, typed derive macros, and
-      composable validation — built so that malformed input produces an
-      <em>error</em>, never a plausible-looking wrong value.
+      Zero-copy parsing, typed derive macros, layered validation and a writer
+      that computes its own envelope. Malformed input is an <em>error</em>,
+      never a plausible-looking wrong value.
     </p>
 
     <div class="hero-actions">
@@ -112,40 +128,39 @@ struct Nad {
   <h2 id="features-heading">Why edifact</h2>
   <ul class="feature-grid">
     <li>
-      <h3>Zero-copy by default</h3>
-      <p>Tags and component values borrow from the input slice. Each segment allocates
-      its element vector once; a value is copied only where a release escape had to
-      be resolved.</p>
+      <h3>Refuses to guess</h3>
+      <p>The slice and reader paths return the same result for every input,
+      however it is chunked. An unknown repertoire, syntax version or service
+      segment is an error with a stable code.</p>
     </li>
     <li>
-      <h3>Bounded streaming</h3>
-      <p>Reader iterators hold one segment at a time; message windows hold one
-      <code>UNH</code>…<code>UNT</code> message, capped by
-      <code>max_segments_per_message</code> however long the stream runs.</p>
+      <h3>Bounded by default</h3>
+      <p>64 KiB per segment, 16 MiB per message, 256 MiB per input, with no
+      configuration. A limit raises <code>E036</code>; it never ends iteration
+      quietly.</p>
+    </li>
+    <li>
+      <h3>Interchanges built, not assembled</h3>
+      <p>A typed <code>InterchangeHeader</code> is parsed and written.
+      <code>InterchangeBuilder</code>, <code>MessageBuilder</code> and the
+      <code>Writer</code> compute <code>UNT</code> and <code>UNZ</code>.</p>
+    </li>
+    <li>
+      <h3>An honest writer</h3>
+      <p>A message dropped without <code>finish()</code> gets no
+      <code>UNT</code>. After a failed write the writer is poisoned; a refusal
+      writes nothing.</p>
+    </li>
+    <li>
+      <h3>Dates by format code</h3>
+      <p>The <code>dtm</code> feature decodes, compares and builds
+      <code>DTM</code> values for 17 UNCL 2379 codes; <code>dtm-time</code>
+      converts to <code>time</code>.</p>
     </li>
     <li>
       <h3>Identifiers over indices</h3>
-      <p>Address data elements by their UN/EDIFACT identifier. Resolution happens during
-      const evaluation, so a wrong identifier fails the build instead of silently
-      reading the element next door.</p>
-    </li>
-    <li>
-      <h3>Syntax v4 repetitions</h3>
-      <p>The repetition separator comes from the <code>UNA</code> or, without a
-      <code>UNA</code>, from the syntax version in <code>UNB</code> S001. Repeating data
-      elements are split into real occurrences — not left glued into the value as
-      literal text.</p>
-    </li>
-    <li>
-      <h3>Limits that speak up</h3>
-      <p>Segment, message, and byte budgets report a violation. A budget that quietly
-      ended iteration would be indistinguishable from clean end-of-input, and a caller
-      would accept a truncated interchange as a whole one.</p>
-    </li>
-    <li>
-      <h3>Layered, composable validation</h3>
-      <p>Envelope, syntax, charset, structure, code-list and profile layers write into one report with
-      stable error codes, byte spans, and rule identifiers you can filter on.</p>
+      <p>Address data elements by UN/EDIFACT identifier. The derive resolves
+      them at compile time, so a wrong identifier fails the build.</p>
     </li>
   </ul>
 </section>
@@ -158,35 +173,52 @@ struct Nad {
     <p>EDIFACT — Electronic Data Interchange For Administration, Commerce and
     Transport — is the UN standard for structured business messages, defined in
     ISO 9735. An interchange is flat text: segments separated by a terminator, each
-    carrying data elements, each of those optionally split into components. It is
-    used across supply chain, logistics, energy, healthcare, and banking.
+    carrying data elements, optionally split into components. It is used in
+    supply chain, logistics, energy, healthcare and banking.
     <a href="{{ get_url(path='@/docs/core-concepts.md') }}">See Core Concepts</a>.</p>
   </details>
 
   <details>
-    <summary>How is this different from writing a split-on-delimiters parser?</summary>
-    <p>Delimiters can be redefined per interchange by the <code>UNA</code> service
-    string advice, any delimiter can appear inside a value when release-escaped, and
-    syntax version 4 adds a repetition separator that changes an element's shape
-    rather than its text. A naive split silently merges or truncates values in all
+    <summary>How is this different from a split-on-delimiters parser?</summary>
+    <p>The <code>UNA</code> can redefine every delimiter, any delimiter can
+    appear in a value when release-escaped, and syntax version 4 adds a
+    repetition separator. A naive split merges or truncates values in all
     three cases.</p>
   </details>
 
   <details>
+    <summary>Can edifact stream files larger than memory?</summary>
+    <p>Yes. A reader iterator holds one segment (at most 64 KiB) and a read
+    buffer. A message window holds one <code>UNH</code>…<code>UNT</code>
+    message of at most <code>max_message_bytes</code> (16 MiB by default),
+    parsed into at most 128× that in heap.
+    <a href="{{ get_url(path='@/docs/streaming.md') }}">See Streaming</a>.</p>
+  </details>
+
+  <details>
     <summary>Is it safe against hostile input?</summary>
-    <p>The crate denies <code>unsafe</code>. Parsing is guarded by a per-segment size
-    limit plus optional segment, per-message, message-count and byte budgets, and the
-    parser, writer and validators run property and fuzz tests on every push and
-    pull request. <a href="{{ get_url(path='@/docs/parsing.md') }}">See Parsing</a>.</p>
+    <p>Every entry point is bounded by default; <code>ReaderConfig::unbounded()</code>
+    opts out for trusted input. Error text escapes control and bidirectional
+    characters. The crate denies <code>unsafe</code> and is property- and
+    fuzz-tested.
+    <a href="https://github.com/hupe1980/edifact/blob/main/crates/edifact/THREAT_MODEL.md">See the threat model</a>.</p>
+  </details>
+
+  <details>
+    <summary>Can the writer produce a broken interchange?</summary>
+    <p>It computes <code>UNT</code> and <code>UNZ</code> from what it wrote and
+    validates the typed <code>UNB</code> header. A message dropped without
+    <code>finish()</code> gets no <code>UNT</code>; after a failed write the
+    writer is poisoned (<code>E072</code>).
+    <a href="{{ get_url(path='@/docs/writing.md') }}">See Writing</a>.</p>
   </details>
 
   <details>
     <summary>Does it ship UN/EDIFACT directories?</summary>
-    <p>No — the UNTDID licence forbids distributing modified copies of the
-    Directory without UNECE's permission, so the crate takes the conservative
-    reading and ships none. The crate
-    provides the validation engine and the table types; supply your own definitions
-    at compile time or load them at startup.
+    <p>No. The UNTDID licence forbids distributing modified copies of the
+    Directory without UNECE's permission. The crate ships the validation
+    engine, the table types and the ISO 9735 service segments; supply your
+    directory definitions at compile time or load them at startup.
     <a href="{{ get_url(path='@/docs/validation.md') }}">See Validation</a>.</p>
   </details>
 </section>

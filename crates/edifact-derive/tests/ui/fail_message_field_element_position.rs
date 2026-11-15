@@ -4,7 +4,7 @@ mod support;
 pub use support::edifact::{
     Element, EdifactDeserialize, EdifactError, EdifactEvent, EdifactSegmentTag,
     EdifactSerialize, EventEmitter, Segment,
-    find_qualified_segment, find_segment};
+    SegmentSliceExt};
 
 extern crate self as edifact;
 

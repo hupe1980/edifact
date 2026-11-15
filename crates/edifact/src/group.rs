@@ -938,6 +938,19 @@ impl<'a> SegmentGroupIndexed<'a> {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Inner-loop steps of placement, counted for `placement_work_is_linear`.
+    static STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Count one inner-loop step of placement; a no-op outside unit tests.
+#[inline(always)]
+fn step() {
+    #[cfg(test)]
+    STEPS.with(|steps| steps.set(steps.get() + 1));
+}
+
 /// Merge walk behind [`SegmentGroupIndexed::direct_segment_indices`].
 struct DirectIndices<'t, 'a> {
     pos: usize,
@@ -953,20 +966,23 @@ impl Iterator for DirectIndices<'_, '_> {
 
     fn next(&mut self) -> Option<usize> {
         while self.pos < self.end {
+            step();
             while let Some((first, rest)) = self.children.split_first() {
+                step();
                 if first.total_span.end <= self.pos {
                     self.children = rest;
                 } else {
                     break;
                 }
             }
-            if let Some(child) = self.children.first() {
-                if child.total_span.start <= self.pos {
-                    self.pos = child.total_span.end;
-                    continue;
-                }
+            if let Some(child) = self.children.first()
+                && child.total_span.start <= self.pos
+            {
+                self.pos = child.total_span.end;
+                continue;
             }
             while let Some((&first, rest)) = self.unplaced.split_first() {
+                step();
                 if first < self.pos {
                     self.unplaced = rest;
                 } else {
@@ -1437,14 +1453,15 @@ impl<'s> GroupResolution<'s> {
     ///
     /// Each issue carries layer [`Structure`][ValidationLayer::Structure], the
     /// [`group_path`](ValidationIssue::group_path) of the instance concerned
-    /// (none at the root), the segment's span and, when `segments` starts at
-    /// `UNH`, its [`segment_position`](ValidationIssue::segment_position); the
+    /// (none at the root), the segment's span and, inside a message, its
+    /// [`segment_position`](ValidationIssue::segment_position); the
     /// place's or group's `id`, when set, is in the context under `place`.
     ///
     /// `segments` must be the slice that was resolved.
     #[must_use]
     pub fn findings(&self, segments: &[Segment<'_>]) -> Vec<ValidationIssue> {
         let mut keyed: Vec<(usize, ValidationIssue)> = Vec::new();
+        let positions = crate::validator::MessagePositions::new(segments);
         let finish = |issue: ValidationIssue,
                       index: Option<usize>,
                       path: Option<GroupPath>,
@@ -1453,9 +1470,7 @@ impl<'s> GroupResolution<'s> {
             if let Some(path) = path {
                 issue = issue.with_group_path(path);
             }
-            if let Some(position) =
-                index.and_then(|i| crate::validator::message_position(segments, i))
-            {
+            if let Some(position) = index.and_then(|i| positions.position(i)) {
                 issue = issue.with_segment_position(position);
             }
             if let Some(id) = id {
@@ -1731,12 +1746,14 @@ impl<'g> Node<'g> {
     fn candidate(&self, segment: &Segment<'_>, tables: &Tables) -> Option<usize> {
         if !self.ordered {
             return (0..self.members.len()).find(|&j| {
+                step();
                 matches!(self.members.get(j), Cand::Group(_))
                     && self.members.get(j).matches(segment, tables)
             });
         }
         let mut full = None;
         for j in self.cursor.max(self.first)..self.members.len() {
+            step();
             let cand = self.members.get(j);
             if !cand.matches(segment, tables) {
                 continue;
@@ -1753,8 +1770,10 @@ impl<'g> Node<'g> {
     /// Whether `segment` fits an entry this ordered level has already passed.
     fn passed(&self, segment: &Segment<'_>, tables: &Tables) -> bool {
         self.ordered
-            && (0..self.cursor.max(self.first))
-                .any(|j| self.members.get(j).matches(segment, tables))
+            && (0..self.cursor.max(self.first)).any(|j| {
+                step();
+                self.members.get(j).matches(segment, tables)
+            })
     }
 
     fn into_indexed(self) -> SegmentGroupIndexed<'g> {
@@ -1854,6 +1873,7 @@ fn resolve<'g>(
         // Steps 1 and 2: the innermost level's own candidates, then each
         // enclosing level's reachable places, innermost first.
         let found = stack.iter().enumerate().rev().find_map(|(depth, &node)| {
+            step();
             nodes[node]
                 .candidate(segment, tables)
                 .map(|j| (depth, node, j))
@@ -1985,6 +2005,51 @@ mod tests {
         GroupDef::new("SG2", "NAD"),
         GroupDef::with_children("SG4", "IDE", SG12),
     ];
+
+    /// Placement steps for `n` sibling group instances, as
+    /// (ordered resolution, direct-segment walk of the root).
+    fn placement_steps(n: usize) -> (u64, u64) {
+        let sg1 = GroupDef::builder("SG1", SegmentPlace::new("NAD"))
+            .segment(SegmentPlace::new("CTA"))
+            .build()
+            .expect("valid group");
+        let schema = GroupSchema::ordered(
+            "ROOT",
+            [
+                Entry::Segment(SegmentPlace::new("UNH")),
+                Entry::Group(sg1),
+                Entry::Segment(SegmentPlace::new("UNT")),
+            ],
+        )
+        .expect("valid schema");
+        let mut segments = vec![seg("UNH")];
+        for _ in 0..n {
+            segments.extend([seg("NAD"), seg("CTA")]);
+        }
+        segments.push(seg("UNT"));
+
+        let reset = || STEPS.with(|steps| steps.replace(0));
+        reset();
+        let resolution = schema.resolve(&segments);
+        let resolve = reset();
+        let direct = resolution.tree().direct_segment_indices().count();
+        assert_eq!(direct, 2, "UNH and UNT");
+        (resolve, reset())
+    }
+
+    #[test]
+    fn placement_work_is_linear() {
+        let counts: Vec<_> = [10_000, 20_000, 40_000]
+            .into_iter()
+            .map(placement_steps)
+            .collect();
+        for pair in counts.windows(2) {
+            let ((r1, d1), (r2, d2)) = (pair[0], pair[1]);
+            assert!(r1 > 0 && d1 > 0, "steps are counted");
+            assert!(r2 * 10 <= r1 * 22, "resolve: {r1} -> {r2} steps");
+            assert!(d2 * 10 <= d1 * 22, "direct walk: {d1} -> {d2} steps");
+        }
+    }
 
     #[test]
     fn a_nested_group_wins_over_an_ancestors_sibling_with_the_same_trigger() {

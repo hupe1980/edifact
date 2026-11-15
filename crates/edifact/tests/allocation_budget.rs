@@ -120,6 +120,12 @@ const ONE_MB_SLICE_ALLOCS: usize = 44_013;
 /// component values.
 const ORDERS_READER_FIRST_SEGMENT_ALLOCS: usize = 12;
 
+/// Ceiling on parsed heap per input byte: holding one message window (or a
+/// collected interchange) of `n` input bytes takes at most `HEAP_FACTOR × n`.
+/// The worst case is a message of maximal segments of one-byte elements
+/// (`FTX+A+A+…`); the guides quote this figure.
+const HEAP_FACTOR: usize = 128;
+
 // ── harness self-test ────────────────────────────────────────────────────────
 
 #[test]
@@ -440,4 +446,109 @@ fn messages_by_type_iter_allocates_nothing() {
     let (count, stats) = measure(|| validated.iter_messages_by_type("ORDERS").count());
     assert_eq!(stats.allocations, 0, "{stats:?}");
     assert_eq!(count, 2);
+}
+
+// ── heap factor of a window ──────────────────────────────────────────────────
+
+/// `max_message_bytes` of the worst-case window: 1 MiB. The factor is linear in
+/// the bytes held, so it transfers to the 16 MiB default.
+const WINDOW_BYTES: usize = 1 << 20;
+
+/// `UNB`, then a message of exactly [`WINDOW_BYTES`]: `UNH`, `FTX` segments of
+/// one-byte elements at the default `max_segment_bytes`, and `UNT`.
+fn worst_case_window() -> Vec<u8> {
+    const UNH: &[u8] = b"UNH+1+ORDERS:D:96A:UN'";
+    const UNT: &[u8] = b"UNT+18+1'";
+    // `FTX+A+A…'` of `bytes` bytes, terminator included; an odd size starts
+    // with one two-byte element.
+    let segment = |bytes: usize| {
+        let mut ftx = b"FTX".to_vec();
+        if bytes % 2 == 1 {
+            ftx.extend_from_slice(b"+AA");
+        }
+        while ftx.len() < bytes - 1 {
+            ftx.extend_from_slice(b"+A");
+        }
+        ftx.push(b'\'');
+        assert_eq!(ftx.len(), bytes);
+        ftx
+    };
+    // A full segment: `max_segment_bytes` before the terminator.
+    let full = edifact::ReaderConfig::DEFAULT_MAX_SEGMENT_BYTES + 1;
+    let mut input = b"UNB+UNOC:3+S+R+260101:0900+IC1'".to_vec();
+    let start = input.len();
+    input.extend_from_slice(UNH);
+    let mut rest = WINDOW_BYTES - UNH.len() - UNT.len();
+    while rest > 0 {
+        let bytes = if rest > full { full - 1 } else { rest };
+        input.extend_from_slice(&segment(bytes));
+        rest -= bytes;
+    }
+    input.extend_from_slice(UNT);
+    assert_eq!(input.len() - start, WINDOW_BYTES);
+    input.extend_from_slice(b"UNZ+1+IC1'");
+    input
+}
+
+/// Measured 2026-11-15 (release, aarch64-apple-darwin): 110.5 × on the slice
+/// path, 104.6 × on the reader path, 110.5 × for `collect`.
+#[cfg(target_pointer_width = "64")]
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "parses 3 MiB of one-byte elements; runs in release (`just test-release-limits`)"
+)]
+fn worst_case_window_heap_within_factor() {
+    use edifact::{
+        ReaderConfig, from_bytes_with_config, message_windows_from_reader_with_config,
+        message_windows_with_config,
+    };
+
+    let input = worst_case_window();
+    let config = ReaderConfig::default().max_message_bytes(WINDOW_BYTES as u64);
+    let check = |path: &str, peak: usize, bytes: usize| {
+        assert!(
+            peak <= HEAP_FACTOR * bytes,
+            "{path}: peak heap {peak} B exceeds {HEAP_FACTOR} × {bytes} B",
+        );
+        // Not much below the ceiling either: the input really is the worst case.
+        assert!(
+            peak * 2 > HEAP_FACTOR * bytes,
+            "{path}: peak heap {peak} B is far below the ceiling; re-measure HEAP_FACTOR",
+        );
+    };
+
+    let (window, stats) = measure(|| {
+        message_windows_with_config(&input, config)
+            .next()
+            .expect("one window")
+            .expect("within the budget")
+    });
+    assert_eq!(window.segments.len(), 18);
+    drop(window);
+    check("message_windows", stats.peak_bytes, WINDOW_BYTES);
+
+    let (window, stats) = measure(|| {
+        message_windows_from_reader_with_config(&input[..], config)
+            .next()
+            .expect("one window")
+            .expect("within the budget")
+    });
+    assert_eq!(window.segments.len(), 18);
+    drop(window);
+    check(
+        "message_windows_from_reader",
+        stats.peak_bytes,
+        WINDOW_BYTES,
+    );
+
+    // Collecting the whole interchange: the same factor over its bytes.
+    let (segments, stats) = measure(|| {
+        from_bytes_with_config(&input, config)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("within the budget")
+    });
+    assert_eq!(segments.len(), 20);
+    drop(segments);
+    check("from_bytes(..).collect()", stats.peak_bytes, input.len());
 }

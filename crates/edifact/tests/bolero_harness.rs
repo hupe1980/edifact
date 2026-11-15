@@ -83,6 +83,15 @@ fn fuzz_round_trip_valid_segment() {
             let tag = std::str::from_utf8(&tag_chars).unwrap();
             let value_char = (b'A' + v % 26) as char;
             let input = format!("{}+{}'\n", tag, value_char);
+            if tag == "UNA" {
+                // At the head, `UNA` opens a service string advice (ISO 9735-1
+                // Annex A), here cut short: not a segment.
+                assert!(matches!(
+                    from_bytes(input.as_bytes()).next(),
+                    Some(Err(edifact::EdifactError::UnexpectedEof { offset: 7 }))
+                ));
+                return;
+            }
             let segs: Vec<_> = from_bytes(input.as_bytes())
                 .collect::<Result<Vec<_>, _>>()
                 .unwrap();
@@ -437,17 +446,18 @@ fn fuzz_structured_parse_write_reparse_is_stable() {
             assert_eq!(first.len(), second.len(), "segment count changed: {text:?}");
             for (a, b) in first.iter().zip(second.iter()) {
                 assert_eq!(a.tag, b.tag, "tag changed: {text:?}");
+                // The writer truncates trailing empties (ISO 9735-1 §8.7).
                 assert_eq!(
-                    a.elements.len(),
-                    b.elements.len(),
-                    "element count changed for {}: {text:?}",
+                    canonical_values(a),
+                    canonical_values(b),
+                    "values changed for {}: {text:?}",
                     a.tag
                 );
-                for (ea, eb) in a.elements.iter().zip(b.elements.iter()) {
-                    let va: Vec<&str> = ea.components.iter().map(|(c, _)| c.as_ref()).collect();
-                    let vb: Vec<&str> = eb.components.iter().map(|(c, _)| c.as_ref()).collect();
-                    assert_eq!(va, vb, "component values changed for {}: {text:?}", a.tag);
-                }
+                assert_eq!(
+                    canonical_values(b),
+                    values(b),
+                    "output not truncated: {text:?}"
+                );
             }
         });
 }
@@ -492,17 +502,11 @@ fn fuzz_custom_una_round_trip_is_stable() {
             assert_eq!(source.len(), reparsed.len(), "segment count changed");
             for (a, b) in source.iter().zip(reparsed.iter()) {
                 assert_eq!(a.tag, b.tag);
-                let va: Vec<Vec<&str>> = a
-                    .elements
-                    .iter()
-                    .map(|e| e.components.iter().map(|(c, _)| c.as_ref()).collect())
-                    .collect();
-                let vb: Vec<Vec<&str>> = b
-                    .elements
-                    .iter()
-                    .map(|e| e.components.iter().map(|(c, _)| c.as_ref()).collect())
-                    .collect();
-                assert_eq!(va, vb, "values changed under UNA {delims:?}");
+                assert_eq!(
+                    canonical_values(a),
+                    canonical_values(b),
+                    "values changed under UNA {delims:?}"
+                );
             }
         });
 }
@@ -540,6 +544,110 @@ fn fuzz_anything_the_writer_accepts_reparses() {
             // is one segment; anything else is still exactly one segment.
             assert_eq!(segments.len(), 1, "one segment in, one segment out");
             assert_eq!(segments[0].tag, tag, "the tag must survive verbatim");
+            // ISO 9735-1 §8.7: no trailing empty element or component is written.
+            assert_eq!(trailing_separator_findings(&segments), 0, "{buf:?}");
+        });
+}
+
+/// A sink that fails its `fail_at`-th `write` call (zero-based).
+struct FailingSink {
+    buf: Vec<u8>,
+    writes: usize,
+    fail_at: Option<usize>,
+}
+
+impl std::io::Write for FailingSink {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        let index = self.writes;
+        self.writes += 1;
+        if self.fail_at == Some(index) {
+            return Err(std::io::Error::other("injected sink failure"));
+        }
+        self.buf.extend_from_slice(data);
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn fuzz_writer_error_paths_never_forge() {
+    // A failed write never ends in output that looks complete. The caller logs
+    // every error and carries on to `end_interchange`; once one call has
+    // failed, every later call must report the poisoned writer and the bytes
+    // must fail envelope validation. Only valid tags and ASCII values are
+    // written, so every error comes from the sink.
+    check!()
+        .with_type::<(Vec<u8>, Option<u16>)>()
+        .cloned()
+        .for_each(|(script, fail_at): (Vec<u8>, Option<u16>)| {
+            // Each byte is one message with one to three content segments
+            // (an empty message does not validate). At most eight messages,
+            // at least one.
+            let mut messages: Vec<u8> = script.into_iter().take(8).collect();
+            if messages.is_empty() {
+                messages.push(1);
+            }
+            let sink = FailingSink {
+                buf: Vec::new(),
+                writes: 0,
+                fail_at: fail_at.map(usize::from),
+            };
+            let mut w = edifact::Writer::new(sink);
+            let mut results =
+                vec![w.begin_interchange(&header("UNOA", "1", "S", "R", "200101", "0900", "IC1"))];
+            for (i, op) in messages.iter().enumerate() {
+                let reference = (i + 1).to_string();
+                match w.begin_message(edifact::MessageIdentifier::new(
+                    &reference, "ORDERS", "D", "96A", "UN",
+                )) {
+                    Ok(mut msg) => {
+                        for n in 0..=(op % 3) {
+                            results.push(if n % 2 == 0 {
+                                msg.write_simple("BGM", &["220", "PO+1", "9"])
+                            } else {
+                                msg.write_composites("DTM", &[&["137", "20260101", "102"]])
+                            });
+                        }
+                        results.push(msg.finish());
+                    }
+                    Err(e) => results.push(Err(e)),
+                }
+            }
+            results.push(w.end_interchange());
+            let poisoned = w.is_poisoned();
+            let bytes = w.into_inner().buf;
+            let envelope_ok = from_bytes(&bytes)
+                .collect::<Result<Vec<_>, _>>()
+                .is_ok_and(|segments| edifact::validate_envelope(&segments).is_ok());
+
+            match results.iter().position(Result::is_err) {
+                None => {
+                    assert!(!poisoned);
+                    assert!(envelope_ok, "a clean session must validate");
+                }
+                Some(first) => {
+                    assert!(
+                        matches!(results[first], Err(edifact::EdifactError::Io(_))),
+                        "first error: {:?}",
+                        results[first]
+                    );
+                    for later in &results[first + 1..] {
+                        assert!(
+                            matches!(later, Err(edifact::EdifactError::WriterPoisoned { .. })),
+                            "after a failure: {later:?}"
+                        );
+                    }
+                    assert!(poisoned);
+                    assert!(
+                        !envelope_ok,
+                        "a failed session validated: {}",
+                        bytes.escape_ascii()
+                    );
+                }
+            }
         });
 }
 
@@ -561,6 +669,151 @@ fn fuzz_validate_envelope_no_panic() {
 }
 
 #[test]
+fn fuzz_error_text_has_no_control_chars() {
+    // Whatever the input holds, every error's `Display` is one line without a
+    // control or `Bidi_Control` character, and the report renders exactly one
+    // line per issue.
+    use edifact::{
+        EnvelopeValidator, SyntaxValidator, ValidationContext, ValidationLayer, validate_envelope,
+        validate_envelope_lenient,
+    };
+
+    const BIDI: &str = "\u{61c}\u{200e}\u{200f}\u{202a}\u{202b}\u{202c}\u{202d}\u{202e}\u{2066}\u{2067}\u{2068}\u{2069}";
+
+    fn clean(text: &str) -> bool {
+        !text
+            .chars()
+            .any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}' || BIDI.contains(c))
+    }
+
+    // The forged-log-line input that motivates the target.
+    let seed: &[u8] = b"UNB+UNOC:3+S+R+260101:0900+IC1'UNH+A\r\nFAKE LINE+ORDERS:D:96A:UN'\
+BGM+220'UNT+3+A\r\nFAKE LINE'UNH+A\r\nFAKE LINE+ORDERS:D:96A:UN'UNT+2+A\r\nFAKE LINE'UNZ+2+IC1'";
+
+    let check_one = |input: &[u8]| {
+        let mut segments = Vec::new();
+        for item in from_bytes(input) {
+            match item {
+                Ok(segment) => segments.push(segment),
+                Err(error) => {
+                    let text = error.to_string();
+                    assert!(clean(&text), "parse error {text:?}");
+                    break;
+                }
+            }
+        }
+        if let Err(error) = validate_envelope(&segments) {
+            let text = error.to_string();
+            assert!(clean(&text), "envelope error {text:?}");
+        }
+        for error in validate_envelope_lenient(&segments).errors {
+            let text = error.to_string();
+            assert!(clean(&text), "lenient envelope error {text:?}");
+        }
+        let report = ValidationContext::builder()
+            .with_validator(ValidationLayer::Envelope, EnvelopeValidator)
+            .with_validator(ValidationLayer::Syntax, SyntaxValidator)
+            .build()
+            .validate(&segments);
+        let text = report.render_deterministic();
+        let buckets = [
+            report.errors().len(),
+            report.warnings().len(),
+            report.infos().len(),
+        ];
+        let headers = 1 + buckets.iter().filter(|&&n| n > 0).count();
+        assert_eq!(
+            text.lines().count(),
+            headers + report.total_issues(),
+            "{text:?}"
+        );
+        assert!(clean(&text.replace('\n', "")), "{text:?}");
+        for issue in report.iter_issues() {
+            assert!(clean(&issue.to_string()), "{issue:?}");
+        }
+    };
+
+    check_one(seed);
+    check!()
+        .with_type::<(Vec<u8>, u8)>()
+        .cloned()
+        .for_each(|(input, pick): (Vec<u8>, u8)| {
+            check_one(&input);
+            // The drawn bytes and a bidi control in a reference the envelope
+            // quotes back.
+            let bidi = BIDI
+                .chars()
+                .nth(usize::from(pick) % 12)
+                .unwrap_or('\u{202e}');
+            let mut framed = b"UNB+UNOC:3+S+R+260101:0900+IC1'UNH+A".to_vec();
+            framed.extend_from_slice(&input);
+            framed.extend_from_slice(bidi.to_string().as_bytes());
+            framed.extend_from_slice(b"+ORDERS:D:96A:UN'BGM+220'UNT+3+B'UNZ+1+IC1'");
+            check_one(&framed);
+        });
+}
+
+#[path = "common/service_findings.rs"]
+mod service_findings;
+
+#[test]
+fn fuzz_service_segments() {
+    // Interchanges shaped around the service segments: syntax version, S004,
+    // control counts, control references with release escapes and multi-byte
+    // text, and `U` tags inside the message body. For every one:
+    //
+    // S1  `validate_envelope` does not panic, and fails exactly when the
+    //     lenient path reports a finding;
+    // S2  the envelope layer and `DirectoryValidator(service::lookup)` report
+    //     the same presence, class and length findings.
+    use edifact::{validate_envelope, validate_envelope_lenient};
+
+    const VERSIONS: [&str; 8] = ["1", "2", "3", "4", "9", "X", "", "44"];
+    const TAGS: [&str; 6] = ["BGM", "USH", "UIH", "UXX", "UNS", "UGH"];
+    const TEXT: [&str; 6] = [
+        "S",
+        "AB?+C",
+        "Müller",
+        "",
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+        "a:b",
+    ];
+
+    /// Digits drawn from `bytes`, any length the fuzzer picks (20+ included).
+    fn digits(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| char::from(b'0' + b % 10)).collect()
+    }
+
+    type Case = (u8, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, u8, u8, u8);
+    check!().with_type::<Case>().cloned().for_each(
+        |(version, date, time, unz, unt, tag, sender, reference): Case| {
+            let version = VERSIONS[usize::from(version) % VERSIONS.len()];
+            let tag = TAGS[usize::from(tag) % TAGS.len()];
+            let sender = TEXT[usize::from(sender) % TEXT.len()];
+            let reference = TEXT[usize::from(reference) % TEXT.len()];
+            let input = format!(
+                "UNB+UNOC:{version}+{sender}+R+{}:{}+{reference}'\
+UNH+1+ORDERS:D:96A:UN'{tag}+1'UNT+{}+1'UNZ+{}+{reference}'",
+                digits(&date),
+                digits(&time),
+                digits(&unt),
+                digits(&unz),
+            );
+            let Ok(segments) = from_bytes(input.as_bytes()).collect::<Result<Vec<_>, _>>() else {
+                return;
+            };
+            let lenient = validate_envelope_lenient(&segments);
+            assert_eq!(
+                validate_envelope(&segments).is_err(),
+                !lenient.errors.is_empty() || lenient.interchange.is_none(),
+                "S1: {input}"
+            );
+            service_findings::assert_same_service_findings(input.as_bytes());
+        },
+    );
+}
+
+#[test]
 fn fuzz_message_windows_no_panic() {
     // `message_windows` must not panic for any byte sequence.
     use edifact::message_windows;
@@ -574,63 +827,100 @@ fn fuzz_message_windows_no_panic() {
         });
 }
 
+#[path = "common/parity.rs"]
+mod parity;
+
+/// A `ReaderConfig` drawn from fuzz input: every limit (each set or not), and
+/// an explicit service string advice or none.
+fn drawn_config(knobs: [u8; 5], input_bytes: u16, len: usize) -> edifact::ReaderConfig {
+    use edifact::{ReaderConfig, ServiceStringAdvice};
+
+    let mut config = ReaderConfig::default();
+    if knobs[0].is_multiple_of(2) {
+        config = config.max_segment_bytes(usize::from(knobs[0] / 4));
+    }
+    if !knobs[1].is_multiple_of(3) {
+        config = config.max_segments(usize::from(knobs[1] % 24));
+    }
+    if !knobs[2].is_multiple_of(3) {
+        config = config.max_messages(usize::from(knobs[2] % 4));
+    }
+    if !knobs[3].is_multiple_of(3) {
+        config = config.max_message_bytes(u64::from(knobs[3]) % (len as u64 + 8));
+    }
+    if !input_bytes.is_multiple_of(3) {
+        config = config.max_input_bytes(u64::from(input_bytes) % (len as u64 + 8));
+    }
+    let advice = match knobs[4] % 6 {
+        1 => Some(ServiceStringAdvice::for_syntax_version(Some(4))),
+        2 => Some(ServiceStringAdvice::default()),
+        3 => ServiceStringAdvice::from_bytes(b"UNA:;.? ~").ok(),
+        _ => None,
+    };
+    if let Some(advice) = advice {
+        config = config.with_service_string_advice(advice);
+    }
+    config
+}
+
+/// The slice path and the reader path — under every chunking in
+/// `parity::CHUNKS` and behind a trickling `Read` — return the same `Result`:
+/// equal segments with equal spans, or the same error with the same offset and
+/// payload. The decoding pair is held to the same standard.
+fn assert_parse_path_parity(input: &[u8], config: edifact::ReaderConfig) {
+    parity::assert_full_parity(input, config);
+    parity::assert_decoded_parity(input, config);
+}
+
 #[test]
-fn fuzz_reader_no_panic_and_equivalence() {
-    // The reader-based path (OwnedSegmentStream) exercises distinct logic from the
-    // slice path: fast-path BufRead scan, slow-path byte accumulation, UNA detection
-    // across buffer boundaries, and max_segment_bytes guard.
-    //
-    // The two paths must agree **completely**: same verdict, and on success the
-    // same segments.  Comparing only when both succeed would skip the one case
-    // that matters most — an input one path accepts and the other rejects.
+fn fuzz_parity_raw() {
+    // Arbitrary bytes under a drawn configuration. Every limit is in play,
+    // `max_input_bytes` included.
     check!()
-        .with_type::<Vec<u8>>()
+        .with_type::<(Vec<u8>, [u8; 5], u16)>()
         .cloned()
-        .for_each(|input: Vec<u8>| {
-            // Use a small BufReader capacity to maximise buffer-boundary splits.
-            let reader = std::io::BufReader::with_capacity(8, std::io::Cursor::new(&input));
-            let reader_result: Result<Vec<_>, _> = edifact::from_bufread(reader).collect();
-            let slice_result: Result<Vec<_>, _> = from_bytes(&input).collect();
+        .for_each(|(input, knobs, input_bytes): (Vec<u8>, [u8; 5], u16)| {
+            let config = drawn_config(knobs, input_bytes, input.len());
+            assert_parse_path_parity(&input, config);
+        });
+}
 
-            let head = &input[..input.len().min(64)];
-            assert_eq!(
-                reader_result.is_ok(),
-                slice_result.is_ok(),
-                "the two paths disagreed on whether {head:?} parses at all: \
-                 reader={reader_result:?} slice={slice_result:?}",
-            );
-
-            let (Ok(reader_segs), Ok(slice_segs)) = (&reader_result, &slice_result) else {
-                return; // both failed, which is agreement
+#[test]
+fn fuzz_parity_structured() {
+    // Random bytes almost never spell `'…'`, so each byte here picks a symbol
+    // EDIFACT gives meaning to (tag letters, service characters, whitespace,
+    // byte order mark bytes, a Latin-1 byte, the bytes `UNOG` and `UNOI`
+    // leave undefined), optionally after the head of a real interchange chosen
+    // by the first byte. One head is a prologue longer than the decoding
+    // reader's 8 KiB head, so `max_input_bytes` races the sniff window.
+    const SYMBOLS: &[u8] = b"UNABGHTZ:+?'* \r\n\xEF\xBB\xBF\xFC\xA5\xA1";
+    let long_prologue = [&[b' '; 8_200][..], b"UNB+UNOC:3+S+R+200101:0900+1'"].concat();
+    let prefixes: [&[u8]; 9] = [
+        b"",
+        b"UNA:+.? '",
+        b"UNB+UNOC:3+S+R+200101:0900+1'",
+        b"UNB+UNOC:4+S+R+200101:0900+1'UNH+1+ORDERS:D:96A:UN'",
+        b"\xEF\xBB\xBFUNA:+.? '\r\nUNB+UNOA:1+S+R+200101:0900+1'",
+        b"UNH+1+X:D:96A:UN'BGM+220+PO?+1'",
+        b"UNB+UNOG:3+S+R+200101:0900+1'",
+        b"UNB+UNOI:3+S+R+200101:0900+1'",
+        &long_prologue,
+    ];
+    check!()
+        .with_type::<(Vec<u8>, [u8; 5], u16)>()
+        .cloned()
+        .for_each(|(bytes, knobs, input_bytes): (Vec<u8>, [u8; 5], u16)| {
+            let (prefix, body) = match bytes.split_first() {
+                Some((&first, rest)) => (prefixes[usize::from(first) % prefixes.len()], rest),
+                None => (&b""[..], &[][..]),
             };
-            assert_eq!(
-                reader_segs.len(),
-                slice_segs.len(),
-                "different segment counts for {head:?}",
+            let mut input = prefix.to_vec();
+            input.extend(
+                body.iter()
+                    .map(|&b| SYMBOLS[usize::from(b) % SYMBOLS.len()]),
             );
-            for (r, s) in reader_segs.iter().zip(slice_segs.iter()) {
-                assert_eq!(r.tag, s.tag, "tag mismatch between the two paths");
-                assert_eq!(
-                    r.elements.len(),
-                    s.elements.len(),
-                    "element count mismatch on {} for {head:?}",
-                    r.tag,
-                );
-                for (re, se) in r.elements.iter().zip(s.elements.iter()) {
-                    assert_eq!(
-                        re.components().collect::<Vec<_>>(),
-                        se.components().collect::<Vec<_>>(),
-                        "component values differ on {} for {head:?}",
-                        r.tag,
-                    );
-                    assert_eq!(
-                        re.repeat_count(),
-                        se.repeat_count(),
-                        "occurrence count differs on {} for {head:?}",
-                        r.tag,
-                    );
-                }
-            }
+            let config = drawn_config(knobs, input_bytes, input.len());
+            assert_parse_path_parity(&input, config);
         });
 }
 
@@ -640,11 +930,10 @@ fn fuzz_reader_and_slice_agree_on_limit_errors() {
     // yield the same segments followed by the same limit error — code, limit,
     // ceiling and byte offset — and a limit error ends both iterators.
     //
-    // Only inputs on which the two paths already agree without count or byte
-    // budgets are compared: the non-limit divergences between them (for
-    // example a doubled segment terminator, which the reader skips and the
-    // slice tokenizer refuses) are a separate parity question, and must not
-    // make this target fail.
+    // Full parity under every configuration is `fuzz_parity_*`'s question;
+    // this target adds that a limit never hides bytes it admitted. Inputs on
+    // which the paths disagree without the count and byte budgets are left to
+    // those targets.
     use edifact::{EdifactError, ReaderConfig, from_bufread_with_config, from_bytes_with_config};
 
     fn outcome<T: std::fmt::Debug>(
@@ -705,7 +994,7 @@ fn fuzz_reader_and_slice_agree_on_limit_errors() {
 UNH+M1+ORDERS:D:96A:UN'BGM+220+PO?+1+9'DTM+137:20260101:102'UNT+4+M1'\n\
 UNH+M2+ORDERS:D:96A:UN'BGM+220+PO2'UNT+3+M2'UNZ+2+IC1'  \n",
                     );
-                    for pair in bytes.chunks_exact(2).take(4) {
+                    for pair in bytes.as_chunks::<2>().0.iter().take(4) {
                         let at = usize::from(pair[0]) % template.len();
                         template[at] = pair[1];
                     }
@@ -731,7 +1020,8 @@ UNH+M2+ORDERS:D:96A:UN'BGM+220+PO2'UNT+3+M2'UNZ+2+IC1'  \n",
                     config = config.max_messages(usize::from(messages % 4));
                 }
                 if per_message % 3 != 0 {
-                    config = config.max_segments_per_message(usize::from(per_message % 8));
+                    config =
+                        config.max_message_bytes(u64::from(per_message) % (input.len() as u64 + 8));
                 }
                 if input_bytes % 3 != 0 {
                     config =
@@ -989,14 +1279,13 @@ fn fuzz_escape_value_no_unescaped_delimiters() {
                 let message = format!("BGM+{}{}", escaped, term as char);
                 let t = Tokenizer::with_limit(message.as_bytes(), ssa, 65_536);
                 let mut p = Parser::new(t);
-                if let Some(Ok(seg)) = p.next() {
-                    if let Some(v) = seg.element_str(0) {
+                if let Some(Ok(seg)) = p.next()
+                    && let Some(v) = seg.element_str(0) {
                         assert_eq!(
                             v, value,
                             "round-trip mismatch: escaped={escaped:?} value={value:?}"
                         );
                     }
-                }
             }
         });
 }
@@ -1215,7 +1504,7 @@ fn ordered_entries(
     let mut entries = Vec::new();
     for _ in 0..count {
         let kind = seed.next().unwrap_or(0);
-        if kind % 3 == 0 && depth < 3 {
+        if kind.is_multiple_of(3) && depth < 3 {
             let trigger = fuzz_place(seed);
             let mut builder = GroupDef::builder(format!("G{}", kind % 4), trigger);
             for entry in ordered_entries(seed, depth + 1) {
@@ -1225,7 +1514,7 @@ fn ordered_entries(
                     _ => builder,
                 };
             }
-            if kind % 2 == 0 {
+            if kind.is_multiple_of(2) {
                 builder = builder.ordered();
             }
             if let Some(max) = fuzz_max(seed) {
@@ -1503,7 +1792,7 @@ fn fuzz_recovering_scan_matches_strict() {
 UNH+M1+ORDERS:D:96A:UN'BGM+220+PO?+1+9'DTM+137:20260101:102'UNT+4+M1'\
 UNH+M2+ORDERS:D:96A:UN'BGM+220+PO2'UNT+3+M2'UNZ+2+IC1'"
                         .to_vec();
-                    for pair in bytes.chunks_exact(2).take(6) {
+                    for pair in bytes.as_chunks::<2>().0.iter().take(6) {
                         let at = usize::from(pair[0]) % template.len();
                         template[at] = pair[1];
                     }
@@ -1519,7 +1808,7 @@ UNH+M2+ORDERS:D:96A:UN'BGM+220+PO2'UNT+3+M2'UNZ+2+IC1'"
                     reader = reader.max_messages(usize::from(messages % 8));
                 }
                 if faults % 4 == 1 {
-                    reader = reader.max_segments_per_message(usize::from(faults % 8));
+                    reader = reader.max_message_bytes(u64::from(faults) % 64);
                 }
                 if input_bytes % 3 == 1 {
                     reader = reader.max_input_bytes(u64::from(input_bytes % 1024));
@@ -1547,7 +1836,7 @@ UNH+M2+ORDERS:D:96A:UN'BGM+220+PO2'UNT+3+M2'UNZ+2+IC1'"
                             EdifactError::LimitExceeded { limit, .. }
                                 if (*limit == "max_segments" && Some(accepted) == reader.max_segments)
                                     || *limit == "max_messages"
-                                    || *limit == "max_segments_per_message"
+                                    || *limit == "max_message_bytes"
                                     || (*limit == "max_faults" && config.fault_budget() == 0)
                         );
                         assert!(
@@ -1615,11 +1904,9 @@ fn fuzz_contrl_options_reparse() {
     // validation path (when the corrupted subject still parses) and the
     // recovering path (always).
     //
-    // The wrapper's `validate_envelope` half of K4 needs a subject whose UNB
-    // sender and recipient are non-empty — the precondition `from_recovered`
-    // enforces. The lenient envelope also yields an interchange with an empty
-    // party, and `to_interchange_bytes` then writes a reply UNB without S002 or
-    // S003; that is a property of the wrapper, unchanged by the options.
+    // K4 holds for every subject: every reply `to_interchange_bytes` renders
+    // passes `validate_envelope`, and an addressed subject is refused only
+    // with `E038`.
     use edifact::contrl::{
         Action, ActionPolicy, Contrl, ContrlIdentifier, ContrlOptions, RejectionScope,
         ReportingLevel,
@@ -1647,6 +1934,25 @@ fn fuzz_contrl_options_reparse() {
         }
     }
 
+    /// Whether the subject's S002 and S003 fit their version 3 representations
+    /// (`an..35`, `an..4`, `an..14`, `an..35`; at most four components).
+    fn parties_fit(input: &[u8]) -> bool {
+        let Some(Ok(unb)) = from_bytes(input).next() else {
+            return false;
+        };
+        const MAX: [usize; 4] = [35, 4, 14, 35];
+        unb.tag() == "UNB"
+            && [1, 2].into_iter().all(|element| {
+                unb.get_element(element).is_some_and(|e| {
+                    e.components.len() <= MAX.len()
+                        && e.components
+                            .iter()
+                            .zip(MAX)
+                            .all(|((value, _), max)| value.chars().count() <= max)
+                })
+            })
+    }
+
     fn check_contrl(contrl: &Contrl, policy: &ActionPolicy, addressed: bool) {
         let contrl = contrl.clone().with_message_reference("ACK1");
         let bytes = contrl.to_bytes().expect("K4: a built CONTRL renders");
@@ -1667,14 +1973,20 @@ fn fuzz_contrl_options_reparse() {
                 segment.tag()
             );
         }
-        let wrapped = contrl
-            .to_interchange_bytes("UNOC", "3", "261001", "0800", "R1")
-            .expect("K4: the wrapper renders");
-        let wrapped: Vec<_> = from_bytes(&wrapped)
-            .collect::<Result<Vec<_>, _>>()
-            .expect("K4: the wrapped CONTRL reparses");
-        if addressed {
-            validate_envelope(&wrapped).expect("K4: the wrapped CONTRL passes validate_envelope");
+        // K4: a reply is rendered only through a valid header, and then it
+        // passes validate_envelope; an unaddressable subject is refused.
+        match contrl.to_interchange_bytes("UNOC", "3", "261001", "0800", "R1") {
+            Ok(wrapped) => {
+                let wrapped =
+                    edifact::from_bytes_decoded(&wrapped).expect("K4: the wrapped CONTRL reparses");
+                validate_envelope(&wrapped)
+                    .expect("K4: the wrapped CONTRL passes validate_envelope");
+            }
+            // A party UNOC cannot carry is refused, never written as UTF-8.
+            Err(error) => assert!(
+                !addressed || error.stable_code() == "E038",
+                "K4: an addressed reply must render, got {error:?}"
+            ),
         }
     }
 
@@ -1730,8 +2042,9 @@ UNH+M2+ORDERS:D:96A:UN'BGM+220+PO2'UNT+3+M2'UNZ+2+IC1'"
                 .permit(ReportingLevel::Message, &actions(sets[2]));
 
             let recovered = RecoveredInterchange::scan(&input, &RecoveryConfig::default());
+            let fit = parties_fit(&input);
             if let Ok(contrl) = Contrl::from_recovered(&recovered, &[], &options) {
-                check_contrl(&contrl, &policy, true);
+                check_contrl(&contrl, &policy, fit);
             }
 
             let Ok(segments) = from_bytes(&input).collect::<Result<Vec<_>, _>>() else {
@@ -1745,8 +2058,9 @@ UNH+M2+ORDERS:D:96A:UN'BGM+220+PO2'UNT+3+M2'UNZ+2+IC1'"
                 .with_syntax_validation()
                 .build()
                 .validate(&segments);
-            let addressed = !validated.interchange.sender_id.is_empty()
-                && !validated.interchange.recipient_id.is_empty();
+            let addressed = fit
+                && !validated.interchange.header.sender.id.is_empty()
+                && !validated.interchange.header.recipient.id.is_empty();
             if let Ok(contrl) = Contrl::from_report_with(&validated, &segments, &report, &options) {
                 check_contrl(&contrl, &policy, addressed);
             }
@@ -1755,4 +2069,417 @@ UNH+M2+ORDERS:D:96A:UN'BGM+220+PO2'UNT+3+M2'UNZ+2+IC1'"
             }
         },
     );
+}
+
+/// A `UNB` header from its strings, as `InterchangeHeader::parse` reads them.
+fn header(
+    syntax: &str,
+    version: &str,
+    sender: &str,
+    recipient: &str,
+    date: &str,
+    time: &str,
+    reference: &str,
+) -> edifact::InterchangeHeader {
+    let raw = format!("UNB+{syntax}:{version}+{sender}+{recipient}+{date}:{time}+{reference}'");
+    let segments: Vec<_> = edifact::from_bytes(raw.as_bytes())
+        .collect::<Result<_, _>>()
+        .expect("header parses");
+    edifact::InterchangeHeader::parse(&segments[0]).expect("header is valid")
+}
+
+/// Element → occurrence → component values of `seg`.
+fn values(seg: &edifact::Segment<'_>) -> Vec<Vec<Vec<String>>> {
+    seg.elements
+        .iter()
+        .map(|e| {
+            e.repetitions()
+                .map(|occ| occ.iter().map(|(c, _)| c.to_string()).collect())
+                .collect()
+        })
+        .collect()
+}
+
+/// [`values`] after ISO 9735-1 §8.7 truncation: trailing empty components,
+/// occurrences and elements removed — what the writer emits.
+fn canonical_values(seg: &edifact::Segment<'_>) -> Vec<Vec<Vec<String>>> {
+    let mut elements = values(seg);
+    for occurrences in &mut elements {
+        for components in occurrences.iter_mut() {
+            while components.len() > 1 && components.last().is_some_and(String::is_empty) {
+                components.pop();
+            }
+        }
+        while occurrences.len() > 1
+            && occurrences
+                .last()
+                .is_some_and(|c| c.iter().all(String::is_empty))
+        {
+            occurrences.pop();
+        }
+    }
+    while elements
+        .last()
+        .is_some_and(|occ| occ.len() == 1 && occ[0].iter().all(String::is_empty))
+    {
+        elements.pop();
+    }
+    elements
+}
+
+/// `E051` findings of the syntax layer over `segments`.
+fn trailing_separator_findings(segments: &[edifact::Segment<'_>]) -> usize {
+    let report = edifact::ValidationContext::builder()
+        .with_syntax_validation()
+        .build()
+        .validate(segments);
+    report
+        .errors()
+        .iter()
+        .chain(report.warnings())
+        .filter(|i| i.error_code.as_deref() == Some("E051"))
+        .count()
+}
+
+// ── interchange header and builders ──────────────────────────────────────────
+
+fn neutral_header(charset: edifact::Charset) -> edifact::InterchangeHeader {
+    edifact::InterchangeHeader::new(
+        charset,
+        edifact::SyntaxVersion::V3,
+        edifact::Party::new("SENDER"),
+        edifact::Party::new("RECEIVER"),
+        edifact::PreparationDateTime::new(2026, 1, 1, 9, 0).unwrap(),
+        "IC1",
+    )
+}
+
+const BODY_TAGS: [&str; 5] = ["BGM", "DTM", "NAD", "FTX", "RFF"];
+
+#[test]
+fn fuzz_message_builder_renders_to_its_segments() {
+    // What MessageBuilder accepts, Writer renders to bytes that reparse to the
+    // same owned segments, and wrapped in an interchange it validates.
+    use edifact::{InterchangeBuilder, MessageBuilder, MessageIdentifier, Writer};
+    check!()
+        .with_type::<Vec<(u8, Vec<Vec<String>>)>>()
+        .cloned()
+        .for_each(|calls: Vec<(u8, Vec<Vec<String>>)>| {
+            let mut builder =
+                MessageBuilder::new(MessageIdentifier::new("1", "ORDERS", "D", "96A", "UN"))
+                    .unwrap();
+            for (tag, elements) in &calls {
+                let tag = BODY_TAGS[usize::from(*tag) % BODY_TAGS.len()];
+                let before = builder.segment_count();
+                if builder.write_composites(tag, elements).is_err() {
+                    assert_eq!(builder.segment_count(), before, "a refusal appended");
+                }
+            }
+            let Ok(owned) = builder.finish() else {
+                return;
+            };
+            let mut writer = Writer::new(Vec::new());
+            for segment in &owned {
+                writer
+                    .write_segment(segment)
+                    .expect("owned segments render");
+            }
+            let bytes = writer.finish().unwrap();
+            let parsed: Vec<_> = from_bytes(&bytes)
+                .collect::<Result<_, _>>()
+                .expect("rendered segments reparse");
+            assert_eq!(parsed.len(), owned.len());
+            for (p, o) in parsed.iter().zip(&owned) {
+                assert_eq!(p.tag, o.tag);
+                assert_eq!(values(p), values(o));
+            }
+            let built = InterchangeBuilder::new(neutral_header(edifact::Charset::UnoY))
+                .message_segments(owned)
+                .build()
+                .expect("a finished message wraps");
+            let segments: Vec<_> = from_bytes(&built).collect::<Result<_, _>>().unwrap();
+            edifact::validate_envelope(&segments).expect("wrapped message validates");
+        });
+}
+
+#[test]
+fn fuzz_interchange_builder_text_reparses() {
+    // Any text set the builder accepts reparses to the header, each message's
+    // segments in order, and a UNZ counting the messages.
+    use edifact::{InterchangeBuilder, MessageBuilder, MessageIdentifier};
+    check!()
+        .with_type::<Vec<(Vec<String>, String, u8)>>()
+        .cloned()
+        .for_each(|messages: Vec<(Vec<String>, String, u8)>| {
+            let mut texts = Vec::new();
+            for (index, (values, suffix, reference)) in messages.iter().enumerate().take(6) {
+                let reference = (reference % 4).to_string();
+                let mut msg = MessageBuilder::new(MessageIdentifier::new(
+                    &reference, "ORDERS", "D", "96A", "UN",
+                ))
+                .unwrap();
+                let _ = msg.write_simple("FTX", values);
+                let text = match msg.finish() {
+                    Ok(segments) => {
+                        String::from_utf8(segments_to_bytes(&segments).unwrap()).unwrap()
+                    }
+                    Err(_) => String::new(),
+                };
+                // Every other message carries arbitrary trailing text.
+                texts.push(if index % 2 == 1 { text + suffix } else { text });
+            }
+            let mut builder = InterchangeBuilder::new(neutral_header(edifact::Charset::UnoY));
+            for text in &texts {
+                builder = builder.message(text.clone());
+            }
+            let Ok(bytes) = builder.build() else {
+                return;
+            };
+            let segments: Vec<_> = from_bytes(&bytes)
+                .collect::<Result<_, _>>()
+                .expect("built interchange reparses");
+            let result =
+                edifact::validate_envelope(&segments).expect("built interchange validates");
+            assert_eq!(result.messages.len(), texts.len());
+            assert_eq!(result.interchange.declared_unit_count as usize, texts.len());
+            let mut expected = vec![neutral_header(edifact::Charset::UnoY).to_segment().unwrap()];
+            for text in &texts {
+                expected.extend(from_bytes(text.as_bytes()).map(|s| s.unwrap().into_owned()));
+            }
+            assert_eq!(segments.len(), expected.len() + 1);
+            for (a, b) in segments.iter().zip(&expected) {
+                assert_eq!(a.tag, b.tag);
+                assert_eq!(values(a), values(b));
+            }
+            assert_eq!(segments.last().unwrap().tag, "UNZ");
+        });
+}
+
+#[test]
+fn fuzz_header_read_paths_agree() {
+    // read, read_from under any chunking, parse of the first decoded segment
+    // and validate_envelope_lenient's header agree: equal header or equal code.
+    use edifact::{InterchangeHeader, ReaderConfig};
+    use std::io::Read;
+
+    struct Chunked<'a>(&'a [u8], usize);
+    impl Read for Chunked<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = buf.len().min(self.1).min(self.0.len());
+            buf[..n].copy_from_slice(&self.0[..n]);
+            self.0 = &self.0[n..];
+            Ok(n)
+        }
+    }
+
+    type Case = (bool, u8, bool, u8, String, bool, bool, u8);
+    check!().with_type::<Case>().cloned().for_each(
+        |(bom, ws, una, s001, sender, released, latin1, chunk): Case| {
+            let mut input = Vec::new();
+            if bom {
+                input.extend_from_slice(b"\xEF\xBB\xBF");
+            }
+            input.extend(std::iter::repeat_n(b'\n', usize::from(ws % 4)));
+            if una {
+                input.extend_from_slice(b"UNA:+.? '");
+            }
+            let tag = if s001 % 11 == 10 { "UIB" } else { "UNB" };
+            let head_start = input.len();
+            input.extend_from_slice(tag.as_bytes());
+            input.push(b'+');
+            input.extend_from_slice(
+                [
+                    "UNOC:3", "UNOA:3", "UNOC:4", "UNOC:X", "", "UNOY:3", "UNOX:3", "UNOC:3:1",
+                    "UNOB:2", "UNOC:1",
+                ][usize::from(s001 % 10)]
+                .as_bytes(),
+            );
+            input.push(b'+');
+            input.extend(
+                sender
+                    .chars()
+                    .take(8)
+                    .filter(|c| c.is_ascii_graphic())
+                    .map(|c| c as u8),
+            );
+            if released {
+                input.extend_from_slice(b"?'");
+            }
+            if latin1 {
+                input.push(0xFC);
+            }
+            input.extend_from_slice(b"+R+260101:0900+1'UNH+1+X:D:96A:UN'BGM+1'UNT+3+1'UNZ+1+1'");
+
+            let code = |r: &Result<InterchangeHeader, edifact::EdifactError>| match r {
+                Ok(h) => Ok(h.clone()),
+                Err(e) => Err(e.stable_code()),
+            };
+            let read = code(&InterchangeHeader::read(&input));
+            let chunk = usize::from(chunk % 16) + 1;
+            let read_from = code(
+                &InterchangeHeader::read_from(Chunked(&input, chunk), &ReaderConfig::default())
+                    .map(|(h, _)| h),
+            );
+            assert_eq!(read, read_from, "read vs read_from ({chunk}) on {input:?}");
+
+            let decoded = edifact::decode_interchange(&input);
+            let first = |bytes: &[u8]| match from_bytes(bytes).next() {
+                Some(Ok(seg)) => code(&InterchangeHeader::parse(&seg)),
+                Some(Err(e)) => Err(e.stable_code()),
+                None => Err("E015"),
+            };
+            // The head segment ends at the first unreleased terminator.
+            let mut head_end = input.len();
+            let mut i = head_start;
+            while i < input.len() {
+                match input[i] {
+                    b'?' => i += 2,
+                    b'\'' => {
+                        head_end = i + 1;
+                        break;
+                    }
+                    _ => i += 1,
+                }
+            }
+            let parsed = match &decoded {
+                Ok(bytes) => first(bytes),
+                Err(e) => Err(e.stable_code()),
+            };
+            // `decode_interchange` decodes the whole buffer, so a fault
+            // anywhere in the body fails it, while the header read decodes the
+            // head only.
+            let head_only = edifact::decode_interchange(&input[..head_end])
+                .map_or_else(|e| Err(e.stable_code()), |bytes| first(&bytes));
+            assert!(
+                read == parsed || (parsed.is_err() && read == head_only),
+                "read {read:?} vs parse {parsed:?} / head {head_only:?} on {input:?}"
+            );
+
+            let segments = decoded
+                .as_ref()
+                .ok()
+                .and_then(|bytes| from_bytes(bytes).collect::<Result<Vec<_>, _>>().ok());
+            if let Some(segments) = segments {
+                let lenient = edifact::validate_envelope_lenient(&segments);
+                match &read {
+                    Ok(header) => assert_eq!(
+                        lenient.interchange.map(|i| i.interchange.header),
+                        Some(header.clone()),
+                        "envelope header on {input:?}"
+                    ),
+                    // The envelope reports the finding the header read failed on.
+                    Err(code) => assert!(
+                        lenient.errors.iter().any(|e| e.stable_code() == *code),
+                        "envelope lacks {code} on {input:?}: {:?}",
+                        lenient.errors
+                    ),
+                }
+            }
+        },
+    );
+}
+
+#[test]
+fn fuzz_writer_owns_the_interchange_count() {
+    // Whatever sequence of calls the Writer accepts between begin_interchange
+    // and end_interchange, the UNZ and UNE counts match what was written.
+    use edifact::{MessageIdentifier, Writer};
+    check!()
+        .with_type::<Vec<u8>>()
+        .cloned()
+        .for_each(|ops: Vec<u8>| {
+            let mut w = Writer::new(Vec::new());
+            w.begin_interchange(&neutral_header(edifact::Charset::UnoA))
+                .unwrap();
+            let mut closed = false;
+            for (i, op) in ops.iter().take(32).enumerate() {
+                let reference = format!("M{i}");
+                let _ = match op % 9 {
+                    0 => w.write_simple("UNZ", &["1", "IC1"]),
+                    1 => w.write_simple("UNB", &["UNOA:3"]),
+                    2 => w.write_composites(
+                        "UNH",
+                        &[&[reference.as_str()][..], &["ORDERS", "D", "96A", "UN"][..]],
+                    ),
+                    3 => w.write_simple("BGM", &["220"]),
+                    4 => w.write_simple("UNT", &["3", reference.as_str()]),
+                    5 => w.write_simple(
+                        "UNG",
+                        &["ORDERS", "S", "R", "260101:0900", reference.as_str()],
+                    ),
+                    6 => w.write_simple("UNE", &["1", reference.as_str()]),
+                    7 => w
+                        .begin_message(MessageIdentifier::new(
+                            &reference, "ORDERS", "D", "96A", "UN",
+                        ))
+                        .and_then(|mut m| {
+                            m.write_simple("BGM", &["220"])?;
+                            m.finish()
+                        }),
+                    _ => {
+                        let result = w.end_interchange();
+                        closed = result.is_ok();
+                        result
+                    }
+                };
+                if closed || w.is_poisoned() {
+                    break;
+                }
+            }
+            if !closed {
+                return;
+            }
+            let bytes = w.finish().unwrap();
+            let segments: Vec<_> = from_bytes(&bytes).collect::<Result<_, _>>().unwrap();
+            let lenient = edifact::validate_envelope_lenient(&segments);
+            for error in &lenient.errors {
+                assert!(
+                    !matches!(error.stable_code(), "E004" | "E054"),
+                    "{error:?} in {:?}",
+                    String::from_utf8_lossy(&bytes)
+                );
+            }
+        });
+}
+
+#[cfg(feature = "dtm")]
+#[test]
+fn fuzz_dtm_decode_round_trip() {
+    // Any (value, code) pair: no panic, and every accepted value formats back
+    // to exactly its input under the same code. Comparison and its offsets
+    // must not panic either.
+    const CODES: [&str; 18] = [
+        "102", "104", "106", "203", "204", "303", "304", "401", "501", "602", "610", "718", "719",
+        "802", "803", "804", "805", "999",
+    ];
+    check!()
+        .with_type::<(String, String, u8, i8)>()
+        .for_each(|(value, code, pick, offset)| {
+            // Half the runs use a supported code so the value grammar is reached.
+            let code = if pick % 2 == 0 {
+                CODES[usize::from(*pick / 2) % CODES.len()]
+            } else {
+                code.as_str()
+            };
+            // A third of the runs map the bytes to digits, so dates parse.
+            let digits: String;
+            let value = if pick % 3 == 0 {
+                digits = value.bytes().map(|b| char::from(b'0' + b % 10)).collect();
+                &digits
+            } else {
+                value
+            };
+            let Ok(v) = edifact::DtmValue::parse(value, code) else {
+                return;
+            };
+            assert_eq!(v.to_string(), *value, "format of {value:?}/{code}");
+            assert_eq!(v.code(), code);
+            let _ = v.is_forward();
+            let other = edifact::DtmValue::parse("202610011200+00", "303").unwrap();
+            assert_eq!(v.compare(&other), other.compare(&v).reverse());
+            assert_eq!(
+                v.compare_assuming(&other, *offset),
+                other.compare_assuming(&v, *offset).reverse()
+            );
+        });
 }

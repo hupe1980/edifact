@@ -4,22 +4,17 @@ description = "The EDIFACT wire format — segments, data elements, components, 
 weight = 20
 +++
 
-This guide explains the EDIFACT wire format and maps it to the Rust types exposed
-by `edifact`. Understanding this makes every other guide easier to follow.
+The EDIFACT wire format and the Rust types that represent it.
 
 ---
 
 ## What is EDIFACT?
 
-**EDIFACT** (Electronic Data Interchange For Administration, Commerce and Transport)
-is the UN's international standard for structured business message interchange,
-defined in ISO 9735. It is widely used in supply chains, logistics, energy markets,
-healthcare, and banking.
+**EDIFACT** (Electronic Data Interchange For Administration, Commerce and
+Transport) is the UN standard for business messages, defined in ISO 9735.
 
-An EDIFACT **interchange** is a flat text document composed of **segments**
-separated by a single terminator character (usually `'`). Each segment carries
-**data elements** separated by `+`, and each element may contain **component values**
-separated by `:`.
+An **interchange** is flat text: **segments** end with a terminator (usually
+`'`), **data elements** are separated by `+`, **components** by `:`.
 
 ---
 
@@ -45,7 +40,7 @@ UNZ+1+IC4711'
 | `UNT` | Message trailer — declares segment count and reference |
 | `UNZ` | Interchange trailer — declares message count and reference |
 
-A single interchange may contain **many UNH..UNT pairs** (multi-message interchange).
+One interchange may hold many `UNH`…`UNT` messages.
 
 ---
 
@@ -64,8 +59,8 @@ U N A : + . ?   '
       └──────────── Component separator  (default: : )
 ```
 
-ISO 9735-1 numbers these positions `010`–`060`; the byte offsets below are the
-same six characters counted from the start of the input.
+ISO 9735-1 numbers the positions `010`–`060`; the byte column counts from the
+start of the input.
 
 | UNA byte | Position | Purpose | Default | Splits input? |
 |---|---|---|---|---|
@@ -76,28 +71,22 @@ same six characters counted from the start of the input.
 | 7 | 050 | Repetition separator | `*` | yes, **when not a space** |
 | 8 | 060 | Segment terminator | `'` | yes |
 
-`edifact` reads the UNA on the first call to `from_bytes` / `from_reader` and
-applies those delimiters to everything that follows.
+The parser reads a leading `UNA` and applies its delimiters to everything
+after it.
 
-**The decimal mark is ignored.** ISO 9735-1 Annex B keeps position 030 only for
-upward compatibility with earlier syntax versions and says the character
-transferred there "shall be ignored by the recipient" — §10 instead allows the
-full stop *or* the comma per individual numeric value. It is therefore the one
-position where a space is legal, the one that need not be distinct from the
-others, and the only one `edifact` does not validate. The value is still kept,
-so a writer can round-trip the UNA it was handed and `DecimalFloat` has a house
-style to format with.
+**The decimal mark is ignored.** ISO 9735-1 Annex B says the recipient ignores
+position 030; §10 allows `.` or `,` per numeric value. It is the one position
+where a space is legal, that need not be distinct, and that `edifact` does not
+validate. The value is kept so a writer can round-trip the `UNA` and
+`DecimalFloat` can format with it.
 
-**The repetition separator depends on the syntax version.** Version 4 introduced
-it and §5.2 makes `*` its default; versions 1–3 have no such service character at
-all, and their UNA carries a space in that position. With no UNA to say
-otherwise, `edifact` reads the version from `UNB` S001 DE 0002 and activates
-`*` only for version 4 — splitting on `*` in a version 3 interchange would
-corrupt every value containing one, because there `*` is an ordinary level A
-character. See [Repeating data elements](#repeating-data-elements) below.
+**The repetition separator depends on the syntax version.** Version 4 defines
+it with default `*`; versions 1–3 have none and put a space there. Without a
+`UNA`, `edifact` reads the version from `UNB` S001 DE 0002 and activates `*`
+only for version 4 — in version 3, `*` is ordinary level A data. See
+[Repeating data elements](#repeating-data-elements).
 
-For a fragment that carries neither a UNA nor a UNB — a single message lifted out
-of an interchange — nothing records the delimiters, so supply them:
+A fragment with neither `UNA` nor `UNB` records no delimiters, so supply them:
 
 ```rust
 use edifact::{ReaderConfig, ServiceStringAdvice, from_bytes_with_config};
@@ -111,9 +100,8 @@ assert_eq!(segments[0].element_str(1), Some("PO-4711"));
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-> **Security note**: `edifact` fails hard on a malformed UNA — wrong byte
-> count, a duplicated *active* delimiter, an alphanumeric delimiter — and never
-> silently falls back to defaults. This prevents delimiter injection attacks.
+A malformed `UNA` — too short, a duplicated active delimiter, an alphanumeric
+delimiter — is an error, never a fallback to defaults.
 
 ---
 
@@ -141,12 +129,11 @@ NAD+BY+4000001000002::9'
  └───────────────────────── tag
 ```
 
-The `::` is not a typo. Component 1 is *omitted*, and its position is held by the
-separator that would have followed it (ISO 9735-1 §8.8.3) — so the agency
-qualifier stays at component 2 rather than sliding into component 1.
+`::` omits component 1 and keeps the agency qualifier at component 2 (ISO
+9735-1 §8.8.3).
 
-Element 0 of `NAD` is `BY` — this is the **qualifier**. `edifact` derive macros
-use `qualifier_from = 0` to dispatch different Rust structs for `NAD+BY` vs `NAD+SU`.
+Element 0 of `NAD` (`BY`) is the **qualifier**. The derive's
+`qualifier_from = 0` dispatches `NAD+BY` and `NAD+SU` to different structs.
 
 ---
 
@@ -161,12 +148,9 @@ BGM+Test?+value'
          '?+' means a literal '+', not an element separator
 ```
 
-`edifact` resolves release sequences during parsing and stores the decoded value.
-The raw escape is never visible to API consumers — you receive `"Test+value"` as a
-plain `&str`.
+The parser resolves release sequences: you read `"Test+value"`.
 
-A trailing `?` at end-of-input (with no following byte) is **malformed** and causes
-`EdifactError::InvalidReleaseSequence` (error code `E018`).
+A `?` at the end of input is `E019 InvalidReleaseSequence`.
 
 ---
 
@@ -192,10 +176,8 @@ pub struct Segment<'a> {
 - `from_reader` has no buffer to borrow from, so it yields `Segment<'static>`,
   which is aliased as **`OwnedSegment`**.
 
-`Segment` is covariant in `'a`, so a `&[OwnedSegment]` is accepted anywhere a
-`&[Segment<'_>]` is wanted. Every function in the crate therefore takes one
-shape and works with both — there are no `_owned` twins to remember, and no
-conversion step between the two paths:
+`Segment` is covariant in `'a`, so a `&[OwnedSegment]` is accepted wherever a
+`&[Segment<'_>]` is. Every function takes that one shape:
 
 ```rust
 use edifact::{OwnedSegment, Segment};
@@ -313,16 +295,18 @@ EDIFACT distinguishes **envelope** segments from **body** segments:
 | `UNT` | Message trailer |
 | Everything else | Message body (`BGM`, `NAD`, `LIN`, …) |
 
-`edifact` validates envelope reference parity (`UNB`↔`UNZ` and `UNH`↔`UNT`) and
-rejects envelope control tags that appear in message body positions.
+Envelope validation checks reference parity (`UNB`↔`UNZ`, `UNH`↔`UNT`),
+every service value against its ISO 9735-10 representation for syntax
+versions 1–4, and control tags in body positions. Interactive (`UI…`),
+security (`US…`) and other `U` tags are errors (`E055`–`E057`); anything after
+`UNZ` is `E058`. See [Validation](@/docs/validation.md).
 
 ---
 
 ## Message types
 
-The `UNH` segment element 1, component 0 carries the **message type** (e.g.
-`ORDERS`, `INVOIC`, `ORDERS`). `ValidationContext` and `ProfileRulePack` scope their
-rules to a specific message type:
+The `UNH` segment element 1, component 0 carries the **message type** (`ORDERS`, `INVOIC`, …). `ValidationContext` and `ProfileRulePack` scope rules
+to it:
 
 ```text
 UNH + 1 + ORDERS : D : 96A : UN '
@@ -341,14 +325,9 @@ UNH + 1 + ORDERS : D : 96A : UN '
 
 ## Character set
 
-`edifact` operates on **UTF-8** text throughout, and rejects invalid byte
-sequences with `EdifactError::InvalidText` (`E003`).
-
-That is not the whole story, because **UTF-8 is not a superset of `UNOC`**. `UNB`
-S001 component 1 names the repertoire the payload is written in, and `UNOC` is
-ISO 8859-1 — where `ü` is the single byte `0xFC`, which is not valid UTF-8. A
-conformant German interchange therefore has to be decoded before it can be
-parsed:
+The parser works on **UTF-8** and rejects invalid sequences with `E003
+InvalidText`. UTF-8 is not a superset of `UNOC` (ISO 8859-1, where `ü` is the
+single byte `0xFC`), so decode by the repertoire `UNB` S001 names first:
 
 ```rust
 use edifact::{decode_interchange, from_bytes};
@@ -363,10 +342,8 @@ assert_eq!(segments[1].element_str(1), Some("Müller"));
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-`decode_interchange` copies nothing when the payload is already ASCII or `UNOY`,
-so it is safe to call on every input. See
-[Character Sets](@/docs/character-sets.md) for the streaming decoder, the write
-side, and repertoire validation.
+`decode_interchange` copies nothing for ASCII or `UNOY` payloads. See
+[Character Sets](@/docs/character-sets.md).
 
 ---
 

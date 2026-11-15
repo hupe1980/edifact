@@ -172,6 +172,14 @@ enum EmitterState {
 /// Any violation of this protocol returns
 /// [`EdifactError::InvalidEventSequence`] immediately.  Violations are
 /// detected in both debug and release builds.
+///
+/// # Errors and poisoning
+///
+/// The unit is one event. An event refused before its first byte — a protocol
+/// violation, an invalid tag, an undeclared repetition separator — writes
+/// nothing and leaves the emitter where it was. Any other failure poisons the
+/// underlying [`Writer`][crate::Writer]: every later `emit` and
+/// [`finish`][Self::finish] returns [`EdifactError::WriterPoisoned`].
 pub struct WriterEmitter<W: Write> {
     writer: crate::Writer<W>,
     state: EmitterState,
@@ -228,8 +236,41 @@ impl<W: Write> WriterEmitter<W> {
     }
 
     /// Flush and consume the emitter, returning the underlying writer.
+    ///
+    /// # Errors
+    ///
+    /// [`EdifactError::WriterPoisoned`] after a failure,
+    /// [`EdifactError::InvalidEventSequence`] while a segment is open (emit
+    /// `EndSegment` first), and [`EdifactError::Io`] when the flush fails. Use
+    /// [`into_inner`][Self::into_inner] to get the sink back regardless.
+    ///
+    /// ```
+    /// use edifact::{EdifactError, EdifactEvent, EventEmitter, WriterEmitter};
+    ///
+    /// let mut emitter = WriterEmitter::new(Vec::new());
+    /// emitter.emit(EdifactEvent::start("BGM"))?;
+    /// emitter.emit(EdifactEvent::element("220"))?;
+    /// // No `EndSegment`: the segment is incomplete.
+    /// assert!(matches!(
+    ///     emitter.finish(),
+    ///     Err(EdifactError::InvalidEventSequence { .. })
+    /// ));
+    /// # Ok::<(), EdifactError>(())
+    /// ```
     pub fn finish(self) -> Result<W, EdifactError> {
+        self.writer.check_healthy()?;
+        if self.state != EmitterState::Idle {
+            return Err(EdifactError::InvalidEventSequence {
+                message: "finish() called with a segment still open; emit EndSegment first",
+            });
+        }
         self.writer.finish()
+    }
+
+    /// Return the sink as it is: no flush, no checks, open segment or not.
+    #[must_use]
+    pub fn into_inner(self) -> W {
+        self.writer.into_inner()
     }
 
     /// Number of complete segments written so far.
@@ -253,15 +294,18 @@ impl<W: Write> EventEmitter for WriterEmitter<W> {
     }
 
     fn emit(&mut self, event: EdifactEvent<'_>) -> Result<(), EdifactError> {
-        match event {
+        self.writer.check_healthy()?;
+        // Each arm refuses a protocol violation before writing, and moves the
+        // state only after the write succeeded.
+        let next = match event {
             EdifactEvent::StartSegment { tag } => {
                 if self.state != EmitterState::Idle {
                     return Err(EdifactError::InvalidEventSequence {
                         message: "StartSegment emitted while a segment is already open; emit EndSegment first",
                     });
                 }
-                self.state = EmitterState::InSegment;
-                self.writer.write_tag_only(&tag)?;
+                self.writer.emit_tag(&tag)?;
+                EmitterState::InSegment
             }
             EdifactEvent::Element { value } => {
                 if self.state == EmitterState::Idle {
@@ -269,9 +313,8 @@ impl<W: Write> EventEmitter for WriterEmitter<W> {
                         message: "Element emitted outside of a segment; emit StartSegment first",
                     });
                 }
-                self.state = EmitterState::InElement;
-                self.writer.write_element_sep()?;
-                self.writer.write_escaped(&value)?;
+                self.writer.emit_element(&value)?;
+                EmitterState::InElement
             }
             EdifactEvent::ComponentElement { value } => {
                 if self.state != EmitterState::InElement {
@@ -279,8 +322,8 @@ impl<W: Write> EventEmitter for WriterEmitter<W> {
                         message: "ComponentElement emitted without a preceding Element in the same segment",
                     });
                 }
-                self.writer.write_component_sep()?;
-                self.writer.write_escaped(&value)?;
+                self.writer.emit_component(&value)?;
+                EmitterState::InElement
             }
             EdifactEvent::RepeatElement { value } => {
                 if self.state != EmitterState::InElement {
@@ -288,10 +331,8 @@ impl<W: Write> EventEmitter for WriterEmitter<W> {
                         message: "RepeatElement emitted without a preceding Element in the same segment",
                     });
                 }
-                // Checked before the separator is written, so a rejected
-                // repetition leaves nothing half-emitted behind it.
-                self.writer.write_repetition_sep()?;
-                self.writer.write_escaped(&value)?;
+                self.writer.emit_repetition(&value)?;
+                EmitterState::InElement
             }
             EdifactEvent::EndSegment => {
                 if self.state == EmitterState::Idle {
@@ -299,10 +340,11 @@ impl<W: Write> EventEmitter for WriterEmitter<W> {
                         message: "EndSegment emitted while no segment is open; emit StartSegment first",
                     });
                 }
-                self.state = EmitterState::Idle;
-                self.writer.write_segment_term_and_count()?;
+                self.writer.emit_segment_end()?;
+                EmitterState::Idle
             }
-        }
+        };
+        self.state = next;
         Ok(())
     }
 }
@@ -448,5 +490,128 @@ mod tests {
             matches!(err, crate::EdifactError::InvalidEventSequence { .. }),
             "expected InvalidEventSequence, got {err:?}"
         );
+    }
+
+    // ── honest finish and poisoning ──────────────────────────────────────────
+
+    /// Fails every write from the `fail_at`-th (zero-based) on.
+    struct FailingSink {
+        buf: Vec<u8>,
+        writes: usize,
+        fail_at: usize,
+    }
+
+    impl Write for FailingSink {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            self.writes += 1;
+            if self.writes > self.fail_at {
+                return Err(std::io::Error::other("injected"));
+            }
+            self.buf.extend_from_slice(data);
+            Ok(data.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn finish_with_open_segment_is_refused() {
+        let mut buf = Vec::new();
+        {
+            let mut e = WriterEmitter::new(&mut buf);
+            e.emit(EdifactEvent::start("BGM")).unwrap();
+            e.emit(EdifactEvent::element("220")).unwrap();
+            let err = e.finish().unwrap_err();
+            assert!(
+                matches!(err, EdifactError::InvalidEventSequence { .. }),
+                "{err:?}"
+            );
+        }
+        assert_eq!(buf, b"BGM+220");
+
+        let mut e = WriterEmitter::new(Vec::new());
+        e.emit(EdifactEvent::start("BGM")).unwrap();
+        e.emit(EdifactEvent::element("220")).unwrap();
+        assert_eq!(e.into_inner(), b"BGM+220");
+    }
+
+    #[test]
+    fn refused_tag_does_not_advance_state() {
+        let mut e = WriterEmitter::new(Vec::new());
+        let err = e.emit(EdifactEvent::start("bad")).unwrap_err();
+        assert!(matches!(err, EdifactError::InvalidSegmentTag(_)), "{err:?}");
+        e.emit(EdifactEvent::start("BGM")).unwrap();
+        e.emit(EdifactEvent::EndSegment).unwrap();
+        assert_eq!(e.finish().unwrap(), b"BGM'");
+    }
+
+    #[test]
+    fn refused_repeat_event_keeps_segment_completable() {
+        let mut e = WriterEmitter::new(Vec::new());
+        e.emit(EdifactEvent::start("RFF")).unwrap();
+        e.emit(EdifactEvent::element("ON")).unwrap();
+        assert!(matches!(
+            e.emit(EdifactEvent::repeat("ON")),
+            Err(EdifactError::RepetitionSeparatorNotDeclared)
+        ));
+        e.emit(EdifactEvent::element("1")).unwrap();
+        e.emit(EdifactEvent::EndSegment).unwrap();
+        assert!(!e.writer.is_poisoned());
+        assert_eq!(e.finish().unwrap(), b"RFF+ON+1'");
+    }
+
+    #[test]
+    fn emitter_is_poisoned_after_sink_failure() {
+        let sink = FailingSink {
+            buf: Vec::new(),
+            writes: 0,
+            fail_at: 1,
+        };
+        let mut e = WriterEmitter::new(sink);
+        e.emit(EdifactEvent::start("BGM")).unwrap();
+        let err = e.emit(EdifactEvent::element("220")).unwrap_err();
+        assert!(matches!(err, EdifactError::Io(_)), "{err:?}");
+        for event in [
+            EdifactEvent::element("220"),
+            EdifactEvent::EndSegment,
+            EdifactEvent::start("DTM"),
+        ] {
+            let err = e.emit(event).unwrap_err();
+            assert!(
+                matches!(err, EdifactError::WriterPoisoned { .. }),
+                "{err:?}"
+            );
+        }
+        assert_eq!(e.into_inner().buf, b"BGM");
+    }
+
+    #[test]
+    fn poisoned_emitter_refuses_to_finish() {
+        let sink = FailingSink {
+            buf: Vec::new(),
+            writes: 0,
+            fail_at: 0,
+        };
+        let mut e = WriterEmitter::new(sink);
+        assert!(e.emit(EdifactEvent::start("BGM")).is_err());
+        assert!(matches!(
+            e.finish(),
+            Err(EdifactError::WriterPoisoned { .. })
+        ));
+    }
+
+    #[test]
+    fn charset_failure_mid_event_poisons() {
+        let mut e = WriterEmitter::new(Vec::new()).with_charset(crate::Charset::UnoC);
+        e.emit(EdifactEvent::start("NAD")).unwrap();
+        let err = e.emit(EdifactEvent::element("M€ller")).unwrap_err();
+        assert!(
+            matches!(err, EdifactError::CharacterNotInRepertoire { .. }),
+            "{err:?}"
+        );
+        assert!(e.writer.is_poisoned());
+        assert_eq!(e.into_inner(), b"NAD+");
     }
 }

@@ -4,10 +4,9 @@ description = "Process large interchanges one segment or one message at a time w
 weight = 60
 +++
 
-`edifact` provides multiple streaming APIs for processing large EDIFACT
-interchanges without loading the entire file into memory. All reader-based APIs are
-synchronous (`std::io::Read`) and can be bridged to async runtimes — see
-[Async Integration](@/docs/async-integration.md).
+Process large interchanges one segment or one message at a time. Reader APIs
+are synchronous (`std::io::Read`); see
+[Async Integration](@/docs/async-integration.md) for async runtimes.
 
 ---
 
@@ -23,22 +22,32 @@ synchronous (`std::io::Read`) and can be bridged to async runtimes — see
 | `deserialize_messages(input)` | `&[u8]` | `Iterator<Item = Result<T, _>>` | One message window |
 | `deserialize_messages_from_reader(reader)` | `impl Read` | `Iterator<Item = Result<T, _>>` | One message window |
 
-Every one is a lazy iterator, so "first match" is `.next()` and "all matches" is
-`.collect()`. There is no separate eager entry point for either.
+Each is a lazy iterator: first match is `.next()`, all matches `.collect()`.
 
-A segment is at most `max_segment_bytes` (64 KiB by default). A message window
-is unbounded unless you cap it: each function has a `_with_config` variant that
-enforces every [`ReaderConfig`](@/docs/parsing.md#dos-hardening-with-readerconfig)
-budget, and `max_segments_per_message` bounds a window regardless of how long the
-stream runs. Measured figures are in [Performance](@/docs/performance.md#memory-by-entry-point).
+Each is bounded by default
+([`ReaderConfig`](@/docs/parsing.md#dos-hardening-with-readerconfig)): 64 KiB
+per segment, 16 MiB per message window (≤ 128 × that in heap), 256 MiB per
+stream; `_with_config` variants change them
+([Performance](@/docs/performance.md#memory-by-entry-point)).
+
+A long-lived trusted stream lifts the total and keeps each window capped:
+
+```rust
+use edifact::{ReaderConfig, message_windows_from_reader_with_config};
+
+let config = ReaderConfig::unbounded().max_message_bytes(16 << 20);
+let input = std::io::Cursor::new(b"UNH+1+ORDERS:D:96A:UN'BGM+220+1'UNT+3+1'".to_vec());
+for window in message_windows_from_reader_with_config(input, config) {
+    assert_eq!(window?.segments.len(), 3);
+}
+# Ok::<(), edifact::EdifactError>(())
+```
 
 ---
 
 ## Segment-level streaming
 
 ### `from_reader` — raw segment stream
-
-Process one `OwnedSegment` at a time without loading the interchange into memory:
 
 ```rust,no_run
 use edifact::from_reader;
@@ -55,16 +64,14 @@ fn main() -> Result<(), edifact::EdifactError> {
 }
 ```
 
-> **Memory**: one `OwnedSegment` per iteration; each is dropped before the next
-> is parsed.
+Each `OwnedSegment` is dropped before the next is parsed.
 
 ---
 
 ## Message windows
 
-A **message window** is the slice of segments between a `UNH` and its matching `UNT`
-(inclusive). Envelope segments (`UNB`, `UNZ`, `UNG`, `UNE`) are **skipped**
-automatically.
+A **message window** holds the segments from a `UNH` through its `UNT`.
+Envelope segments (`UNB`, `UNZ`, `UNG`, `UNE`) are skipped.
 
 ### `message_windows` — byte-slice source
 
@@ -79,10 +86,8 @@ let interchange = b"\
 
 for result in message_windows(interchange) {
     let window = result?;
-    // window.message_type  — Option<Cow<'_, str>> from UNH element 1, component 0
-    // window.association_code — Option<Cow<'_, str>> from UNH DE 0057
-    // call .as_deref() when you want an Option<&str>
-    // window.segments     — [UNH, BGM, UNT]
+    // message_type: UNH DE 0065; association_code: DE 0057 (Option<Cow<str>>)
+    // segments: [UNH, BGM, UNT]
     println!("{:?}: {} segments", window.message_type, window.segments.len());
 }
 # Ok::<(), edifact::EdifactError>(())
@@ -98,25 +103,22 @@ fn main() -> Result<(), edifact::EdifactError> {
     let f = File::open("multi_message.edi")?;
     for result in message_windows_from_reader(f) {
         let window = result?;
-        // window.message_type is extracted from the UNH segment automatically
         println!("message type: {:?}", window.message_type);
     }
     Ok(())
 }
 ```
 
-> **Error propagation**: a `UNH` opened but never closed before end of input is
-> reported as `EdifactError::UnexpectedEof` — a truncated stream must not pass as
-> a complete message. A second `UNH` before the first one's `UNT` is
-> `EdifactError::InvalidSegmentForMessage`. Any I/O error from the underlying
-> reader surfaces as `EdifactError::Io`. In every case the iterator then ends.
+**Errors**: a `UNH` without `UNT` before end of input is `UnexpectedEof`
+(`E001`); a second `UNH` before `UNT` is `InvalidSegmentForMessage` (`E011`); a
+window over `max_message_bytes` is `E036`; reader I/O errors are `Io`. The
+iterator then ends.
 
 ---
 
 ## Typed streaming — extract matching segments
 
-`deserialize_each` walks the segment stream and yields one `T` per segment that
-`T` maps to, skipping everything else without buffering it.
+`deserialize_each` yields one `T` per segment `T` matches and skips the rest:
 
 ```rust
 use edifact::{EdifactDeserialize, deserialize_each};
@@ -145,8 +147,6 @@ assert_eq!(all[1].doc_id, "PO-002");
 
 ### Reader variant
 
-Identical semantics, for any `impl Read`:
-
 ```rust
 use edifact::deserialize_each_from_reader;
 use std::io::Cursor;
@@ -166,8 +166,8 @@ assert_eq!(all.len(), 2);
 
 ## Message-level typed streaming
 
-`deserialize_messages_from_reader` combines message-window iteration with typed
-deserialization. Each `UNH..UNT` window is deserialized into a message struct:
+`deserialize_messages_from_reader` deserializes each `UNH`…`UNT` window into a
+message struct:
 
 ```rust
 use edifact::{EdifactDeserialize, deserialize_messages_from_reader};
@@ -203,22 +203,14 @@ assert_eq!(messages[1].bgm.as_ref().unwrap().doc_id, "PO-002");
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-### No conversion step on the reader path
-
-`OwnedSegment` *is* `Segment<'static>`, so `deserialize_messages_from_reader`
-hands the window's segments straight to `T::edifact_deserialize`. There is no
-owned-specific trait method, and **no intermediate `Vec<Segment<'_>>` is
-allocated** — the borrowed and reader paths run the identical code.
-
-The reader path holds one message window (released after deserialization) and
-the deserialized `T`.
+The window's `OwnedSegment`s go straight to `T::edifact_deserialize`, with no
+conversion. Memory is one window plus the `T`.
 
 ---
 
 ## Progressive (per-window) validation
 
-Combine `message_windows_from_reader` with `ValidationContext` to validate each
-message as it arrives, without buffering the whole interchange:
+Validate each message as it arrives:
 
 ```rust
 use edifact::{
@@ -251,25 +243,23 @@ let ctx = ValidationContext::builder()
 
 for result in message_windows_from_reader(input) {
     let window = result?;
-    // The window's segments go straight in — no conversion, no copy.
     let report = ctx.validate(&window.segments);
     if !report.is_valid() {
         for e in report.errors() {
-            eprintln!("❌ {}", e.message);
+            eprintln!("{}", e.message);
         }
     }
 }
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-See the full example in [`cookbook_streamed_progressive_validation.rs`](https://github.com/hupe1980/edifact/tree/main/crates/edifact/examples/cookbook_streamed_progressive_validation.rs).
+Full example: [`cookbook_streamed_progressive_validation.rs`](https://github.com/hupe1980/edifact/tree/main/crates/edifact/examples/cookbook_streamed_progressive_validation.rs).
 
 ---
 
 ## Manual window assembly with `from_reader`
 
-For full control over window boundaries (e.g. custom grouping logic), use the raw
-segment iterator:
+For custom boundaries, group the raw segment stream yourself:
 
 ```rust
 use edifact::{from_reader, OwnedSegment};
@@ -311,18 +301,10 @@ for result in from_reader(input) {
 
 ## Decoding a stream without making it eager
 
-A `UNOC`…`UNOK` interchange has to be transcoded before it can be parsed, and the
-repertoire is declared inside the stream itself — so something has to read as far
-as the `UNB` before the first segment can come out.
-
-`decode_reader` does that read up front and therefore returns a `Result`. That is
-honest, but a `?` on it turns a lazy pipeline eager: a function returning
-`impl Iterator<Item = Result<T, E>>` suddenly has to return
-`Result<impl Iterator<…>>`, and callers end up boxing the iterator or wrapping the
-decode error in a one-item chain.
-
-`from_reader_decoded` keeps the signature a plain `Iterator` by deferring the
-sniff to the first `next()`:
+A `UNOC`…`UNOK` stream must be read up to its `UNB` before decoding.
+`decode_reader` does that up front and returns a `Result`.
+`from_reader_decoded` defers it to the first `next()`, so the pipeline stays a
+plain `Iterator`:
 
 ```rust
 use edifact::from_reader_decoded;
@@ -338,9 +320,8 @@ assert_eq!(segments[1].element_str(1), Some("Müller"));
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-A repertoire this crate refuses — `UNOX`, `KECA` — arrives as the first
-item of the iterator, in the same shape as a parse error, and the iterator then
-ends:
+An unsupported repertoire (`UNOX`, `KECA`) arrives as the first item, and the
+iterator ends:
 
 ```rust
 # use edifact::{EdifactError, from_reader_decoded};
@@ -355,14 +336,12 @@ assert!(stream.next().is_none());
 # Ok::<(), edifact::EdifactError>(())
 ```
 
-`from_bytes_decoded` is the slice counterpart. It returns owned segments and a
-`Result`, because an ISO 8859-1 payload has to be transcoded to exist as UTF-8 at
-all and the decoded buffer belongs to the call. When you want to keep the
-zero-copy path, hold the buffer yourself: `decode_interchange` then `from_bytes`.
+`from_bytes_decoded` is the slice counterpart; it returns owned segments
+because the decoded buffer belongs to the call. To stay zero-copy, hold the
+buffer: `decode_interchange`, then `from_bytes`.
 
-Reach for the decoding entry points by default. A `UNOC` corpus that happens to
-be stored as UTF-8 parses fine without them — so the tests pass, and the first
-*conformant* counterparty message is the one that fails.
+Use the decoding entry points by default: a `UNOC` test corpus stored as UTF-8
+parses without them, and the first conformant partner message fails.
 
 ---
 

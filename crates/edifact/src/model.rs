@@ -424,6 +424,27 @@ impl<'a> Segment<'a> {
         self.elements.get(elem)?.get_component(comp)
     }
 
+    /// Whether this segment has tag `tag` and qualifier `qualifier`.
+    ///
+    /// The qualifier is component 0 of element 0 (`BY` in `NAD+BY+…`, `Z13` in
+    /// `RFF+Z13:…`); an absent one compares as `""`. Tags compare exactly.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// let segments: Vec<_> = edifact::from_bytes(b"RFF+ON:1'RFF+Z13:17009'")
+    ///     .collect::<Result<_, _>>()?;
+    ///
+    /// let z13: Vec<_> = segments.iter().filter(|s| s.is("RFF", "Z13")).collect();
+    /// assert_eq!(z13[0].component_str(0, 1), Some("17009"));
+    /// # Ok::<(), edifact::EdifactError>(())
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn is(&self, tag: &str, qualifier: &str) -> bool {
+        self.tag == tag && self.element_str(0).unwrap_or("") == qualifier
+    }
+
     /// Return the byte span of the element at position `n`, if it exists.
     #[inline]
     pub fn element_span(&self, n: usize) -> Option<Span> {
@@ -673,6 +694,85 @@ impl<'a> Segment<'a> {
         check_layout_tag(layout, &self.tag)?;
         let path = layout.resolve_code(data_element)?;
         Ok(self.elements.get(path.element))
+    }
+}
+
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for [super::Segment<'_>] {}
+}
+
+/// Lookups on parsed segments by tag and qualifier.
+///
+/// Implemented for `[Segment<'_>]`, so `&[Segment]`, `Vec<Segment>` and
+/// `Vec<OwnedSegment>` all have these methods. The qualifier is as in
+/// [`Segment::is`]. The trait is sealed: it cannot be implemented outside this
+/// crate.
+///
+/// # Example
+///
+/// ```
+/// use edifact::SegmentSliceExt;
+///
+/// let segments: Vec<_> = edifact::from_bytes(
+///     b"BGM+220+PO-4711'NAD+BY+4000001::9'NAD+SU+4000002::9'RFF+Z13:17009'",
+/// )
+/// .collect::<Result<_, _>>()?;
+///
+/// assert_eq!(segments.first_tag("BGM").and_then(|s| s.element_str(1)), Some("PO-4711"));
+/// assert_eq!(segments.tagged("NAD").count(), 2);
+/// assert_eq!(segments.qualified("NAD", "SU").and_then(|s| s.element_str(1)), Some("4000002"));
+/// assert_eq!(segments.qualified_value("RFF", "Z13", 0, 1), Some("17009"));
+/// # Ok::<(), edifact::EdifactError>(())
+/// ```
+pub trait SegmentSliceExt<'a>: sealed::Sealed {
+    /// The first segment with tag `tag`.
+    fn first_tag(&self, tag: &str) -> Option<&Segment<'a>>;
+
+    /// Every segment with tag `tag`, lazily, in input order.
+    fn tagged<'s>(&'s self, tag: &'s str) -> impl Iterator<Item = &'s Segment<'a>>
+    where
+        'a: 's;
+
+    /// The first segment with tag `tag` and qualifier `qualifier`.
+    fn qualified(&self, tag: &str, qualifier: &str) -> Option<&Segment<'a>>;
+
+    /// Component `component` of element `element` of
+    /// [`qualified(tag, qualifier)`][Self::qualified].
+    fn qualified_value(
+        &self,
+        tag: &str,
+        qualifier: &str,
+        element: usize,
+        component: usize,
+    ) -> Option<&str>;
+}
+
+impl<'a> SegmentSliceExt<'a> for [Segment<'a>] {
+    fn first_tag(&self, tag: &str) -> Option<&Segment<'a>> {
+        self.iter().find(|s| s.tag == tag)
+    }
+
+    fn tagged<'s>(&'s self, tag: &'s str) -> impl Iterator<Item = &'s Segment<'a>>
+    where
+        'a: 's,
+    {
+        self.iter().filter(move |s| s.tag == tag)
+    }
+
+    fn qualified(&self, tag: &str, qualifier: &str) -> Option<&Segment<'a>> {
+        self.iter().find(|s| s.is(tag, qualifier))
+    }
+
+    fn qualified_value(
+        &self,
+        tag: &str,
+        qualifier: &str,
+        element: usize,
+        component: usize,
+    ) -> Option<&str> {
+        self.qualified(tag, qualifier)?
+            .component_str(element, component)
     }
 }
 

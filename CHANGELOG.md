@@ -10,6 +10,214 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] — 2026-11-15
+
+Hardened against hostile input and honest on output: bounded by default,
+escaped one-line error text, one answer from both parse paths, service
+segments validated by default, and a writer that never forges a trailer.
+Interchanges are built from a typed header with computed counts; `DTM` values
+decode and compare by format code (`dtm`). A threat model documents it all.
+Breaking changes are listed under **Migration**.
+
+### Added
+
+- Threat model (`crates/edifact/THREAT_MODEL.md`, `edifact::threat_model`)
+  and `SECURITY.md`.
+- `Segment::is(tag, qualifier)` and `SegmentSliceExt` (`first_tag`, `tagged`,
+  `qualified`, `qualified_value`) on borrowed and owned segments.
+- `InterchangeHeader` (`Party`, `PreparationDateTime`, `Year`,
+  `SyntaxVersion`): one typed `UNB` to `parse`, `read`, `read_from` (bounded,
+  replays the stream) and write. Nothing is defaulted; two-digit years resolve
+  only through `with_century`.
+- `InterchangeBuilder`: header plus owned or UTF-8 text messages to bytes that
+  pass `validate_envelope`; writes `UNA` when needed, encodes the repertoire
+  strictly, ignores ASCII whitespace around a text message.
+- `MessageBuilder`: one message as `Vec<OwnedSegment>`, `UNT` computed.
+- `MessageIdentifier::new`, `MessageIdentifier::with_association_code`.
+- `Writer::is_poisoned`, `Writer::into_inner`, `WriterEmitter::into_inner`.
+- Feature `dtm` (no dependencies): `edifact::dtm` decodes, formats, compares
+  and builds `DTM` values for 17 UNCL 2379 codes (`102`–`805`, `104` compared
+  only with `104`); `DtmValidator` reports malformed values as `E027`.
+- Feature `dtm-time`: `DtmValue` to and from `time` 0.3 (`>= 0.3.47`).
+- `ReaderConfig::max_message_bytes` (`UNH` through `UNT`; `E036`,
+  `limit = "max_message_bytes"`), `ReaderConfig::unbounded()`, and the
+  `DEFAULT_MAX_SEGMENT_BYTES` / `_INPUT_BYTES` / `_MESSAGE_BYTES` constants.
+- `E054`–`E061`: `GroupCountMismatch`, `InteractiveSegmentNotSupported`,
+  `SecuritySegmentNotSupported`, `ReservedServiceSegmentTag`,
+  `DataAfterInterchangeTrailer`, `UnsupportedSyntaxVersion`,
+  `InvalidDateTime`, `EmptyGroup` (CONTRL 29, 47, 47, 15, 33, 2, 12, 32);
+  `E072` `WriterPoisoned`.
+- `service::S001` DE 0076 (syntax release number).
+- Both packages ship `LICENSE-MIT` and `LICENSE-APACHE`; CI checks the public
+  API against the last release (cargo-semver-checks).
+
+### Changed — breaking
+
+- **MSRV is Rust 1.88** (was 1.85), so `dtm-time` gets a `time` with the
+  RUSTSEC-2026-0009 fix.
+- **Bounded by default.** `ReaderConfig::default()` (every entry point,
+  `RecoveryConfig::default()`) caps input at 256 MiB and messages at 16 MiB;
+  segments stay 64 KiB. A message window takes at most 128 × its bytes.
+- **Error text escapes control and bidirectional characters from the input**
+  (`\r`, `\u{1b}`, `\u{202e}`, …) in every `Display`, `render_deterministic`
+  and `miette` output; fields keep the raw values.
+- **Both parse paths return the same `Result` for every input**, however a
+  reader chunks it. Reader error offsets are absolute. Well-formed input is
+  unaffected; these results change:
+
+| Input | Path | Before | Now |
+|---|---|---|---|
+| `…''…`, `…' '…` (empty segment) | reader | segment skipped, `Ok` | `E002` at the second terminator |
+| `'` at the head | reader | `E001` | `E002` at offset 0 |
+| any lexical error after the first segment | reader | offset relative to the segment | absolute offset |
+| unterminated last segment with an earlier fault (`…+\xFC`, `…'B?`) | reader | `E001` / `E019` | that fault (`E003`, `E006`, …) |
+| `…'U`, `UN` (tag prefix cut off by the end of input) | slice | `E006` | `E001` at the input length |
+| `UNA'`, `UNA+X'`, `UNA+?`, `UNA:+.?` (head `UNA` with < 6 characters) | slice | `Ok` / `E019` / `E006` | `E001` at the input length |
+| `UNA` + < 6 bytes | `ServiceStringAdvice::from_bytes` | `Ok(defaults)` | `Err(E001)` |
+| byte order mark split across reads | reader | `E006` | prologue, as on the slice path |
+| version 4 `UNB` that is not the first segment | reader | sets `*` as repetition separator | ignored |
+| head version 4 `UNB` containing `*` | reader | `*` read as data | splits repetitions |
+| whitespace before a segment near `max_segment_bytes` | reader | counted, `E020` at the whitespace | not counted (tag to terminator) |
+| segment over `max_segment_bytes` with an earlier fault | reader | `E020` | that fault |
+
+- **An error path never completes a message.** Successful output is
+  unchanged. Refusals (`E006`, `E024`, `E037`, `E041`) write nothing and do
+  not poison.
+
+| Situation | Before | Now |
+|---|---|---|
+| `MessageWriter` dropped without `finish()` (`?`, panic) | `UNT` written | nothing written; writer poisoned |
+| `MessageWriter::finish` fails | `UNT` retried on drop | no retry; writer poisoned |
+| any call after a sink error (`E010`) | bytes appended | `WriterPoisoned`, nothing written |
+| `E038` mid-segment | partial segment, writer usable | writer poisoned |
+| `WriterEmitter::finish` with a segment open | `Ok` | `E024` |
+| `w.begin_message(..)?;` (guard discarded) | silent | `unused_must_use` warning |
+
+- **Envelope validation checks every service-segment position** against the
+  `service` table for syntax versions 1–4, and S004 as a real date and time;
+  all findings are errors.
+
+| Situation | 0.19 | 0.20 |
+|---|---|---|
+| header value outside its representation | passes | `E048`/`E049`/`E050` |
+| `261399:2599` | passes | `E060` ×2 |
+| syntax version `9`, `X`, … | passes | `E059` |
+| `UNZ+abc`, `UNE+abc`, `UNT+abc` | `E003` (+ `E004` "declared 0") | `E048` only |
+| `UNE` count wrong | `E004` "UNZ declared …" | `E054` with span |
+| `UNZ` count wrong | `E004` | `E004` with `span` field |
+| group without a message | passes | `E061` |
+| `UIB` first / `UIH` inside / `USH` in a message / `UXX` | `E015` / `E011` / passes / passes | `E055` / `E055` / `E056` / `E057` |
+| second interchange or stray segment after `UNZ` | `E016`+`E011` / `E015` | `E058` |
+| `UNA` after the first segment (parser, every path) | `E006` or an ordinary segment | `E058` |
+| absent mandatory element (`UNB+UNOA:3++R…`, `UNG` without DE 0048) | `E021` | `E008` |
+| `UNB` without DE 0002 | passes | `E021` |
+| v3 `UNB` with a 15-35 character DE 0008/0014 | passes | `E049` |
+
+- **The writer owns the interchange envelope.**
+
+| 0.19 | 0.20 |
+|---|---|
+| `begin_interchange` takes seven strings | takes `&InterchangeHeader`, validates it, binds an unbound writer to its repertoire |
+| `end_interchange(count, ref)` | `end_interchange()`: `UNZ` counts the messages (or raw `UNG`s) written; refuses `E042`, `E052`, `E049`, `E024` |
+| `begin_message(ref, type, version, release, agency)` | `begin_message(MessageIdentifier)`, with S009 DE 0057 |
+| raw `UNB`/`UNZ` inside an open interchange | `E024`, nothing written |
+| raw `UNE` with a wrong DE 0060 inside an open interchange | `E054`, nothing written |
+| trailing empty elements/components written (`BGM+220+PO+'`) | never written (`BGM+220+PO'`), on every write path and `ser::to_bytes` |
+
+- **`InterchangeEnvelope` carries `header: InterchangeHeader`** in place of
+  its eighteen header fields. The lenient result's `interchange` is `None` when
+  the `UNB` cannot be typed. DE 0031 or DE 0035 other than `1` is `E014`.
+- `Contrl::to_interchange_bytes` writes a validated `UNB` in the declared
+  repertoire: an empty party is `E008`/`E021`, an unencodable one `E038`.
+- `MessageCountMismatch` gains `span` and covers `UNZ` only.
+- A `ValidationContext` reports a finding that the `Envelope` layer and a
+  later layer (e.g. `DirectoryValidator(service::lookup)`) both make once.
+- `SegmentCountMismatch::{expected, actual}` and `MessageEnvelope` segment
+  counts are `u64`, so a 10-digit `UNT` count is exact.
+- On the decoding readers a byte undefined in the repertoire is
+  `E003 InvalidText` at its raw offset (was `E010 Io`).
+- `ValidationIssue::segment_position` counts from each message's own `UNH`
+  in every layer (was: the batch's first `UNH`).
+- `E036` reads `input exceeded the {limit} limit …`; an `io::Error` carrying
+  an `EdifactError` converts back to it.
+
+### Removed — breaking
+
+- `find_segment`, `find_segments`, `find_qualified_segment`: use
+  `SegmentSliceExt`.
+- `ReaderConfig::max_segments_per_message`: use `max_message_bytes` (a
+  segment count does not bound memory).
+
+### Fixed
+
+- `parse_unh`/`parse_ung` borrow from any `&Segment`, so a parsed `Vec` can be
+  passed directly.
+- `service` table: DE 0019 is `n4` (no false `E053` before 10:00); `UCM`
+  S020 repeats up to 99; DE 0008/0014, 0051, 0074, 0135 have their syntax 1–3
+  forms.
+- `DirectoryValidator` accepts an empty conditional composite with a mandatory
+  component, and treats an unknown DE 0002 as unknown, not as version 4.
+- `WriterEmitter` keeps its state on a refused event.
+- Charset sniffing skips a BOM and whitespace like the parser: a prefixed
+  unknown repertoire is refused (`E039`/`E031`), a `UNB` past the 4 KiB sniff
+  window is `E036`.
+- `from_bytes_decoded` and `from_reader_decoded` report the same first error
+  for every input.
+
+### Migration
+
+- **Parse errors**: treat reader-path offsets as absolute; update stored
+  expectations for the inputs in the first table.
+- **Writer**: call `finish()` on every `MessageWriter`. After a non-refusal
+  error the writer is poisoned: start a new one (`into_inner()` returns the
+  partial bytes).
+- **Envelope**: match `MessageCountMismatch { expected, actual, .. }` and
+  `GroupCountMismatch`; expect `E048` for non-numeric counts; split
+  concatenated interchanges after each `UNZ`; drop
+  `DirectoryValidator(service::lookup)` if it was wired only for header checks.
+- **Interchange writing**: build an `InterchangeHeader`; let the writer count.
+
+  | 0.19 | 0.20 |
+  |---|---|
+  | `w.begin_interchange("UNOC", "3", "S", "R", "260101", "0900", "IC1")` | `w.begin_interchange(&InterchangeHeader::new(Charset::UnoC, SyntaxVersion::V3, Party::new("S"), Party::new("R"), PreparationDateTime::new(2026, 1, 1, 9, 0)?, "IC1"))` |
+  | `w.end_interchange(n, "IC1")` | `w.end_interchange()` |
+  | `w.begin_message("1", "ORDERS", "D", "96A", "UN")` | `w.begin_message(MessageIdentifier::new("1", "ORDERS", "D", "96A", "UN"))` |
+  | `write_composites("UNZ", …)` inside `begin_interchange` | `end_interchange()` |
+  | render + `from_bytes` to get `OwnedSegment`s | `MessageBuilder` … `finish()` |
+  | expected bytes with trailing separators | drop them |
+
+- **Envelope fields**: `env.interchange.sender_id` → `env.interchange.header.sender.id`
+  (likewise `recipient`, `control_ref`, `charset`, `syntax_version`, …);
+  `date`/`time` → `header.prepared`; `acknowledgement_request` →
+  `header.acknowledgement_requested`; `app_ref` → `header.application_ref`;
+  `*_routing_address` → `header.{sender,recipient}.internal_id`.
+- **CONTRL**: handle `E008`/`E021`/`E038` from `to_interchange_bytes`; a subject
+  whose `UNB` cannot be typed is answered through `Contrl::from_recovered`.
+- **DTM**: replace hand-rolled date parsing and string comparison with
+  `Dtm::from_segment(&seg)?.value.compare(&other)`; accept only `Before`.
+- **Limits**: trusted input that relied on unbounded defaults →
+  `ReaderConfig::unbounded()`; a long-lived trusted stream →
+  `ReaderConfig::unbounded().max_message_bytes(16 << 20)`.
+  `.max_segments_per_message(n)` → `.max_message_bytes(bytes)` sized for your
+  largest message; match `limit: "max_message_bytes"`.
+- **Error text**: read raw values from the error's fields, not its text.
+- **Counts**: `SegmentCountMismatch { expected, actual, .. }` and
+  `MessageEnvelope` segment counts are `u64`.
+- **Decoding readers**: an undefined repertoire byte arrives as `E003`, not
+  `E010`; read the raw offset from `InvalidText { offset }`.
+- **Positions**: `segment_position` of a later message counts from its own
+  `UNH`; drop any per-batch offset correction.
+- **Lookup**: `use edifact::SegmentSliceExt;`
+
+  | 0.19 | 0.20 |
+  |---|---|
+  | `find_segment(&segs, "BGM")` | `segs.first_tag("BGM")` |
+  | `find_segments(&segs, "NAD")` | `segs.tagged("NAD")` |
+  | `find_qualified_segment(&segs, "NAD", "BY")` | `segs.qualified("NAD", "BY")` |
+
+- **Packaging**: licence texts ship inside both `.crate` files; drop any
+  vendoring step that added them.
+
 ## [0.19.0] — 2026-11-15
 
 ### Changed
@@ -1188,6 +1396,25 @@ Addresses feedback from downstream profile crates built on this library.
 
 ---
 
+## [0.11.0] — 2026-07-04
+
+### Added
+
+- Functional groups in envelope validation: `UNG`/`UNE` checked, `parse_ung`,
+  `GroupIdentifier`, `FunctionalGroupEnvelope`.
+- `validate_envelope` returns `ValidatedInterchange`; `validate_envelope_lenient`
+  and `validate_envelope_lenient_from_owned` collect every finding.
+- Writer envelope API: `begin_interchange`, `begin_message` → `MessageWriter`,
+  `end_interchange`, `write_segment`, `write_raw`, `finish`.
+- `E031` `UnrecognisedSyntaxIdentifier`.
+
+### Changed
+
+- Stricter `UNA` validation and error reporting.
+- `E029` (`FunctionalGroupNotSupported`) is retired.
+
+---
+
 ## [0.10.0] — 2026-06-10
 
 ### Breaking Changes
@@ -1342,6 +1569,12 @@ Addresses feedback from downstream profile crates built on this library.
 ---
 
 ## [0.9.1] — 2026-06-09
+
+Version bump only; no code changes.
+
+---
+
+## [0.9.0] — 2026-06-09
 
 ### Breaking Changes
 
@@ -1791,7 +2024,8 @@ Initial public release.  See commit history for full details.
 
 ---
 
-[Unreleased]: https://github.com/hupe1980/edifact/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/hupe1980/edifact/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/hupe1980/edifact/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/hupe1980/edifact/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/hupe1980/edifact/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/hupe1980/edifact/compare/v0.16.0...v0.17.0
@@ -1800,6 +2034,7 @@ Initial public release.  See commit history for full details.
 [0.14.0]: https://github.com/hupe1980/edifact/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/hupe1980/edifact/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/hupe1980/edifact/compare/v0.11.0...v0.12.0
+[0.11.0]: https://github.com/hupe1980/edifact/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/hupe1980/edifact/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/hupe1980/edifact/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/hupe1980/edifact/compare/v0.8.0...v0.9.0

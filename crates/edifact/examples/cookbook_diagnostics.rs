@@ -33,21 +33,19 @@ fn run_validation() -> Result<(), edifact::EdifactError> {
         ) {
             validate_each(segments, report, |segment| {
                 // Example validation: check for invalid code value
-                if segment.tag == "BGM" {
-                    if let Some(elem) = segment.get_element(0) {
-                        if let Some(code) = elem.get_component(0) {
-                            if code == "999" {
-                                return Err(edifact::EdifactError::InvalidCodeValue {
-                                    tag: "BGM".to_owned(),
-                                    element_index: 0,
-                                    value: "999".to_owned(),
-                                    code_list: "1001".to_owned(),
-                                    span: segment.span,
-                                    suggestion: None,
-                                });
-                            }
-                        }
-                    }
+                if segment.tag == "BGM"
+                    && let Some(elem) = segment.get_element(0)
+                    && let Some(code) = elem.get_component(0)
+                    && code == "999"
+                {
+                    return Err(edifact::EdifactError::InvalidCodeValue {
+                        tag: "BGM".to_owned(),
+                        element_index: 0,
+                        value: "999".to_owned(),
+                        code_list: "1001".to_owned(),
+                        span: segment.span,
+                        suggestion: None,
+                    });
                 }
                 Ok(())
             });

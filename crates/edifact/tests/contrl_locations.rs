@@ -227,6 +227,7 @@ fn e004_a_message_count_mismatch_is_29_on_the_uci_naming_unz() {
     let error = EdifactError::MessageCountMismatch {
         expected: 2,
         actual: 1,
+        span: spanned(5),
     };
     assert_eq!(
         at(&error, None),
@@ -714,6 +715,136 @@ UNH+M1+ORDERS:D:96A:UN'BGM+220'UNT+3+M1'UNE+1+G1'UNZ+1+IC1'";
     );
 }
 
+// ── service-segment conformance ──────────────────────────────────────────────
+
+/// Locate `error` on `GROUPED`: (level, group, service segment, DE 0098, DE 0104, DE 0085).
+/// (level, group, service segment, DE 0098, DE 0104, DE 0085).
+type GroupTuple = (
+    ReportingLevel,
+    Option<usize>,
+    Option<&'static str>,
+    Option<u32>,
+    Option<u32>,
+    &'static str,
+);
+
+fn at_grouped(error: impl Fn(&RecoveredInterchange<'_>) -> EdifactError) -> GroupTuple {
+    let recovered = scan(GROUPED);
+    let location = recovered
+        .locate(&error(&recovered), None)
+        .expect("a subject fault");
+    assert_invariants(&location);
+    (
+        location.level(),
+        location.group(),
+        location.service_segment(),
+        location.element_position(),
+        location.component_position(),
+        location.error().code(),
+    )
+}
+
+#[test]
+fn e054_a_group_count_mismatch_is_29_on_the_ucf_naming_une() {
+    let located = at_grouped(|r| EdifactError::GroupCountMismatch {
+        group_ref: "G1".into(),
+        expected: 5,
+        actual: 1,
+        span: span(r, 5),
+    });
+    assert_eq!(located, (UCF, Some(0), Some("UNE"), None, None, "29"));
+}
+
+#[test]
+fn e061_an_empty_group_is_32_on_the_ucf_naming_ung() {
+    let located = at_grouped(|r| EdifactError::EmptyGroup {
+        group_ref: "G1".into(),
+        span: span(r, 1),
+    });
+    assert_eq!(located, (UCF, Some(0), Some("UNG"), None, None, "32"));
+}
+
+#[test]
+fn e055_e056_refused_segments_in_a_message_are_47_on_the_ucm() {
+    for error in [
+        EdifactError::InteractiveSegmentNotSupported {
+            tag: "UIH".into(),
+            span: spanned(2),
+        },
+        EdifactError::SecuritySegmentNotSupported {
+            tag: "USH".into(),
+            span: spanned(2),
+        },
+    ] {
+        assert_eq!(
+            at(&error, None),
+            (UCM, Some(0), None, None, None, None, "47", true),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn e057_a_reserved_tag_is_15_on_the_ucs() {
+    let error = EdifactError::ReservedServiceSegmentTag {
+        tag: "UXX".into(),
+        span: spanned(2),
+    };
+    assert_eq!(
+        at(&error, None),
+        (UCS, Some(0), Some(2), None, None, None, "15", true)
+    );
+}
+
+#[test]
+fn e058_trailing_data_is_33_on_the_uci_naming_no_segment() {
+    let error = EdifactError::DataAfterInterchangeTrailer {
+        tag: "UNB".into(),
+        span: Span::new(IC.len(), IC.len() + 3),
+    };
+    assert_eq!(
+        at(&error, None),
+        (UCI, None, None, None, None, None, "33", true)
+    );
+}
+
+#[test]
+fn e059_an_unsupported_syntax_version_is_2_on_unb_s001_component_2() {
+    // `UNB+UNOC:3…`: DE 0002 is bytes 9..10.
+    let error = EdifactError::UnsupportedSyntaxVersion {
+        value: "3".into(),
+        span: Span::new(9, 10),
+    };
+    assert_eq!(
+        at(&error, None),
+        (UCI, None, None, Some("UNB"), Some(2), Some(2), "2", true)
+    );
+}
+
+#[test]
+fn e060_an_invalid_date_is_12_on_the_service_segment_s004() {
+    // `…+260101:0900+…`: DE 0017 is bytes 15..21.
+    let unb = EdifactError::InvalidDateTime {
+        tag: "UNB".into(),
+        element_index: 3,
+        component_index: 0,
+        value: "260101".into(),
+        span: Span::new(15, 21),
+    };
+    assert_eq!(
+        at(&unb, None),
+        (UCI, None, None, Some("UNB"), Some(5), Some(1), "12", true)
+    );
+    let ung = at_grouped(|r| EdifactError::InvalidDateTime {
+        tag: "UNG".into(),
+        element_index: 3,
+        component_index: 1,
+        value: "0900".into(),
+        span: span(r, 1),
+    });
+    assert_eq!(ung, (UCF, Some(0), Some("UNG"), Some(5), Some(2), "12"));
+}
+
 // ── not a subject fault ──────────────────────────────────────────────────────
 
 #[test]
@@ -764,13 +895,16 @@ fn errors_that_are_not_subject_faults_have_no_location() {
             group: "SG5".into(),
             reason: "max is 0",
         },
+        EdifactError::WriterPoisoned {
+            reason: "an earlier write to the sink failed",
+        },
     ];
     let codes: Vec<_> = errors.iter().map(EdifactError::stable_code).collect();
     assert_eq!(
         codes,
         [
             "E009", "E010", "E024", "E025", "E026", "E030", "E033", "E034", "E035", "E037", "E040",
-            "E041", "E066", "E067", "E071"
+            "E041", "E066", "E067", "E071", "E072"
         ]
     );
     for error in &errors {

@@ -237,10 +237,49 @@ where
     }
 }
 
-/// The one-based message position (DE 0096) of `segments[index]`, or `None`
-/// when the slice does not start at `UNH` and so has no such coordinate.
-pub(crate) fn message_position(segments: &[Segment<'_>], index: usize) -> Option<usize> {
-    (segments.first().is_some_and(|s| s.tag == "UNH")).then_some(index + 1)
+/// One-based segment positions within each message (DE 0096, `UNH` = 1).
+///
+/// A message runs from its `UNH` to its `UNT`; one without `UNT` ends before
+/// the next `UNH` or at the end of the batch. Segments outside every message
+/// have no position.
+pub(crate) struct MessagePositions {
+    /// `(start, end)` index range of each message, `end` inclusive, ascending.
+    messages: Vec<(usize, usize)>,
+}
+
+impl MessagePositions {
+    pub(crate) fn new(segments: &[Segment<'_>]) -> Self {
+        let mut messages = Vec::new();
+        let mut open: Option<usize> = None;
+        for (index, segment) in segments.iter().enumerate() {
+            match segment.tag() {
+                "UNH" => {
+                    if let Some(start) = open.replace(index) {
+                        messages.push((start, index - 1));
+                    }
+                }
+                "UNT" => {
+                    if let Some(start) = open.take() {
+                        messages.push((start, index));
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(start) = open
+            && let Some(last) = segments.len().checked_sub(1)
+        {
+            messages.push((start, last));
+        }
+        Self { messages }
+    }
+
+    /// The one-based position of `segments[index]` within its message.
+    pub(crate) fn position(&self, index: usize) -> Option<usize> {
+        let at = self.messages.partition_point(|&(start, _)| start <= index);
+        let &(start, end) = self.messages.get(at.checked_sub(1)?)?;
+        (index <= end).then(|| index - start + 1)
+    }
 }
 
 /// Add `issue` to the bucket its severity belongs in.
@@ -281,10 +320,10 @@ pub(crate) fn report_error_at(
 
 // ── EnvelopeValidator ─────────────────────────────────────────────────────────
 
-/// Built-in validator for EDIFACT interchange envelope structure.
+/// Built-in validator for the EDIFACT interchange envelope.
 ///
-/// Checks `UNB`/`UNH`/`UNT`/`UNZ` segment presence, message counts, and
-/// segment counts.  Registered by
+/// Reports every finding of [`validate_envelope_lenient`][crate::validate_envelope_lenient]:
+/// structure, control counts and references, and every service-segment value.  Registered by
 /// [`ValidationContextBuilder::with_envelope_validation`].
 pub struct EnvelopeValidator;
 
@@ -295,14 +334,24 @@ impl Validator for EnvelopeValidator {
         report: &mut ValidationReport,
         _ctx: &ValidationRuleContext<'_>,
     ) {
-        // Use the lenient path so a single report surfaces every envelope
-        // violation.  The strict path stops at the first, which made
-        // `ValidationContext::validate` — whose whole purpose is
-        // exhaustive reporting — yield at most one envelope issue per batch.
-        // Envelope errors carry no segment index; CONTRL places them from
-        // their span.
-        for e in crate::envelope::validate_envelope_lenient(segments).errors {
-            report_error_at(report, e, ValidationLayer::Envelope, None);
+        // The lenient path, so one report holds every envelope violation.
+        // A finding is placed at the segment its check ran on or, failing
+        // that, at the segment its span falls in.
+        let (result, located) = crate::envelope::validate_envelope_located(segments);
+        let positions = MessagePositions::new(segments);
+        for (e, index) in result.errors.into_iter().zip(located) {
+            let mut issue = issue_from_error(e).with_layer(ValidationLayer::Envelope);
+            let index = index.or_else(|| {
+                let span = issue.span()?;
+                let at = segments
+                    .partition_point(|s| s.span.start <= span.start)
+                    .checked_sub(1)?;
+                (span.end <= segments[at].span.end).then_some(at)
+            });
+            if let Some(position) = index.and_then(|i| positions.position(i)) {
+                issue = issue.with_segment_position(position);
+            }
+            push_issue(report, issue);
         }
     }
 
@@ -359,8 +408,9 @@ impl Validator for SyntaxValidator {
         report: &mut ValidationReport,
         _context: &ValidationRuleContext<'_>,
     ) {
+        let positions = MessagePositions::new(segments);
         for (index, segment) in segments.iter().enumerate() {
-            let position = message_position(segments, index);
+            let position = positions.position(index);
             let report_syntax = |report: &mut ValidationReport, err: EdifactError| {
                 report_error_at(report, err, ValidationLayer::Syntax, position);
             };
@@ -534,8 +584,9 @@ impl Validator for CharsetValidator {
         if charset == crate::Charset::UnoY {
             return; // Everything is permitted; nothing to check.
         }
+        let positions = MessagePositions::new(segments);
         for (index, segment) in segments.iter().enumerate() {
-            let position = message_position(segments, index);
+            let position = positions.position(index);
             for (element_index, element) in segment.elements.iter().enumerate() {
                 for components in element.repetitions() {
                     for (component_index, (value, span)) in components.iter().enumerate() {
@@ -729,6 +780,28 @@ pub(crate) fn issue_from_error(err: EdifactError) -> ValidationIssue {
         EdifactError::EmptyMessage { span, .. } => {
             issue = issue.with_segment("UNH").with_span(span);
         }
+        EdifactError::InteractiveSegmentNotSupported { tag, span }
+        | EdifactError::SecuritySegmentNotSupported { tag, span }
+        | EdifactError::ReservedServiceSegmentTag { tag, span }
+        | EdifactError::DataAfterInterchangeTrailer { tag, span } => {
+            issue = issue.with_segment(tag).with_span(span);
+        }
+        EdifactError::MessageCountMismatch { span, .. } => {
+            issue = issue.with_segment("UNZ").with_span(span);
+        }
+        EdifactError::GroupCountMismatch { span, .. } => {
+            issue = issue.with_segment("UNE").with_span(span);
+        }
+        EdifactError::EmptyGroup { span, .. } => {
+            issue = issue.with_segment("UNG").with_span(span);
+        }
+        EdifactError::UnsupportedSyntaxVersion { span, .. } => {
+            issue = issue
+                .with_segment("UNB")
+                .with_span(span)
+                .with_element_index(0)
+                .with_component_index(1);
+        }
         EdifactError::GroupsAndMessagesMixed { span } => {
             issue = issue.with_segment("UNH").with_span(span);
         }
@@ -796,6 +869,13 @@ pub(crate) fn issue_from_error(err: EdifactError) -> ValidationIssue {
             element_index,
             component_index,
             span,
+        }
+        | EdifactError::InvalidDateTime {
+            tag,
+            element_index,
+            component_index,
+            span,
+            ..
         } => {
             issue = issue
                 .with_segment(tag)
@@ -830,10 +910,10 @@ pub(crate) fn issue_from_error(err: EdifactError) -> ValidationIssue {
         _ => {}
     }
 
-    if issue.suggestion.is_none() {
-        if let Some(hint) = default_hint {
-            issue = issue.with_suggestion(hint);
-        }
+    if issue.suggestion.is_none()
+        && let Some(hint) = default_hint
+    {
+        issue = issue.with_suggestion(hint);
     }
 
     issue
@@ -879,6 +959,45 @@ mod tests {
                     })
                 })());
             })
+    }
+
+    fn positions_of(input: &[u8]) -> Vec<Option<usize>> {
+        let segments: Vec<_> = crate::from_bytes(input)
+            .collect::<Result<_, _>>()
+            .expect("valid input");
+        let positions = MessagePositions::new(&segments);
+        (0..segments.len()).map(|i| positions.position(i)).collect()
+    }
+
+    #[test]
+    fn message_positions_count_from_each_unh() {
+        assert_eq!(
+            positions_of(b"UNH+1+X:D:96A:UN'BGM+1'UNT+3+1'"),
+            [Some(1), Some(2), Some(3)]
+        );
+        assert_eq!(
+            positions_of(
+                b"UNB+UNOC:3+S+R+260101:0900+1'UNH+1+X:D:96A:UN'BGM+1'UNT+3+1'\
+                  UNH+2+X:D:96A:UN'BGM+2'UNT+3+2'UNZ+2+1'"
+            ),
+            [
+                None,
+                Some(1),
+                Some(2),
+                Some(3),
+                Some(1),
+                Some(2),
+                Some(3),
+                None
+            ]
+        );
+        // An unterminated message ends before the next `UNH`.
+        assert_eq!(
+            positions_of(b"UNH+1+X:D:96A:UN'BGM+1'UNH+2+X:D:96A:UN'BGM+2'"),
+            [Some(1), Some(2), Some(1), Some(2)]
+        );
+        assert_eq!(positions_of(b"BGM+1'DTM+1'"), [None, None]);
+        assert_eq!(positions_of(b""), []);
     }
 
     struct RejectBgm;

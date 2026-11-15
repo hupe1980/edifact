@@ -53,7 +53,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: 1.85.0
+          toolchain: 1.88.0
       - uses: Swatinem/rust-cache@v2
       # The derive UI suite runs here and on the stable feature-matrix job.
       # Its blessed .stderr files hold only the derive's own diagnostics — the
@@ -92,6 +92,16 @@ jobs:
             command: cargo test -p edifact --no-default-features --locked
           - name: test-all-features
             command: cargo test -p edifact --all-features --locked
+          # The codec alone: tests in debug and release (range edges), and
+          # `dtm` must add no crate to the dependency tree.
+          - name: test-dtm
+            command: >-
+              cargo test -p edifact --no-default-features --features dtm --locked &&
+              cargo test -p edifact --release --no-default-features --features dtm --locked --test dtm_compare &&
+              diff <(cargo tree -p edifact -e normal --no-default-features --prefix none --locked)
+              <(cargo tree -p edifact -e normal --no-default-features --features dtm --prefix none --locked)
+          - name: test-dtm-time
+            command: cargo test -p edifact --no-default-features --features dtm-time --locked
           # The UI expectations are toolchain-portable, so run them on stable
           # too: pinning them to MSRV alone meant a regression in the derive's
           # diagnostics went unseen until that one job ran.
@@ -123,7 +133,17 @@ jobs:
       - name: Run property/fuzz targets
         env:
           BOLERO_RANDOM_ITERATIONS: "50000"
-        run: cargo test -p edifact --release --test bolero_harness --locked
+        run: cargo test -p edifact --release --features dtm --test bolero_harness --locked
+      # The slice and reader paths must return the same `Result` for every
+      # input; random mode needs depth to reach malformed structure.
+      - name: Parse-path parity (1M iterations)
+        env:
+          BOLERO_RANDOM_ITERATIONS: "1000000"
+        run: cargo test -p edifact --release --test bolero_harness --locked fuzz_parity
+      - name: Parse-path parity, exhaustive sweep (length <= 5)
+        run: cargo test -p edifact --release --test parse_path_parity --locked exhaustive
+      - name: Resource bounds at the default limits
+        run: cargo test -p edifact --release --test resource_limits --test allocation_budget --locked
 
   benchmark-smoke:
     runs-on: ubuntu-latest
@@ -196,8 +216,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Verify derive crate packages cleanly
-        run: cargo publish --dry-run -p edifact-derive --locked
+      # Stale tarballs from the cache must not satisfy the contents check.
+      - name: Verify both crates package cleanly
+        run: |
+          rm -f target/package/*.crate target/package/tmp-crate/*.crate
+          cargo publish --dry-run --workspace --locked
+      - name: Check package contents
+        run: bash scripts/package-contents-check.sh
       - name: Verify crate versions match across workspace
         shell: bash
         run: |
@@ -213,3 +238,53 @@ jobs:
             echo "Version mismatch between crates: derive=${derive_ver} main=${main_ver}"
             exit 1
           fi
+
+  semver:
+    runs-on: ubuntu-latest
+    name: semver
+    # Reads the repository and writes the job summary; a third-party installer
+    # runs here, so the token gets no write scope.
+    permissions:
+      contents: read
+    env:
+      DERIVE_NOTE: >-
+        edifact-derive is a proc-macro crate and is not semver-analysed; its
+        contract is covered by the derive UI suite (EDIFACT_UI_TESTS=1).
+      BUMP_HINT: >-
+        Breaking change at a non-breaking version: bump workspace.package.version
+        to the next minor (and the edifact-derive requirement in
+        crates/edifact/Cargo.toml) and add a Migration note under [Unreleased].
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-semver-checks@0.51.0
+      # Baseline: the newest non-yanked `edifact` on crates.io.  The release
+      # type comes from the workspace version, so a break passes only at the
+      # next minor.
+      # Exit 100 is a semver violation; anything else means the check did not run.
+      - name: semver (all features)
+        run: cargo semver-checks -p edifact --all-features || { s=$?; [[ $s -eq 100 ]] && echo "::error::${BUMP_HINT}" || echo "::error::semver check could not run (crates.io baseline unreachable or build failed)"; exit $s; }
+      - name: semver (default features)
+        run: cargo semver-checks -p edifact --default-features || { s=$?; [[ $s -eq 100 ]] && echo "::error::${BUMP_HINT}" || echo "::error::semver check could not run (crates.io baseline unreachable or build failed)"; exit $s; }
+      - name: Derive note
+        if: always()
+        run: echo "${DERIVE_NOTE}"
+      - name: Break report (advisory)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            echo "## Semver report (advisory)"
+            echo
+            echo '```text'
+          } >> "$GITHUB_STEP_SUMMARY"
+          status=0
+          cargo semver-checks -p edifact --all-features --release-type minor --color never 2>&1 \
+            | tee -a "$GITHUB_STEP_SUMMARY" || status=$?
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"

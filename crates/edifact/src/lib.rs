@@ -1,8 +1,9 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(unsafe_code)]
 
-//! `edifact` — zero-copy EDIFACT (ISO 9735) tokenizer, parser, writer, typed
-//! (de)serialization, validation engine, and extensible directory support.
+//! `edifact` — EDIFACT (ISO 9735) for Rust: zero-copy parser, a writer that
+//! computes its envelope, typed (de)serialization, layered validation, `DTM`
+//! dates and `CONTRL` generation. Bounded by default against hostile input.
 //!
 //! # Quick start
 //! ```
@@ -24,8 +25,7 @@
 //!   aliased as [`OwnedSegment`], with every non-empty value owned.
 //!
 //! `Segment` is covariant in `'a`, so `&[OwnedSegment]` is accepted anywhere
-//! `&[Segment<'_>]` is wanted. Every API in this crate therefore takes one shape
-//! and serves both paths — there are no `_owned` twins, and no conversion step.
+//! `&[Segment<'_>]` is wanted: one API serves both paths, with no conversion.
 //!
 //! ```
 //! use edifact::{OwnedSegment, Segment};
@@ -53,28 +53,35 @@
 //!   [`EdifactCompositeDeserialize`][macro@EdifactCompositeDeserialize] /
 //!   [`EdifactCompositeSerialize`][macro@EdifactCompositeSerialize] for the
 //!   composite-element structs they reference.
-//! - `diagnostics` (off by default): [`EdifactError`] implements
-//!   `miette::Diagnostic`, for span-annotated CLI output.
+//! - `diagnostics` (off by default): [`EdifactError`], [`ValidationIssue`] and
+//!   [`ValidationReport`] implement `miette::Diagnostic` (code, severity, help;
+//!   issues also carry labelled spans).
 //! - `serde` (off by default): `Serialize` / `Deserialize` for
 //!   [`ValidationReport`], [`ValidationIssue`], and the envelope types.
+//! - `dtm` (off by default, no dependencies): [`dtm`], the UNCL 2379 codec for
+//!   `DTM` values — decode, format, compare, build and validate.
+//! - `dtm-time` (off by default): `dtm` plus conversions to and from the
+//!   [`time`](https://docs.rs/time/0.3) crate.
 //!
-//! Features are additive and independent: each changes only which trait impls
-//! and re-exports exist, never parsing or validation behaviour.
+//! Features are additive: each adds items and trait impls, and none changes
+//! parsing or validation behaviour.
 //!
 //! # Parse and text contracts
 //!
-//! Parsing in `edifact` is strict and deterministic:
+//! Parsing is strict and deterministic:
 //!
 //! - A byte order mark and any whitespace before the first service segment are
-//!   skipped — ISO 9735 authorises neither, but both arrive constantly.
+//!   skipped — ISO 9735 authorises neither, but both arrive constantly. The
+//!   repertoire sniff ([`sniff_charset`]) skips the same prologue.
 //! - A segment that ends without its terminator is a **truncation** (`E001`,
 //!   [`EdifactError::UnexpectedEof`]):
 //!   accepting it would let a file cut off mid-transfer parse as complete.
 //! - Segment and element text must decode as UTF-8 (`E003`).
 //! - A release character must escape exactly one following byte; a trailing `?`
 //!   at end-of-input is rejected (`E019`).
-//! - Every [`ReaderConfig`] budget **reports** a violation (`E020`, `E036`)
-//!   rather than ending the iterator, which would be indistinguishable from a
+//! - Input is bounded by default: 64 KiB per segment, 16 MiB per message,
+//!   256 MiB per input ([`ReaderConfig`]). A budget **reports** a violation
+//!   (`E020`, `E036`) instead of ending the iterator, which would look like a
 //!   clean end of input.
 //! - The service characters are discovered the way ISO 9735-1 says a receiver
 //!   should discover them: from a leading `UNA` if there is one, otherwise the
@@ -87,9 +94,9 @@
 //!   into [`Element::repetitions`] rather than left glued into the value
 //!   (ISO 9735-1 §8.7).
 //!
-//! Every one of these contracts applies identically to slice-based parsing
-//! ([`from_bytes`]) and reader-based parsing ([`from_reader`]); the two are held
-//! to byte-for-byte agreement by a test that runs the same inputs through both.
+//! These contracts hold identically for [`from_bytes`] and [`from_reader`]: the
+//! same bytes give equal segments with equal spans, or the same error at the
+//! same offset, however the reader chunks its input.
 //!
 //! ```
 //! use edifact::from_reader;
@@ -108,9 +115,9 @@
 //! # Validation
 //!
 //! [`ValidationContext`] runs switchable envelope, syntax, charset, structure,
-//! code-list and profile layers into one [`ValidationReport`]. Every [`ValidationIssue`] says which layer found it,
-//! which pack produced it and — for the built-in checks — what kind of fault it
-//! is ([`FindingKind`]):
+//! code-list and profile layers into one [`ValidationReport`]. Every
+//! [`ValidationIssue`] says which layer found it, which pack produced it and,
+//! for the built-in checks, what kind of fault it is ([`FindingKind`]):
 //!
 //! ```
 //! use edifact::{ProfileRulePack, ValidationContext, ValidationIssue, ValidationSeverity, from_bytes};
@@ -137,18 +144,24 @@
 //! # Ok::<(), edifact::EdifactError>(())
 //! ```
 //!
-//! See the [validation](https://hupe1980.github.io/edifact/docs/validation/)
-//! and [profile pack](https://hupe1980.github.io/edifact/docs/profile-packs/)
-//! guides for the layers, group-scoped rules, and directory validation.
+//! Guides: [validation](https://hupe1980.github.io/edifact/docs/validation/),
+//! [segment groups](https://hupe1980.github.io/edifact/docs/segment-groups/),
+//! [profile packs](https://hupe1980.github.io/edifact/docs/profile-packs/).
+//!
+//! # Writing
+//!
+//! An interchange is built from a typed [`InterchangeHeader`];
+//! [`InterchangeBuilder`], [`MessageBuilder`] and [`Writer`] compute `UNT` and
+//! `UNZ`. A message dropped without `finish()` gets no `UNT`, and a writer whose
+//! sink failed is poisoned (`E072`). See the
+//! [writing guide](https://hupe1980.github.io/edifact/docs/writing/).
 //!
 //! # Async usage
 //!
-//! There is deliberately no native `async` API: parsing is CPU work over a
-//! buffer, not I/O, so an async parser would add a runtime dependency and a
-//! second copy of every code path to wrap work that never awaits. Read with your
-//! runtime, parse synchronously — see the
+//! There is no native `async` API: parsing is CPU work over a buffer. Read with
+//! your runtime and parse synchronously; the
 //! [async integration guide](https://hupe1980.github.io/edifact/docs/async-integration/)
-//! for the three patterns, including `spawn_blocking` for multi-gigabyte files.
+//! shows the patterns, including `spawn_blocking` for large files.
 //!
 //! ```rust,no_run
 //! # async fn example(mut reader: impl tokio::io::AsyncReadExt + Unpin)
@@ -160,16 +173,28 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! # Security
+//!
+//! Every malformed or over-budget input is a typed [`EdifactError`], never a
+//! panic. Error text escapes control and bidirectional characters from the
+//! input. The defaults bound every entry point; size [`ReaderConfig`] to your
+//! traffic. The [threat model](threat_model) lists the adversary, the scope,
+//! and every known threat class with its status and evidence.
 // ── core modules ──────────────────────────────────────────────────────────────
 /// EDIFACT character repertoires (`UNB` S001 DE 0001) and transcoding.
 pub mod charset;
 /// `CONTRL` — the ISO 9735-4 syntax and service report message.
 pub mod contrl;
 pub mod directory_validator;
+#[cfg(feature = "dtm")]
+#[cfg_attr(docsrs, doc(cfg(feature = "dtm")))]
+pub mod dtm;
 pub(crate) mod envelope;
 /// Error types and validation reporting primitives.
 pub(crate) mod error;
 pub mod group;
+pub(crate) mod header;
 /// Core zero-copy and owned EDIFACT data model types.
 pub(crate) mod model;
 pub(crate) mod parser;
@@ -178,8 +203,9 @@ pub mod recover;
 ///
 /// These types are also re-exported from the crate root.
 pub mod report;
-/// ISO 9735 service-segment definitions (`UNB`, `UNH`, `UNT`, `UNZ`, `UNG`, `UNE`, `UNS`).
+/// ISO 9735 service-segment definitions: envelope, package, `UGH`/`UGT` and `CONTRL` segments.
 pub mod service;
+pub mod threat_model;
 pub(crate) mod tokenizer;
 pub(crate) mod validator;
 pub(crate) mod writer;
@@ -195,6 +221,9 @@ pub use contrl::{
     Action, ActionPolicy, Contrl, ContrlIdentifier, ContrlLocation, ContrlOptions, RejectionScope,
     ReportingLevel, SyntaxError,
 };
+#[cfg(feature = "dtm")]
+#[cfg_attr(docsrs, doc(cfg(feature = "dtm")))]
+pub use dtm::{Dtm, DtmError, DtmFormat, DtmRelation, DtmValidator, DtmValue};
 pub use envelope::{
     FunctionalGroupEnvelope, GroupIdentifier, InterchangeEnvelope, LenientResult, MessageEnvelope,
     MessageIdentifier, ValidatedInterchange, parse_ung, parse_unh, validate_envelope,
@@ -205,7 +234,8 @@ pub use group::{
     Descendants, Discriminator, Entry, GroupDef, GroupDefBuilder, GroupResolution, GroupSchema,
     Placement, SegmentGroupIndexed, SegmentPlace, Unplaced, UnplacedReason, group_segments_indexed,
 };
-pub use model::{Components, Element, OwnedElement, OwnedSegment, Segment, Span};
+pub use header::{InterchangeHeader, Party, PreparationDateTime, SyntaxVersion, Year};
+pub use model::{Components, Element, OwnedElement, OwnedSegment, Segment, SegmentSliceExt, Span};
 pub use parser::{
     OwnedSegmentStream, Parser, ReaderConfig, from_bufread, from_bufread_with_config,
     from_reader_with_config,
@@ -221,7 +251,9 @@ pub use validator::{
     SyntaxValidator, ValidationContext, ValidationContextBuilder, ValidationLayer,
     ValidationRuleContext, Validator, validate_each,
 };
-pub use writer::{AsDataElement, DataElement, MessageWriter, Writer};
+pub use writer::{
+    AsDataElement, DataElement, InterchangeBuilder, MessageBuilder, MessageWriter, Writer,
+};
 
 // ── flat re-exports: serde ────────────────────────────────────────────────────
 
@@ -232,10 +264,9 @@ pub use de::{
     deserialize, deserialize_each, deserialize_each_from_reader,
     deserialize_each_from_reader_with_config, deserialize_each_with_config, deserialize_messages,
     deserialize_messages_from_reader, deserialize_messages_from_reader_with_config,
-    deserialize_messages_with_config, deserialize_str, find_qualified_segment, find_segment,
-    find_segments, find_segments_typed, message_windows, message_windows_from_reader,
-    message_windows_from_reader_with_config, message_windows_with_config,
-    qualifier_matches_pattern,
+    deserialize_messages_with_config, deserialize_str, find_segments_typed, message_windows,
+    message_windows_from_reader, message_windows_from_reader_with_config,
+    message_windows_with_config, qualifier_matches_pattern,
 };
 
 // ── Proc-macro support ─────────────────────────────────────────────────────────
@@ -283,9 +314,8 @@ pub struct FromBytesIter<'a> {
 ///
 /// # Resource bounds
 ///
-/// As [`from_reader`]: only `max_segment_bytes` (64 KiB) applies. Memory is
-/// one segment plus an 8 KiB read buffer; time is unbounded on input that
-/// never ends. Use [`from_reader_with_config`] for untrusted input.
+/// As [`from_reader`]: the [`ReaderConfig::default()`][ReaderConfig] limits
+/// apply. Memory is one segment plus an 8 KiB read buffer.
 pub struct FromReaderIter<R: Read> {
     inner: parser::OwnedSegmentStream<std::io::BufReader<R>>,
 }
@@ -316,7 +346,7 @@ impl<'a> Iterator for FromBytesIter<'a> {
                 // Bytes beyond the budget exist but were never examined: the
                 // reader path would have had to consume them, so this is the
                 // byte budget, whatever those bytes are (trailing whitespace
-                // and stray terminators included).
+                // included).
                 self.truncated_at
                     .map(|max| Err(parser::input_bytes_exceeded(max as u64)))
             }
@@ -328,11 +358,14 @@ impl<'a> Iterator for FromBytesIter<'a> {
                 // Limits are checked against a segment that is actually
                 // available, so an input ending exactly at the limit finishes
                 // cleanly instead of being reported as a violation.
-                if let Err(error) = self.budget.admit_segment(&seg.tag, seg.tag_span.start) {
+                if let Err(error) =
+                    self.budget
+                        .admit_segment(&seg.tag, seg.tag_span.start, seg.span.end)
+                {
                     self.parser = None;
                     return Some(Err(error));
                 }
-                self.budget.account(&seg.tag);
+                self.budget.account(&seg.tag, seg.tag_span.start);
                 self.last_end = seg.span.end;
                 Some(Ok(seg))
             }
@@ -400,10 +433,23 @@ impl FromBytesIter<'_> {
 /// reusable element buffer. Elements that do not repeat allocate nothing for
 /// repetitions. Asserted by the `allocation_budget` integration test.
 ///
-/// # Segment-size limit
+/// # Resource bounds
 ///
-/// Applies a default 64 KiB per-segment limit, matching the reader-based path.
-/// Use [`from_bytes_with_config`] to override.
+/// [`ReaderConfig::default()`][ReaderConfig] applies: 64 KiB per segment,
+/// 16 MiB per message, 256 MiB in total. The iterator holds one segment;
+/// collecting the whole input into a `Vec` takes up to 128 × its bytes in heap
+/// (`allocation_budget::worst_case_window_heap_within_factor`), so stream
+/// untrusted input instead. Use [`from_bytes_with_config`] to change the
+/// limits, [`ReaderConfig::unbounded`] for trusted input.
+///
+/// # Same answer as the reader path
+///
+/// [`from_reader`] and [`from_bufread`] return exactly what this returns for
+/// the same bytes — equal segments with equal spans, or the same error with
+/// the same offset — however the reader chunks its input. The
+/// `parse_path_parity` integration tests (one per divergence class plus an
+/// exhaustive sweep over short inputs) and the `fuzz_parity_*` bolero targets
+/// assert this.
 pub fn from_bytes(input: &[u8]) -> FromBytesIter<'_> {
     from_bytes_with_config(input, parser::ReaderConfig::default())
 }
@@ -415,13 +461,13 @@ pub fn from_bytes(input: &[u8]) -> FromBytesIter<'_> {
 ///
 /// - `max_segment_bytes` — [`EdifactError::SegmentTooLong`] when a single segment
 ///   exceeds the threshold.
-/// - `max_segments`, `max_messages`, `max_segments_per_message`,
+/// - `max_segments`, `max_messages`, `max_message_bytes`,
 ///   `max_input_bytes` — [`EdifactError::LimitExceeded`] when the input carries
 ///   more than the budget, at the start of the offending segment (or at the
 ///   byte budget itself).
 ///
 /// `max_input_bytes` counts every byte of `input` the parser would consume,
-/// trailing whitespace and stray terminators included: bytes beyond it are
+/// trailing whitespace included: bytes beyond it are
 /// never examined, and their mere presence is the violation. The reader path
 /// gives the same answer for the same bytes.
 ///
@@ -430,8 +476,8 @@ pub fn from_bytes(input: &[u8]) -> FromBytesIter<'_> {
 /// **truncated** interchange as a complete one.  Input that ends exactly at a limit
 /// is not a violation and finishes normally.
 ///
-/// Pass `ReaderConfig::default()` for the default 64 KiB per-segment limit with no
-/// segment-count, message-count, or byte budget.
+/// `ReaderConfig::default()` bounds segments (64 KiB), messages (16 MiB) and the
+/// input (256 MiB); `ReaderConfig::unbounded()` lifts every limit.
 ///
 /// # Example
 ///
@@ -455,7 +501,7 @@ pub fn from_bytes_with_config(input: &[u8], config: parser::ReaderConfig) -> Fro
     // A malformed `UNA` is rejected even when the caller supplied its own
     // service characters: the input is broken either way, and silently parsing
     // past a nine-byte header nobody validated would be the worse answer.
-    let discovered = tokenizer::ServiceStringAdvice::from_bytes(input);
+    let discovered = tokenizer::ServiceStringAdvice::discover(input, config.max_segment_bytes);
     let resolved = match (config.service_string_advice, discovered) {
         (_, Err(error)) => Err(error),
         (Some(override_ssa), Ok(_)) => Ok(override_ssa),
@@ -471,30 +517,19 @@ pub fn from_bytes_with_config(input: &[u8], config: parser::ReaderConfig) -> Fro
         .map(|max| max as usize);
     let scanned = truncated_at.map_or(input, |max| &input[..max]);
     // The prologue — byte order mark, leading whitespace, `UNA` — is one unit:
-    // the reader reads all of it before the first segment.
-    let start = tokenizer::prologue_len(input);
-    let has_una = input.len() >= start + 9 && &input[start..start + 3] == b"UNA";
+    // the reader reads all of it before the first segment. A head `UNA` cut
+    // short is still a `UNA` (`from_bytes` above reports it as `E001`).
+    let (start, head) = tokenizer::classify_head(input);
+    let has_una = head != tokenizer::Head::NoUna;
     let prologue_end = if has_una { start + 9 } else { start };
     let ssa = resolved
         .as_ref()
         .map_or_else(|_| tokenizer::ServiceStringAdvice::default(), |ssa| *ssa);
     let (parser, pending_error) = match (truncated_at, resolved) {
+        // The prologue is one unit: when it ends beyond the budget, that is
+        // the first thing the reader runs into.
         (Some(max), _) if prologue_end > max => {
-            // A `UNA` whose three letters are not all inside the budget cannot
-            // be told from a segment by a reader, which then reports what it
-            // would for a segment: an overlong tag before the budget.
-            let error = if has_una
-                && start + 3 > max
-                && max.saturating_sub(start) > config.max_segment_bytes
-            {
-                EdifactError::SegmentTooLong {
-                    offset: start,
-                    limit: config.max_segment_bytes,
-                }
-            } else {
-                parser::input_bytes_exceeded(max as u64)
-            };
-            (None, Some(error))
+            (None, Some(parser::input_bytes_exceeded(max as u64)))
         }
         (_, Ok(ssa)) => {
             let t = tokenizer::Tokenizer::with_limit(scanned, ssa, config.max_segment_bytes);
@@ -554,16 +589,20 @@ pub fn scan_recovering<'a>(
 ///
 /// # Resource bounds
 ///
-/// Only the default `max_segment_bytes` (64 KiB) applies. Memory is one
-/// segment plus an 8 KiB read buffer; nothing bounds how much input is read or
-/// how long that takes. For untrusted input use [`from_reader_with_config`]
-/// with `max_input_bytes`.
+/// [`ReaderConfig::default()`][ReaderConfig] applies: 64 KiB per segment,
+/// 16 MiB per message, at most 256 MiB read. Memory is one segment plus an
+/// 8 KiB read buffer. Use [`from_reader_with_config`] to change the limits,
+/// [`ReaderConfig::unbounded`] for trusted input.
 ///
 /// # Errors
 ///
 /// Each `next()` call yields `Some(Ok(segment))` for a successfully parsed
 /// segment, `Some(Err(EdifactError))` for a parse or I/O failure, and `None`
 /// when the end of the stream has been reached.
+///
+/// Apart from I/O failures, the items are exactly those [`from_bytes`] yields
+/// for the same bytes, whatever sizes the reader's reads return (asserted by
+/// the `parse_path_parity` tests and the `fuzz_parity_*` bolero targets).
 pub fn from_reader<R: Read>(reader: R) -> FromReaderIter<R> {
     FromReaderIter {
         inner: parser::from_reader_stream(reader),
@@ -584,6 +623,13 @@ pub fn from_reader<R: Read>(reader: R) -> FromReaderIter<R> {
 /// nothing, but the segments are still owned — reach for
 /// [`decode_interchange`] plus [`from_bytes`] when you want to keep the
 /// zero-copy path and hold the buffer yourself.
+///
+/// # Resource bounds
+///
+/// [`ReaderConfig::default()`][ReaderConfig] applies to the decoded bytes (a
+/// Latin-1 interchange can double in length). The result holds every segment:
+/// up to 128 × the decoded bytes in heap. Stream untrusted input with
+/// [`from_reader_decoded`] instead.
 ///
 /// # Errors
 ///
@@ -612,12 +658,18 @@ pub fn from_bytes_decoded(input: &[u8]) -> Result<Vec<OwnedSegment>, EdifactErro
 ///
 /// # Errors
 ///
-/// As [`from_bytes_decoded`].
+/// As [`from_bytes_decoded`], and the same error
+/// [`from_reader_decoded_with_config`] yields for `input`: the fault or limit
+/// the input reaches first, a byte the repertoire leaves undefined included.
 pub fn from_bytes_decoded_with_config(
     input: &[u8],
     config: ReaderConfig,
 ) -> Result<Vec<OwnedSegment>, EdifactError> {
-    let decoded = charset::decode_interchange(input)?;
+    let Ok(decoded) = charset::decode_for_parse(input) else {
+        // Report the decoding failure where a stream reaches it: after any
+        // earlier fault or limit.
+        return from_reader_decoded_with_config(input, config).collect();
+    };
     from_bytes_with_config(&decoded, config)
         .map(|r| r.map(|segment| segment.into_owned()))
         .collect()
@@ -635,10 +687,9 @@ pub fn from_bytes_decoded_with_config(
 ///
 /// # Resource bounds
 ///
-/// Only the default `max_segment_bytes` (64 KiB) applies. Memory is one
-/// segment, the 4 KiB sniff probe and two 8 KiB buffers; nothing bounds how
-/// much input is read. For untrusted input use
-/// [`from_reader_decoded_with_config`].
+/// [`ReaderConfig::default()`][ReaderConfig] applies to the decoded stream:
+/// 64 KiB per segment, 16 MiB per message, 256 MiB in total. Memory is one
+/// segment, the 8 KiB sniff head and two 8 KiB buffers.
 ///
 /// # Example
 ///
@@ -664,7 +715,14 @@ pub fn from_reader_decoded<R: Read>(reader: R) -> DecodingSegmentStream<R> {
 /// Every limit in `config` applies to the **decoded** UTF-8 stream: a Latin-1
 /// interchange can be up to twice as long after decoding, so `max_input_bytes`
 /// admits at least half as many raw bytes. Memory is one segment of at most
-/// `max_segment_bytes`, the 4 KiB sniff probe and two 8 KiB buffers.
+/// `max_segment_bytes`, the 8 KiB sniff head and two 8 KiB buffers.
+///
+/// # Errors
+///
+/// Yielded as items, in input order: a byte the repertoire leaves undefined
+/// is [`EdifactError::InvalidText`] at its raw offset, after the segments
+/// before it. When the prologue runs past `max_input_bytes` before the sniff
+/// window refuses it, the `max_input_bytes` limit is reported.
 pub fn from_reader_decoded_with_config<R: Read>(
     reader: R,
     config: ReaderConfig,
@@ -683,7 +741,7 @@ pub fn from_reader_decoded_with_config<R: Read>(
 /// # Resource bounds
 ///
 /// As [`from_reader_decoded_with_config`]: the configured limits count decoded
-/// bytes; memory is one segment plus the probe and two 8 KiB buffers.
+/// bytes; memory is one segment plus the sniff head and two 8 KiB buffers.
 pub struct DecodingSegmentStream<R: Read> {
     state: DecodingState<R>,
     config: ReaderConfig,
@@ -722,11 +780,32 @@ impl<R: Read> Iterator for DecodingSegmentStream<R> {
                                 parser::from_reader_with_config(decoded, self.config),
                             ));
                         }
-                        Err(error) => return Some(Err(error)),
+                        Err(error) => return Some(Err(sniff_or_budget(error, &self.config))),
                     }
                 }
             }
         }
+    }
+}
+
+/// Report whichever limit the input reaches first: a sniff-window refusal at
+/// an offset beyond `max_input_bytes` becomes the input limit.
+fn sniff_or_budget(error: EdifactError, config: &ReaderConfig) -> EdifactError {
+    match (error, config.max_input_bytes) {
+        (
+            EdifactError::LimitExceeded {
+                limit: "sniff_window",
+                offset,
+                ..
+            },
+            Some(max),
+        ) if max < offset as u64 => EdifactError::LimitExceeded {
+            limit: "max_input_bytes",
+            max,
+            // `max < offset`, so it fits `usize`.
+            offset: max as usize,
+        },
+        (error, _) => error,
     }
 }
 
@@ -813,6 +892,10 @@ mod doc_guides {
     guide!(CoreConcepts, "../../../site/content/docs/core-concepts.md");
     guide!(Parsing, "../../../site/content/docs/parsing.md");
     guide!(ProfilePacks, "../../../site/content/docs/profile-packs.md");
+    guide!(
+        SegmentGroups,
+        "../../../site/content/docs/segment-groups.md"
+    );
     guide!(Validation, "../../../site/content/docs/validation.md");
 
     // Guides whose examples use the derive macros.
@@ -840,12 +923,18 @@ mod doc_guides {
     #[cfg(feature = "derive")]
     guide!(Writing, "../../../site/content/docs/writing.md");
 
+    // The dates-and-times guide's examples use `time` types.
+    #[cfg(feature = "dtm-time")]
+    guide!(
+        DatesAndTimes,
+        "../../../site/content/docs/dates-and-times.md"
+    );
+
     // The diagnostics guide's examples use `miette` types.
     #[cfg(feature = "diagnostics")]
     guide!(Diagnostics, "../../../site/content/docs/diagnostics.md");
 
-    // The README is the crate's front page on docs.rs and crates.io, and drifts
-    // for exactly the same reason the guides did.
+    // The README is the crate's front page on docs.rs and crates.io.
     #[cfg(feature = "derive")]
     guide!(Readme, "../../../README.md");
 }

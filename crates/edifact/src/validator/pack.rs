@@ -2,7 +2,7 @@
 
 use super::ValidationRuleContext;
 use super::Validator;
-use super::{message_position, push_issue};
+use super::{MessagePositions, push_issue};
 use crate::group::SegmentGroupIndexed;
 use crate::{
     EdifactError, FindingKind, GroupPath, GroupStep, Segment, ValidationIssue, ValidationReport,
@@ -420,11 +420,12 @@ impl ProfileRulePack {
     ///
     /// Emits an `Error`-severity issue for each occurrence found, with its
     /// [`segment_occurrence`][ValidationIssue::segment_occurrence] and — when
-    /// the slice starts at `UNH` — its
+    /// the slice holds the segment's `UNH` — its
     /// [`segment_position`][ValidationIssue::segment_position].
     pub fn forbid_segment(self, tag: &'static str, rule_id: impl Into<Arc<str>>) -> Self {
         let id: Arc<str> = rule_id.into();
         self.with_named_rule_fn(id.clone(), move |segments, issues| {
+            let positions = MessagePositions::new(segments);
             for (occ, (index, s)) in tagged(segments, tag).enumerate() {
                 issues.push(
                     located(
@@ -432,7 +433,7 @@ impl ProfileRulePack {
                             ValidationSeverity::Error,
                             format!("segment {tag} must not appear"),
                         ),
-                        segments,
+                        &positions,
                         index,
                         occ,
                     )
@@ -457,6 +458,7 @@ impl ProfileRulePack {
     ) -> Self {
         let id: Arc<str> = rule_id.into();
         self.with_named_rule_fn(id.clone(), move |segments, issues| {
+            let positions = MessagePositions::new(segments);
             for (occ, (index, s)) in tagged(segments, tag).enumerate() {
                 let actual = s
                     .get_element(usize::from(element))
@@ -472,7 +474,7 @@ impl ProfileRulePack {
                                     actual.unwrap_or("<absent>")
                                 ),
                             ),
-                            segments,
+                            &positions,
                             index,
                             occ,
                         )
@@ -636,6 +638,7 @@ impl ProfileRulePack {
         let id: Arc<str> = rule_id.into();
         let scope_msg = Arc::clone(&scope);
         self.with_scoped_group_rule_fn(scope, id.clone(), move |_group, segs, _ctx, issues| {
+            let positions = MessagePositions::new(segs);
             for (occ, (index, s)) in tagged(segs, tag).enumerate() {
                 issues.push(
                     located(
@@ -643,7 +646,7 @@ impl ProfileRulePack {
                             ValidationSeverity::Error,
                             format!("segment {tag} must not appear in group {scope_msg}"),
                         ),
-                        segs,
+                        &positions,
                         index,
                         occ,
                     )
@@ -673,6 +676,7 @@ impl ProfileRulePack {
         let id: Arc<str> = rule_id.into();
         let scope_msg = Arc::clone(&scope);
         self.with_scoped_group_rule_fn(scope, id.clone(), move |_group, segs, _ctx, issues| {
+            let positions = MessagePositions::new(segs);
             for (occ, (index, s)) in tagged(segs, tag).enumerate() {
                 let actual = s
                     .get_element(usize::from(element))
@@ -688,7 +692,7 @@ impl ProfileRulePack {
                                     actual.unwrap_or("<absent>")
                                 ),
                             ),
-                            segs,
+                            &positions,
                             index,
                             occ,
                         )
@@ -728,10 +732,10 @@ impl ProfileRulePack {
                 return false;
             }
         }
-        if let Some(bound_release) = &self.release {
-            if unh_s009(segments).and_then(|e| e.get_component(4)) != Some(bound_release.as_str()) {
-                return false;
-            }
+        if let Some(bound_release) = &self.release
+            && unh_s009(segments).and_then(|e| e.get_component(4)) != Some(bound_release.as_str())
+        {
+            return false;
         }
         true
     }
@@ -763,10 +767,10 @@ impl ProfileRulePack {
 
         for (index, named) in self.group_rules.iter().enumerate() {
             // Skip if this rule is scoped to a different group name.
-            if let Some(scope) = &named.group_scope {
-                if group.definition != scope.as_ref() {
-                    continue;
-                }
+            if let Some(scope) = &named.group_scope
+                && group.definition != scope.as_ref()
+            {
+                continue;
             }
             // Skip the call rather than discard its output: a rule that has
             // spent its budget should not cost time it cannot report.
@@ -1001,16 +1005,16 @@ fn tagged<'s, 'a>(
         .filter(move |(_, s)| s.tag == tag)
 }
 
-/// Set the same-tag occurrence and — when `segments` starts at `UNH` — the
-/// message position of `segments[index]` on `issue`.
+/// Set the same-tag occurrence and — inside a message — the message position
+/// of the segment at `index` on `issue`.
 fn located(
     issue: ValidationIssue,
-    segments: &[Segment<'_>],
+    positions: &MessagePositions,
     index: usize,
     occurrence: usize,
 ) -> ValidationIssue {
     let issue = issue.with_segment_occurrence(occurrence);
-    match message_position(segments, index) {
+    match positions.position(index) {
         Some(position) => issue.with_segment_position(position),
         None => issue,
     }

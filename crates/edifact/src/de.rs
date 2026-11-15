@@ -26,9 +26,8 @@
 //! [`deserialize_messages_from_reader_with_config`], and for the raw windows
 //! [`message_windows_with_config`] and
 //! [`message_windows_from_reader_with_config`]. The functions without it apply
-//! only the default 64 KiB segment-size limit: use the `_with_config` forms,
-//! with at least `max_segments_per_message` and `max_input_bytes`, for input
-//! from an untrusted source. See each function's `# Resource bounds`.
+//! [`ReaderConfig::default()`][ReaderConfig]: 64 KiB per segment, 16 MiB per
+//! message, 256 MiB in total. See each function's `# Resource bounds`.
 
 use crate::{EdifactError, FromBytesIter, OwnedSegmentStream, ReaderConfig, Segment};
 use std::borrow::Cow;
@@ -136,6 +135,11 @@ where
 /// `T`. For large interchanges prefer [`deserialize_each`] (one segment at a
 /// time) or [`deserialize_messages`] (one message at a time).
 ///
+/// # Resource bounds
+///
+/// [`ReaderConfig::default()`][ReaderConfig] applies. The buffered segments
+/// take up to 128 × the input's bytes in heap; stream untrusted input instead.
+///
 /// # Errors
 ///
 /// Any parse error, or whatever `T` reports.
@@ -208,10 +212,9 @@ where
 ///
 /// # Resource bounds
 ///
-/// Only the default `max_segment_bytes` (64 KiB) applies. Memory is one
-/// segment plus an 8 KiB read buffer, but nothing bounds how much input is
-/// read or how long that takes. For untrusted input use
-/// [`deserialize_each_from_reader_with_config`] with `max_input_bytes`.
+/// [`ReaderConfig::default()`][ReaderConfig] applies: 64 KiB per segment,
+/// 16 MiB per message, at most 256 MiB read. Memory is one segment plus an
+/// 8 KiB read buffer.
 pub fn deserialize_each_from_reader<T, R>(
     reader: R,
 ) -> impl Iterator<Item = Result<T, EdifactError>>
@@ -259,30 +262,6 @@ where
 }
 
 // ── segment lookup ────────────────────────────────────────────────────────────
-
-/// Find the first segment with the given tag.
-pub fn find_segment<'s, 'd>(segments: &'s [Segment<'d>], tag: &str) -> Option<&'s Segment<'d>> {
-    segments.iter().find(|s| s.tag == tag)
-}
-
-/// Iterate over all segments with the given tag.
-pub fn find_segments<'s, 'd: 's>(
-    segments: &'s [Segment<'d>],
-    tag: &'s str,
-) -> impl Iterator<Item = &'s Segment<'d>> {
-    segments.iter().filter(move |s| s.tag == tag)
-}
-
-/// Find the first segment matching `tag` whose element 0 equals `qualifier`.
-pub fn find_qualified_segment<'s, 'd>(
-    segments: &'s [Segment<'d>],
-    tag: &str,
-    qualifier: &str,
-) -> Option<&'s Segment<'d>> {
-    segments
-        .iter()
-        .find(|s| s.tag == tag && s.element_str(0).unwrap_or("") == qualifier)
-}
 
 /// Iterate over every segment that the type `T` maps to (tag plus qualifier pattern).
 pub fn find_segments_typed<'s, 'd: 's, T>(
@@ -364,12 +343,12 @@ pub fn qualifier_matches_pattern(value: &str, pattern: &str) -> bool {
     // The length test is what stops the prefix and the suffix from overlapping:
     // `value.len() >= prefix.len() + suffix.len()` is exactly the condition that
     // leaves a (possibly empty) gap between them for `*` to cover.
-    if let Some((prefix, suffix)) = pattern.split_once('*') {
-        if !suffix.contains('*') {
-            return value.len() >= prefix.len() + suffix.len()
-                && value.starts_with(prefix)
-                && value.ends_with(suffix);
-        }
+    if let Some((prefix, suffix)) = pattern.split_once('*')
+        && !suffix.contains('*')
+    {
+        return value.len() >= prefix.len() + suffix.len()
+            && value.starts_with(prefix)
+            && value.ends_with(suffix);
     }
 
     // General multi-wildcard path.
@@ -564,15 +543,12 @@ impl<'a> MessageWindow<'a> {
 /// # Resource bounds
 ///
 /// A window is buffered until its `UNT` arrives, so the memory held is one
-/// message: at most `max_segments_per_message` segments of at most
-/// `max_segment_bytes` each when the inner iterator enforces a
-/// [`ReaderConfig`] with those limits (plus the inner iterator's own buffer).
-/// **Without `max_segments_per_message` a window is unbounded**: a `UNH` that
-/// never sees its `UNT` is buffered until the input ends — `max_messages`
-/// does not change that. Build windows with
-/// [`message_windows_from_reader_with_config`] or
-/// [`message_windows_with_config`] for untrusted input. An iterator passed to
-/// [`MessageWindows::new`] is bounded only by what it enforces itself.
+/// message of at most `max_message_bytes` of input (16 MiB by default) when
+/// the inner iterator enforces a [`ReaderConfig`], plus the inner iterator's
+/// own buffer. Its parsed form takes at most 128 × those bytes in heap
+/// (≤ 2 GiB at the default; `allocation_budget::worst_case_window_heap_within_factor`).
+/// An iterator passed to [`MessageWindows::new`] is bounded only by what it
+/// enforces itself.
 ///
 /// # Errors
 ///
@@ -708,11 +684,9 @@ pub fn message_windows_with_config(
 ///
 /// # Resource bounds
 ///
-/// Only the default `max_segment_bytes` (64 KiB) applies, so **one message is
-/// unbounded**: a `UNH` without its `UNT` is buffered until the input ends.
-/// Use this for trusted files; for untrusted input use
-/// [`message_windows_from_reader_with_config`] with
-/// `max_segments_per_message` (and `max_input_bytes`).
+/// [`ReaderConfig::default()`][ReaderConfig] applies: one window holds at most
+/// 16 MiB of input (≤ 128 × that in heap), and at most 256 MiB is read. A `UNH`
+/// without its `UNT` ends with `E036 max_message_bytes`.
 pub fn message_windows_from_reader<R: Read>(
     reader: R,
 ) -> MessageWindows<'static, crate::FromReaderIter<R>> {
@@ -726,11 +700,10 @@ pub fn message_windows_from_reader<R: Read>(
 ///
 /// # Resource bounds
 ///
-/// Every [`ReaderConfig`] limit applies. Peak memory is one window — at most
-/// `max_segments_per_message` segments of at most `max_segment_bytes` each —
-/// plus an 8 KiB read buffer; at most `max_input_bytes` plus one buffer is
-/// read from `reader`. Without `max_segments_per_message` a window is
-/// unbounded, whatever the other limits are.
+/// Every [`ReaderConfig`] limit applies. Peak memory is one window of at most
+/// `max_message_bytes` of input (≤ 128 × that in heap) plus an 8 KiB read
+/// buffer; at most `max_input_bytes` plus one buffer is read from `reader`.
+/// Without `max_message_bytes` a window is unbounded.
 ///
 /// # Example
 ///
@@ -743,12 +716,13 @@ pub fn message_windows_from_reader<R: Read>(
 ///     input.extend_from_slice(b"FTX+AAA+++NOTE'");
 /// }
 ///
-/// let config = ReaderConfig::default().max_segments_per_message(50);
+/// let config = ReaderConfig::default().max_message_bytes(512);
 /// let mut windows = message_windows_from_reader_with_config(&input[..], config);
 /// let err = windows.next().unwrap().unwrap_err();
+/// // The `UNH` starts at 31; the 33rd `FTX` (at 533) would end the window at 548.
 /// assert!(matches!(
 ///     err,
-///     EdifactError::LimitExceeded { limit: "max_segments_per_message", max: 50, .. }
+///     EdifactError::LimitExceeded { limit: "max_message_bytes", max: 512, offset: 533, .. }
 /// ));
 /// assert!(windows.next().is_none());
 /// ```
@@ -814,10 +788,8 @@ where
 ///
 /// # Resource bounds
 ///
-/// Only the default `max_segment_bytes` (64 KiB) applies, so **one message is
-/// unbounded**: a `UNH` without its `UNT` is buffered until the input ends.
-/// For untrusted input use [`deserialize_messages_from_reader_with_config`]
-/// with `max_segments_per_message` (and `max_input_bytes`).
+/// [`ReaderConfig::default()`][ReaderConfig] applies: one window holds at most
+/// 16 MiB of input (≤ 128 × that in heap), and at most 256 MiB is read.
 pub fn deserialize_messages_from_reader<T, R>(
     reader: R,
 ) -> impl Iterator<Item = Result<T, EdifactError>>
@@ -835,10 +807,10 @@ where
 ///
 /// # Resource bounds
 ///
-/// Every [`ReaderConfig`] limit applies. Peak memory is one message window —
-/// at most `max_segments_per_message` segments of at most `max_segment_bytes`
-/// each — plus an 8 KiB read buffer and the `T` being built; at most
-/// `max_input_bytes` plus one buffer is read from `reader`.
+/// Every [`ReaderConfig`] limit applies. Peak memory is one message window of
+/// at most `max_message_bytes` of input (≤ 128 × that in heap) plus an 8 KiB
+/// read buffer and the `T` being built; at most `max_input_bytes` plus one
+/// buffer is read from `reader`.
 pub fn deserialize_messages_from_reader_with_config<T, R>(
     reader: R,
     config: ReaderConfig,
@@ -854,6 +826,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SegmentSliceExt;
 
     // ── manual test impl ──────────────────────────────────────────────────────
     #[derive(Debug, PartialEq)]
@@ -876,12 +849,13 @@ mod tests {
 
     impl EdifactDeserialize for BgmSegment {
         fn edifact_deserialize(segments: &[Segment<'_>]) -> Result<Self, EdifactError> {
-            let seg = find_segment(segments, "BGM").ok_or_else(|| {
-                EdifactError::MissingRequiredElement {
-                    tag: "BGM".to_owned(),
-                    element_index: 0,
-                }
-            })?;
+            let seg =
+                segments
+                    .first_tag("BGM")
+                    .ok_or_else(|| EdifactError::MissingRequiredElement {
+                        tag: "BGM".to_owned(),
+                        element_index: 0,
+                    })?;
             Ok(Self {
                 doc_name_code: seg.element_str(0).unwrap_or("").to_owned(),
                 pruef_id: seg.element_str(1).unwrap_or("").to_owned(),

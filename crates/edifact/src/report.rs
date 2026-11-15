@@ -239,17 +239,18 @@ impl FindingKind {
     /// |---|---|
     /// | `E001` `E002` `E006` `E007` `E019` `E028` `E037` `E046` `E051` | `Syntax` |
     /// | `E003` `E009` `E031` `E038` `E039` `E041` | `Charset` |
-    /// | `E004` `E005` `E016` | `ControlMismatch` |
+    /// | `E004` `E005` `E016` `E054` | `ControlMismatch` |
     /// | `E008` `E015` `E017` `E021` | `Missing` |
     /// | `E011` `E068` | `Placement` |
     /// | `E012` `E013` `E047` `E069` `E070` | `Count` |
     /// | `E014` | `Code` |
     /// | `E020` `E023` `E036` | `Limit` |
-    /// | `E027` `E040` `E045` `E048` `E049` `E050` `E053` | `Representation` |
+    /// | `E027` `E040` `E045` `E048` `E049` `E050` `E053` `E060` | `Representation` |
+    /// | `E057` | `NotPermitted` |
     /// | `E032` | `Duplicate` |
-    /// | `E042` `E043` `E052` | `Envelope` |
-    /// | `E044` | `Unsupported` |
-    /// | `E010` `E024` `E025` `E026` `E030` `E033` `E034` `E035` `E066` `E067` `E071` | `Other` |
+    /// | `E042` `E043` `E052` `E058` `E061` | `Envelope` |
+    /// | `E044` `E055` `E056` `E059` | `Unsupported` |
+    /// | `E010` `E024` `E025` `E026` `E030` `E033` `E034` `E035` `E066` `E067` `E071` `E072` | `Other` |
     ///
     /// # Example
     ///
@@ -279,6 +280,7 @@ impl FindingKind {
             | E::UnsupportedCharset { .. }
             | E::CharacterRepertoireMismatch { .. } => Self::Charset,
             E::MessageCountMismatch { .. }
+            | E::GroupCountMismatch { .. }
             | E::SegmentCountMismatch { .. }
             | E::QualifierMismatch { .. } => Self::ControlMismatch,
             E::MissingRequiredElement { .. }
@@ -286,6 +288,7 @@ impl FindingKind {
             | E::ConditionalRequirementNotMet { .. }
             | E::MissingRequiredComponent { .. } => Self::Missing,
             E::InvalidSegmentForMessage { .. } | E::SegmentNotPlaced { .. } => Self::Placement,
+            E::ReservedServiceSegmentTag { .. } => Self::NotPermitted,
             E::InvalidElementCount { .. }
             | E::InvalidComponentCount { .. }
             | E::TooManyRepetitions { .. }
@@ -301,12 +304,18 @@ impl FindingKind {
             | E::InvalidCharacterType { .. }
             | E::DataElementTooLong { .. }
             | E::DataElementTooShort { .. }
-            | E::InsignificantCharacters { .. } => Self::Representation,
+            | E::InsignificantCharacters { .. }
+            | E::InvalidDateTime { .. } => Self::Representation,
             E::DuplicateReference { .. } => Self::Duplicate,
             E::EmptyInterchange { .. }
             | E::EmptyMessage { .. }
-            | E::GroupsAndMessagesMixed { .. } => Self::Envelope,
-            E::PackageNotSupported { .. } => Self::Unsupported,
+            | E::GroupsAndMessagesMixed { .. }
+            | E::EmptyGroup { .. }
+            | E::DataAfterInterchangeTrailer { .. } => Self::Envelope,
+            E::PackageNotSupported { .. }
+            | E::InteractiveSegmentNotSupported { .. }
+            | E::SecuritySegmentNotSupported { .. }
+            | E::UnsupportedSyntaxVersion { .. } => Self::Unsupported,
             E::Io(_)
             | E::InvalidEventSequence { .. }
             | E::InvalidElementPosition
@@ -317,7 +326,8 @@ impl FindingKind {
             | E::SegmentLayoutMismatch { .. }
             | E::ActionNotPermitted { .. }
             | E::InvalidContrlIdentifier { .. }
-            | E::InvalidGroupSchema { .. } => Self::Other,
+            | E::InvalidGroupSchema { .. }
+            | E::WriterPoisoned { .. } => Self::Other,
         }
     }
 }
@@ -374,7 +384,12 @@ impl GroupStep {
 
 impl std::fmt::Display for GroupStep {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}[{}]", self.name, self.occurrence)
+        write!(
+            f,
+            "{}[{}]",
+            crate::error::escape_control(&self.name),
+            self.occurrence
+        )
     }
 }
 
@@ -620,11 +635,11 @@ pub struct ValidationIssue {
     /// One-based position of the segment within its message, `UNH` = 1, if known.
     ///
     /// This is ISO 9735-4 DE 0096 (segment position in message body) — the
-    /// coordinate a CONTRL `UCS` reports. The built-in validators that walk
-    /// segments themselves set it when their input slice starts at `UNH`, and
-    /// leave it `None` otherwise rather than guess. Findings converted from an
-    /// error that carries no segment index keep relying on [`span`](Self::span),
-    /// from which CONTRL derives the same coordinate.
+    /// coordinate a CONTRL `UCS` reports. The built-in validators set it for
+    /// every segment inside a message, counting from that message's own
+    /// `UNH`, and leave it `None` for a segment outside any message. Findings
+    /// converted from an error that carries no segment index rely on
+    /// [`span`](Self::span), from which CONTRL derives the same coordinate.
     ///
     /// Together with [`element_index`](Self::element_index) and
     /// [`component_index`](Self::component_index) it is the issue's whole
@@ -846,8 +861,8 @@ impl ValidationIssue {
     /// Set the one-based position of the segment in its message, `UNH` = 1
     /// (ISO 9735-4 DE 0096).
     ///
-    /// For a zero-based index `i` into a slice that starts at `UNH`, pass
-    /// `i + 1`.  A value above `u32::MAX` leaves the field `None` — it is never
+    /// For a zero-based index `i` into a slice that starts at the message's
+    /// `UNH`, pass `i + 1`.  A value above `u32::MAX` leaves the field `None` — it is never
     /// clamped.
     pub fn with_segment_position(mut self, position: usize) -> Self {
         self.segment_position = u32::try_from(position).ok();
@@ -1104,7 +1119,12 @@ impl ValidationIssue {
 
 impl std::fmt::Display for ValidationIssue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[{}] {}", self.severity_label(), self.message)
+        write!(
+            f,
+            "[{}] {}",
+            self.severity_label(),
+            crate::error::escape_control(&self.message)
+        )
     }
 }
 
@@ -1392,7 +1412,8 @@ impl ValidationReport {
 
     /// Return a deterministic, stable text representation for snapshots and logs.
     ///
-    /// One line per issue, grouped by severity bucket and sorted by span start,
+    /// One line per issue — control characters in any value are escaped
+    /// (`\n`, `\r`, `\u{1b}`), so an issue never spans two lines — grouped by severity bucket and sorted by span start,
     /// segment tag, rule id, element and component index, error code and
     /// message, then by segment position, occurrence, layer, kind, pack and
     /// group path. Each line is the message followed by the tokens that are
@@ -1468,9 +1489,16 @@ impl ValidationReport {
             refs
         }
 
+        /// One issue line; every value is escaped so that it stays one line.
         fn render_issue_line(out: &mut String, issue: &ValidationIssue) {
             use std::fmt::Write as _;
-            out.push_str("    - ");
+            let mut line = String::new();
+            render_issue_fields(&mut line, issue);
+            write!(out, "    - {}", crate::error::escape_control(&line)).ok();
+        }
+
+        fn render_issue_fields(out: &mut String, issue: &ValidationIssue) {
+            use std::fmt::Write as _;
             out.push_str(&issue.message);
             if let Some(code) = issue.error_code() {
                 out.push_str(" [");
@@ -1576,10 +1604,11 @@ impl miette::Diagnostic for ValidationIssue {
         })
     }
 
-    /// The suggestion, if any.
+    /// The suggestion, if any, with control characters escaped.
     fn help<'a>(&'a self) -> Option<Box<dyn std::fmt::Display + 'a>> {
-        self.suggestion()
-            .map(|hint| Box::new(hint) as Box<dyn std::fmt::Display + 'a>)
+        self.suggestion().map(|hint| {
+            Box::new(crate::error::escape_control(hint)) as Box<dyn std::fmt::Display + 'a>
+        })
     }
 
     /// One label at [`span`](ValidationIssue::span), naming the kind and the
@@ -1596,7 +1625,8 @@ impl miette::Diagnostic for ValidationIssue {
             (Some(kind), Some(location)) => Some(format!("{kind} at {location}")),
             (Some(kind), None) => Some(kind.as_str().to_owned()),
             (None, location) => location,
-        };
+        }
+        .map(|text| crate::error::escape_control(&text).to_string());
         Some(Box::new(std::iter::once(miette::LabeledSpan::new(
             text,
             span.start,
@@ -2045,6 +2075,7 @@ mod tests {
                 E::MessageCountMismatch {
                     expected: 1,
                     actual: 2,
+                    span: crate::Span::new(0, 9),
                 },
                 K::ControlMismatch,
             ),
@@ -2379,6 +2410,12 @@ mod tests {
                 },
                 K::Other,
             ),
+            (
+                E::WriterPoisoned {
+                    reason: "an earlier write to the sink failed",
+                },
+                K::Other,
+            ),
         ]
     }
 
@@ -2386,12 +2423,12 @@ mod tests {
     fn finding_kind_for_every_error() {
         let all = every_error();
         // One entry per stable code: the 53 codes E001–E053 minus the three
-        // retired ones (E018, E022, E029), plus E066–E071.
+        // retired ones (E018, E022, E029), plus E066–E072.
         let mut codes: Vec<&str> = all.iter().map(|(e, _)| e.stable_code()).collect();
         codes.sort_unstable();
         codes.dedup();
-        assert_eq!(codes.len(), 56, "every EdifactError variant must be listed");
-        assert_eq!(all.len(), 56);
+        assert_eq!(codes.len(), 57, "every EdifactError variant must be listed");
+        assert_eq!(all.len(), 57);
         for (error, kind) in &all {
             assert_eq!(
                 FindingKind::for_error(error),

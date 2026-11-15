@@ -83,7 +83,7 @@ pub(crate) use location::{Anchor, Detail, Target, anchor_for_code, detail_of, pl
 use crate::envelope::{
     FunctionalGroupEnvelope, InterchangeEnvelope, MessageEnvelope, ValidatedInterchange,
 };
-use crate::model::{OwnedElement, OwnedSegment, Segment};
+use crate::model::{Element, OwnedElement, OwnedSegment, Segment};
 use crate::recover::{MessageIdentity, RecoveredInterchange};
 use crate::report::{ValidationIssue, ValidationReport};
 use crate::{EdifactError, Writer};
@@ -391,7 +391,12 @@ impl SyntaxError {
     /// use edifact::contrl::SyntaxError;
     /// use edifact::EdifactError;
     ///
-    /// let err = EdifactError::MessageCountMismatch { expected: 2, actual: 1 };
+    /// let err = EdifactError::GroupCountMismatch {
+    ///     group_ref: "G1".into(),
+    ///     expected: 2,
+    ///     actual: 1,
+    ///     span: edifact::Span::new(0, 9),
+    /// };
     /// assert_eq!(SyntaxError::for_error(&err), SyntaxError::ControlCountMismatch);
     /// assert_eq!(SyntaxError::for_error(&err).code(), "29");
     /// ```
@@ -399,9 +404,9 @@ impl SyntaxError {
     pub fn for_error(error: &EdifactError) -> Self {
         use EdifactError as E;
         match error {
-            E::MessageCountMismatch { .. } | E::SegmentCountMismatch { .. } => {
-                Self::ControlCountMismatch
-            }
+            E::MessageCountMismatch { .. }
+            | E::GroupCountMismatch { .. }
+            | E::SegmentCountMismatch { .. } => Self::ControlCountMismatch,
             E::QualifierMismatch { .. } => Self::ReferencesDoNotMatch,
             E::DuplicateReference { .. } => Self::DuplicateDetected,
             E::MissingRequiredElement { .. }
@@ -421,10 +426,18 @@ impl SyntaxError {
             E::InvalidUna | E::InvalidDelimiter { .. } | E::InvalidReleaseSequence { .. } => {
                 Self::InvalidServiceCharacters
             }
-            E::EmptyInterchange { .. } | E::EmptyMessage { .. } => Self::LowerLevelEmpty,
+            E::EmptyInterchange { .. } | E::EmptyMessage { .. } | E::EmptyGroup { .. } => {
+                Self::LowerLevelEmpty
+            }
             E::SegmentWithoutDataElements { .. } => Self::Missing,
             E::BlankDataElementValue { .. } => Self::InvalidValue,
-            E::PackageNotSupported { .. } => Self::EnvelopeFunctionalityNotSupported,
+            E::PackageNotSupported { .. }
+            | E::InteractiveSegmentNotSupported { .. }
+            | E::SecuritySegmentNotSupported { .. } => Self::EnvelopeFunctionalityNotSupported,
+            E::ReservedServiceSegmentTag { .. } => Self::NotSupportedHere,
+            E::DataAfterInterchangeTrailer { .. } => Self::InvalidOccurrenceOutsideMessage,
+            E::UnsupportedSyntaxVersion { .. } => Self::SyntaxVersionNotSupported,
+            E::InvalidDateTime { .. } => Self::InvalidValue,
             E::SegmentTooLong { .. } | E::DataElementTooLong { .. } => Self::DataElementTooLong,
             E::DataElementTooShort { .. } => Self::DataElementTooShort,
             E::InvalidCharacterType { .. } => Self::InvalidCharacterType,
@@ -455,18 +468,19 @@ impl SyntaxError {
     #[must_use]
     pub fn for_issue(issue: &ValidationIssue) -> Self {
         match issue.error_code() {
-            Some("E004" | "E005") => Self::ControlCountMismatch,
+            Some("E004" | "E005" | "E054") => Self::ControlCountMismatch,
             Some("E016") => Self::ReferencesDoNotMatch,
             Some("E032") => Self::DuplicateDetected,
             Some("E008" | "E015" | "E021" | "E046") => Self::Missing,
-            Some("E014" | "E027" | "E045") => Self::InvalidValue,
-            Some("E011" | "E017" | "E068") => Self::NotSupportedHere,
+            Some("E014" | "E027" | "E045" | "E060") => Self::InvalidValue,
+            Some("E011" | "E017" | "E057" | "E068") => Self::NotSupportedHere,
             Some("E012" | "E013") => Self::TooManyConstituents,
             Some("E031" | "E039") => Self::CharacterSetNotSupported,
             Some("E003" | "E038") => Self::InvalidCharacters,
             Some("E002" | "E007" | "E019") => Self::InvalidServiceCharacters,
-            Some("E042" | "E043") => Self::LowerLevelEmpty,
-            Some("E044") => Self::EnvelopeFunctionalityNotSupported,
+            Some("E042" | "E043" | "E061") => Self::LowerLevelEmpty,
+            Some("E044" | "E055" | "E056") => Self::EnvelopeFunctionalityNotSupported,
+            Some("E059") => Self::SyntaxVersionNotSupported,
             Some("E020" | "E049") => Self::DataElementTooLong,
             Some("E050") => Self::DataElementTooShort,
             Some("E048") => Self::InvalidCharacterType,
@@ -475,7 +489,7 @@ impl SyntaxError {
             Some("E051") => Self::TrailingSeparator,
             Some("E052") => Self::GroupsAndMessagesMixed,
             Some("E053") => Self::InvalidValue,
-            Some("E006" | "E028") => Self::InvalidOccurrenceOutsideMessage,
+            Some("E006" | "E028" | "E058") => Self::InvalidOccurrenceOutsideMessage,
             _ => Self::Unspecified,
         }
     }
@@ -1154,12 +1168,23 @@ struct GroupReport {
 impl Contrl {
     fn base(interchange: &InterchangeEnvelope, action: Action, options: &ContrlOptions) -> Self {
         Self {
-            control_ref: interchange.control_ref.clone(),
-            sender: interchange.sender_id.clone(),
-            sender_qualifier: interchange.sender_qualifier.clone(),
-            recipient: interchange.recipient_id.clone(),
-            recipient_qualifier: interchange.recipient_qualifier.clone(),
-            identifier: options.resolve_identifier(&interchange.syntax_version),
+            control_ref: interchange.header.control_ref.clone(),
+            sender: interchange.header.sender.id.clone(),
+            sender_qualifier: interchange
+                .header
+                .sender
+                .qualifier
+                .clone()
+                .unwrap_or_default(),
+            recipient: interchange.header.recipient.id.clone(),
+            recipient_qualifier: interchange
+                .header
+                .recipient
+                .qualifier
+                .clone()
+                .unwrap_or_default(),
+            identifier: options
+                .resolve_identifier(&interchange.header.syntax_version.number().to_string()),
             action,
             interchange_error: None,
             message_ref: None,
@@ -1857,7 +1882,11 @@ impl Contrl {
     ///
     /// # Errors
     ///
-    /// Propagates any writer failure.
+    /// The reply `UNB` is checked as [`InterchangeHeader::parse`](crate::InterchangeHeader::parse)
+    /// checks one, so an empty sender or recipient is
+    /// [`EdifactError::MissingRequiredElement`] (or `MissingRequiredComponent`)
+    /// and a bad date, version or reference its finding — with no bytes. Any
+    /// writer failure is propagated.
     pub fn to_interchange_bytes(
         &self,
         syntax_identifier: &str,
@@ -1866,35 +1895,55 @@ impl Contrl {
         time: &str,
         control_reference: &str,
     ) -> Result<Vec<u8>, EdifactError> {
-        let mut writer = Writer::new(Vec::new());
-        // The reply goes back the way it came: the subject's recipient sends it,
-        // and each party keeps its identification code qualifier (S002/S003
-        // DE 0007), which `Writer::begin_interchange` has no slot for.
-        let sender = party_components(&self.recipient, &self.recipient_qualifier);
-        let recipient = party_components(&self.sender, &self.sender_qualifier);
-        writer.write_composites(
-            "UNB",
-            &[
-                &[syntax_identifier, syntax_version][..],
-                &sender[..],
-                &recipient[..],
-                &[date, time][..],
-                &[control_reference][..],
-            ],
+        let header = self.reply_header(
+            syntax_identifier,
+            syntax_version,
+            date,
+            time,
+            control_reference,
         )?;
+        let mut writer = Writer::new(Vec::new());
+        writer.begin_interchange(&header)?;
         for segment in self.segments() {
             writer.write_segment(&segment)?;
         }
-        writer.end_interchange(1, control_reference)?;
+        writer.end_interchange()?;
         writer.finish()
+    }
+
+    /// The reply's `UNB`, typed and validated: it goes back the way it came,
+    /// so the subject's recipient sends it, and each party keeps its
+    /// identification code qualifier (S002/S003 DE 0007).
+    fn reply_header(
+        &self,
+        syntax_identifier: &str,
+        syntax_version: &str,
+        date: &str,
+        time: &str,
+        control_reference: &str,
+    ) -> Result<crate::InterchangeHeader, EdifactError> {
+        let unb = Segment::new(
+            "UNB",
+            vec![
+                Element::of(&[syntax_identifier, syntax_version]),
+                Element::of(&party_components(
+                    &self.recipient,
+                    &self.recipient_qualifier,
+                )),
+                Element::of(&party_components(&self.sender, &self.sender_qualifier)),
+                Element::of(&[date, time]),
+                Element::of(&[control_reference]),
+            ],
+        );
+        crate::InterchangeHeader::parse(&unb)
     }
 
     /// String form of [`to_interchange_bytes`][Self::to_interchange_bytes].
     ///
     /// # Errors
     ///
-    /// As [`to_interchange_bytes`][Self::to_interchange_bytes], plus
-    /// [`EdifactError::InvalidUtf8`].
+    /// As [`to_interchange_bytes`][Self::to_interchange_bytes]; the text is
+    /// the bytes decoded from the declared repertoire.
     pub fn to_interchange_string(
         &self,
         syntax_identifier: &str,
@@ -1910,7 +1959,9 @@ impl Contrl {
             time,
             control_reference,
         )?;
-        String::from_utf8(bytes).map_err(|_| EdifactError::InvalidUtf8)
+        // The bytes are in the declared repertoire; the string is their text.
+        let charset = crate::Charset::from_syntax_identifier(syntax_identifier)?;
+        Ok(charset.decode(&bytes)?.into_owned())
     }
 }
 
@@ -1954,10 +2005,10 @@ fn spans_between(segments: &[Segment<'_>], open: &str, close: &str) -> Vec<(usiz
     for (index, segment) in segments.iter().enumerate() {
         if segment.tag == open {
             start = Some(index);
-        } else if segment.tag == close {
-            if let Some(from) = start.take() {
-                out.push((from, index));
-            }
+        } else if segment.tag == close
+            && let Some(from) = start.take()
+        {
+            out.push((from, index));
         }
     }
     out
@@ -2512,6 +2563,7 @@ mod tests {
                 E::MessageCountMismatch {
                     expected: 1,
                     actual: 2,
+                    span: crate::Span::new(0, 9),
                 },
                 SyntaxError::ControlCountMismatch,
             ),

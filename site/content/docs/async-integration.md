@@ -1,62 +1,50 @@
 +++
 title = "Async Integration"
-description = "Three patterns for using the synchronous edifact parser from tokio without blocking the runtime."
+description = "Patterns for using the synchronous edifact parser from tokio without blocking the runtime."
 weight = 100
 +++
 
-`edifact` is intentionally **synchronous** — it exposes `std::io::Read`-based
-APIs. This is the right design for EDIFACT:
-
-- **Parsing is CPU-bound** after the first read; async would add scheduling overhead
-  without benefit.
-- **Imposing an async runtime** on every downstream user is a heavy design tax.
-- **Integration is easy**: the patterns below bridge to any async runtime cleanly.
-
-This guide covers three canonical patterns for Tokio. The same patterns apply to
-other runtimes (`async-std`, `smol`) with minor API substitutions.
-
----
-
-## Dependencies
+`edifact` is synchronous: its readers take `std::io::Read`. Parsing is CPU work
+over a buffer, so an async parser would add a runtime dependency without
+removing any blocking. Read with your runtime, parse synchronously. The
+patterns below use Tokio and carry over to other runtimes.
 
 ```bash
 cargo add edifact
-cargo add tokio --features rt-multi-thread,macros,fs,sync
+cargo add tokio --features rt-multi-thread,macros,fs,io-util,sync
 ```
 
----
+## Choosing a pattern
 
-## Pattern A — Read into memory, parse synchronously
+| Payload | Source | Pattern |
+|---|---|---|
+| Small | Any | A — buffer, then `from_bytes` |
+| Large | File | B — `spawn_blocking` + a reader |
+| Large, processed as it arrives | Any | C — channel bridge |
+| Large, typed | Any | D — typed channel bridge |
+| Any | `AsyncRead` (`TcpStream`, HTTP body) | E — bounded buffer, then A or B |
 
-**Best for**: payloads that fit comfortably in memory.
+The [default limits](@/docs/parsing.md) apply on every path: 64 KiB per
+segment, 16 MiB per message, 256 MiB in total.
+
+## A — Read into memory, parse
 
 ```rust,no_run
-use edifact::{from_bytes, Segment};
+use edifact::from_bytes;
 
 async fn process_edi_file(path: &str) -> Result<(), Box<dyn std::error::Error>> {
-    // Async I/O: read the file without blocking the runtime
     let bytes = tokio::fs::read(path).await?;
-
-    // Synchronous parsing on the async thread
-    let segments: Vec<_> = from_bytes(&bytes).collect::<Result<_, _>>()?;
-
-    for seg in &segments {
-        println!("{}", seg.tag);
+    for seg in from_bytes(&bytes) {
+        println!("{}", seg?.tag);
     }
     Ok(())
 }
 ```
 
-This is the simplest pattern. `from_bytes` does no I/O, but it is CPU work linear
-in the input: for large payloads move it to `spawn_blocking` (Pattern B) so it
-does not stall the runtime.
+Parsing runs on the async worker and is linear in the input. Move large
+payloads to `spawn_blocking` (B).
 
----
-
-## Pattern B — `spawn_blocking` for large files or blocking sources
-
-**Best for**: large files (multi-MB interchanges), blocking file systems, or
-reader-based streaming.
+## B — `spawn_blocking`
 
 ```rust,no_run
 use edifact::{OwnedMessageWindow, message_windows_from_reader};
@@ -66,62 +54,46 @@ async fn process_large_interchange(path: String)
 {
     let windows = tokio::task::spawn_blocking(move || {
         let f = std::fs::File::open(&path)?;
-        message_windows_from_reader(f)
-            .collect::<Result<Vec<_>, _>>()
+        message_windows_from_reader(f).collect::<Result<Vec<_>, _>>()
     })
-    .await??;  // propagates both JoinError and EdifactError
-
+    .await??; // JoinError, then EdifactError
     Ok(windows)
 }
 ```
 
-`spawn_blocking` moves the work onto Tokio's dedicated blocking thread pool, keeping
-the async worker threads free.
+## C — Channel bridge
 
----
-
-## Pattern C — Channel bridge (backpressure-safe streaming)
-
-**Best for**: very large interchanges where you want to process each `UNH..UNT`
-window on the async side as soon as it is parsed, without buffering all windows.
+Each `UNH`…`UNT` window reaches the async side as soon as it is parsed. The
+channel capacity is the backpressure: a slow consumer blocks the producer.
 
 ```rust,no_run
 use edifact::{EdifactError, OwnedMessageWindow, message_windows_from_reader};
 use tokio::sync::mpsc;
 
-async fn stream_interchange(
-    bytes: Vec<u8>,
-) -> Result<Vec<OwnedMessageWindow>, EdifactError> {
-    // Channel with backpressure (capacity = 8 windows in flight)
+async fn stream_interchange(bytes: Vec<u8>) -> Result<usize, EdifactError> {
     let (tx, mut rx) = mpsc::channel::<Result<OwnedMessageWindow, EdifactError>>(8);
 
-    // Producer: blocking thread
     tokio::task::spawn_blocking(move || {
-        let cursor = std::io::Cursor::new(bytes);
-        for window in message_windows_from_reader(cursor) {
+        for window in message_windows_from_reader(std::io::Cursor::new(bytes)) {
             if tx.blocking_send(window).is_err() {
-                break; // consumer dropped; stop parsing early
+                break; // consumer dropped: stop parsing
             }
         }
     });
 
-    // Consumer: async side — processes windows as they arrive
-    let mut all: Vec<OwnedMessageWindow> = Vec::new();
-    while let Some(result) = rx.recv().await {
-        all.push(result?);
+    let mut messages = 0;
+    while let Some(window) = rx.recv().await {
+        let window = window?;
+        messages += 1;
+        let _ = window; // process, then drop
     }
-    Ok(all)
+    Ok(messages)
 }
 ```
 
-The channel capacity controls backpressure: if the consumer is slow, the producer
-blocks until there is space in the channel buffer.
+## D — Typed channel bridge
 
----
-
-## Pattern D — Typed message streaming with channel
-
-Combine Pattern C with `deserialize_messages_from_reader` for typed output:
+Pattern C with `deserialize_messages_from_reader`:
 
 ```rust,no_run
 use edifact::{EdifactError, EdifactDeserialize, deserialize_messages_from_reader};
@@ -132,9 +104,7 @@ use tokio::sync::mpsc;
 # struct Bgm { #[edifact(element = 0)] doc_code: String }
 # #[derive(Debug, EdifactDeserialize)]
 # struct OrderMessage { bgm: Option<Bgm> }
-async fn stream_typed_messages(
-    bytes: Vec<u8>,
-) -> Result<Vec<OrderMessage>, EdifactError> {
+async fn stream_typed_messages(bytes: Vec<u8>) -> Result<Vec<OrderMessage>, EdifactError> {
     let (tx, mut rx) = mpsc::channel::<Result<OrderMessage, EdifactError>>(8);
 
     tokio::task::spawn_blocking(move || {
@@ -154,76 +124,42 @@ async fn stream_typed_messages(
 }
 ```
 
----
+## E — From `AsyncRead`
 
-## Pattern E — Process bytes from `AsyncRead`
-
-When your async input is an `AsyncRead` (e.g. `tokio::net::TcpStream`), buffer it
-into memory before parsing, or use `spawn_blocking` with a synchronous wrapper:
+Buffer the stream, capped so a peer cannot exhaust memory, then parse as in A
+or B:
 
 ```rust,no_run
-use tokio::io::{AsyncReadExt};
-use edifact::from_bytes;
+use tokio::io::AsyncReadExt;
 
-async fn parse_from_async_reader<R: AsyncReadExt + Unpin>(
-    mut reader: R,
+async fn parse_from_async_reader<R: tokio::io::AsyncRead + Unpin>(
+    reader: R,
 ) -> Result<usize, Box<dyn std::error::Error>> {
     let mut buf = Vec::new();
-    reader.read_to_end(&mut buf).await?;
-
-    // Now parse synchronously
-    let segments: Vec<_> = from_bytes(&buf).collect::<Result<_, _>>()?;
-    Ok(segments.len())
+    reader.take(256 << 20).read_to_end(&mut buf).await?;
+    Ok(edifact::from_bytes(&buf).collect::<Result<Vec<_>, _>>()?.len())
 }
 ```
 
-> **Why not `AsyncBufRead`?** `edifact` exposes `std::io::BufRead` internally.
-> The simplest bridge is `read_to_end` into a `Vec<u8>`. For byte-by-byte bridging
-> see the `async-compat` crate or write an `std::io::Read` adapter.
+## Errors
 
----
-
-## Choosing a pattern
-
-| Payload size | Source | Recommended pattern |
-|---|---|---|
-| Small | Any | Pattern A — buffer, then `from_bytes` |
-| Large | File | Pattern B — `spawn_blocking` + `from_reader` |
-| Larger than memory | File | Pattern B or C — streaming with channel |
-| Any | `TcpStream` / HTTP | Pattern A (small) or E + B (large) |
-| Any, with typed structs | Reader | Pattern D — typed channel streaming |
-
----
-
-## Error propagation
-
-`spawn_blocking` returns a `JoinError` if the worker thread panics. Map it to your
-own error type:
+`spawn_blocking` returns a `JoinError` if the closure panics; `?` propagates it:
 
 ```rust,no_run
-use edifact::EdifactError;
-
-async fn safe_parse(bytes: Vec<u8>) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
-    let count = tokio::task::spawn_blocking(move || {
-        edifact::from_bytes(&bytes).count()
-    })
-    .await?;   // propagates JoinError if the worker thread panicked
-    Ok(count)
+async fn count(bytes: Vec<u8>) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+    let n = tokio::task::spawn_blocking(move || edifact::from_bytes(&bytes).count()).await?;
+    Ok(n)
 }
 ```
 
----
-
-## Complete example
+## Example
 
 ```bash
 cargo run -p edifact --example cookbook_async_tokio_integration
 ```
 
-See [`cookbook_async_tokio_integration.rs`](https://github.com/hupe1980/edifact/tree/main/crates/edifact/examples/cookbook_async_tokio_integration.rs)
-for a runnable example demonstrating Patterns A, B, and C.
-
----
+[`cookbook_async_tokio_integration.rs`](https://github.com/hupe1980/edifact/tree/main/crates/edifact/examples/cookbook_async_tokio_integration.rs)
+runs patterns A, B and C.
 
 ## Next steps
 

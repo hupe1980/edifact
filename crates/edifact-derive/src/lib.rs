@@ -1,5 +1,10 @@
 #![deny(unsafe_code)]
-//! Derive macros for `EdifactSerialize` and `EdifactDeserialize`.
+//! Derive macros for the [`edifact`](https://docs.rs/edifact) crate:
+//! `EdifactSerialize` / `EdifactDeserialize` for segment and message structs,
+//! `EdifactCompositeSerialize` / `EdifactCompositeDeserialize` for composite
+//! elements. Use them through `edifact` (feature `derive`, on by default).
+//! Every attribute is documented in the
+//! [Typed Derive guide](https://hupe1980.github.io/edifact/docs/typed-derive/).
 //!
 //! # Segment struct (single segment)
 //!
@@ -86,39 +91,30 @@
 //!
 //! # `#[edifact(required)]` on `Option<T>` fields
 //!
-//! By default, `Option<T>` fields produce `None` when the element is absent.
-//! Annotating an `Option<T>` field with `#[edifact(required)]` changes this:
-//! instead of `None`, deserialization returns
-//! `edifact::EdifactError::MissingRequiredElement`
-//! when the element is absent or empty.  The Rust type stays `Option<T>`, which
-//! is useful when the EDIFACT specification mandates the element but your domain
-//! model treats it as optional for other reasons.
+//! An `Option<T>` field is `None` when the element is absent. With
+//! `#[edifact(required)]`, an absent or empty element is
+//! `edifact::EdifactError::MissingRequiredElement` instead; the Rust type stays
+//! `Option<T>` for domain models that treat a mandated element as optional.
 //!
 //! ```ignore
 //! #[derive(EdifactSerialize, EdifactDeserialize)]
 //! #[edifact(segment = "DTM")]
 //! pub struct DtmSegment {
-//!     #[edifact(element = 0)]
+//!     #[edifact(element = 0, component = 0)]
 //!     qualifier: String,
-//!     /// Required by the spec but kept as Option in the domain model.
-//!     #[edifact(element = 1, required)]
+//!     /// Mandatory on the wire, optional in the domain model.
+//!     #[edifact(element = 0, component = 1, required)]
 //!     date_time: Option<String>,
-//!     #[edifact(element = 2)]
+//!     #[edifact(element = 0, component = 2)]
 //!     format_code: Option<String>,
 //! }
 //! ```
 //!
 //! # Non-`String` fields and `Display` / `FromStr`
-//! Non-`String` field types (e.g. `u32`, `bool`, your own newtype) are serialized via
-//! `Display` and deserialized via `FromStr`.  The derive macro does **not** add a
-//! compile-time bound; if the type does not implement both traits the generated code
-//! will fail to compile with a standard "trait not satisfied" error.
 //!
-//! To avoid surprises, ensure any non-`String` field type implements both:
-//! ```ignore
-//! impl std::fmt::Display for MyCode { ... }
-//! impl std::str::FromStr for MyCode { ... }
-//! ```
+//! Non-`String` field types (`u32`, `bool`, your own newtype) are serialized via
+//! `Display` and deserialized via `FromStr`. The derive adds no bound; a type
+//! missing either trait fails to compile with "trait not satisfied".
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
@@ -203,7 +199,7 @@ pub fn derive_edifact_composite_serialize(input: TokenStream) -> TokenStream {
 
 /// How a field's element slot was written in the attribute.
 ///
-/// `Index` is the historical positional form.  `Code` is a UN/EDIFACT data
+/// `Index` is a zero-based position.  `Code` is a UN/EDIFACT data
 /// element identifier resolved against the struct's `layout` — during *const
 /// evaluation*, so a stale or mistyped identifier is a compile error rather
 /// than a silent read of the neighbouring element.
@@ -1291,12 +1287,9 @@ fn impl_serialize(input: &DeriveInput) -> syn::Result<TokenStream2> {
         // component index — at macro-expansion time, so the generated code stays
         // straight-line event emission with no runtime allocation.
         //
-        // The grid is what makes components work at all. Keying the layout on
-        // the element index alone collapsed every field sharing an element into
-        // one entry, so all but the last were silently dropped on write:
-        // a `DTM` with three `component` fields went out as `DTM+102'` instead of
-        // `DTM+137:20260101:102'`, and the loss was invisible until a partner
-        // rejected the file.
+        // Keying on the component as well as the element keeps every field that
+        // shares an element: a `DTM` with three `component` fields is written as
+        // `DTM+137:20260101:102'`, not collapsed to its last field (`DTM+102'`).
 
         let mut grid: std::collections::BTreeMap<u32, std::collections::BTreeMap<u32, Cell>> =
             std::collections::BTreeMap::new();
@@ -1847,11 +1840,11 @@ fn impl_deserialize(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
         let find_seg = if let Some(qual) = &struct_attrs.qualifier {
             quote! {
-                ::edifact::find_qualified_segment(segments, #seg_tag, #qual)
+                ::edifact::SegmentSliceExt::qualified(segments, #seg_tag, #qual)
             }
         } else {
             quote! {
-                ::edifact::find_segment(segments, #seg_tag)
+                ::edifact::SegmentSliceExt::first_tag(segments, #seg_tag)
             }
         };
 
@@ -2056,7 +2049,7 @@ fn impl_deserialize(input: &DeriveInput) -> syn::Result<TokenStream2> {
                         let inner_ty = option_inner_type(ty)
                             .ok_or_else(|| syn::Error::new(ident.span(), "expected Option<T>"))?;
                         quote! {
-                            let #ident = match ::edifact::find_qualified_segment(
+                            let #ident = match ::edifact::SegmentSliceExt::qualified(
                                 segments,
                                 <#inner_ty as ::edifact::EdifactSegmentTag>::SEGMENT_TAG,
                                 #qual,
@@ -2073,7 +2066,7 @@ fn impl_deserialize(input: &DeriveInput) -> syn::Result<TokenStream2> {
                         }
                     } else {
                         quote! {
-                            let __seg = ::edifact::find_qualified_segment(
+                            let __seg = ::edifact::SegmentSliceExt::qualified(
                                 segments,
                                 <#ty as ::edifact::EdifactSegmentTag>::SEGMENT_TAG,
                                 #qual,

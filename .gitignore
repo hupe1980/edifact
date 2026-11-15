@@ -23,6 +23,7 @@ target
 # Custom
 REVIEW.md
 FINDINGS.md
+FEEDBACK_MAKO.md
 .DS_Store
 # Zola build output and search index
 site/public/

@@ -3,7 +3,7 @@
 //! The most common EDIFACT workflow in a single example:
 //!
 //! 1. **Parse** raw bytes into a zero-copy `Vec<Segment<'_>>`
-//! 2. **Map** named parties using `find_qualified_segment`
+//! 2. **Map** named parties using `SegmentSliceExt::qualified`
 //! 3. **Validate** using a custom `Validator` registered in a `ValidationContext`
 //! 4. **Serialize** the segment list back to EDIFACT wire format with `segments_to_bytes`
 //!
@@ -13,8 +13,8 @@
 //! ```
 
 use edifact::{
-    Segment, ValidationContext, ValidationLayer, ValidationReport, ValidationRuleContext,
-    Validator, find_qualified_segment, from_bytes, segments_to_bytes, validate_each,
+    Segment, SegmentSliceExt, ValidationContext, ValidationLayer, ValidationReport,
+    ValidationRuleContext, Validator, from_bytes, segments_to_bytes, validate_each,
 };
 
 /// A simple custom validator that checks for known segment tags
@@ -48,12 +48,14 @@ fn main() -> Result<(), edifact::EdifactError> {
     let segments: Vec<_> = from_bytes(input).collect::<Result<Vec<_>, _>>()?;
 
     // ── 2. Map fields ─────────────────────────────────────────────────────────
-    // `find_qualified_segment` scans for the first NAD whose element 0 matches
-    // the qualifier ("BY" = buyer, "SU" = supplier).
-    let buyer = find_qualified_segment(&segments, "NAD", "BY")
+    // `qualified` finds the first NAD whose qualifier (element 0) matches:
+    // "BY" = buyer, "SU" = supplier.
+    let buyer = segments
+        .qualified("NAD", "BY")
         .and_then(|segment| segment.element_str(1))
         .unwrap_or("unknown");
-    let supplier = find_qualified_segment(&segments, "NAD", "SU")
+    let supplier = segments
+        .qualified("NAD", "SU")
         .and_then(|segment| segment.element_str(1))
         .unwrap_or("unknown");
 

@@ -2,7 +2,7 @@
 
 use crate::error::Insignificant;
 use crate::validator::{
-    ValidationLayer, ValidationRuleContext, Validator, message_position, report_error_at,
+    MessagePositions, ValidationLayer, ValidationRuleContext, Validator, report_error_at,
 };
 use crate::{
     EdifactError, FindingKind, Segment, ValidationIssue, ValidationReport, ValidationSeverity,
@@ -2234,7 +2234,210 @@ fn detect_syntax_version(segments: &[Segment<'_>]) -> Option<u8> {
         .iter()
         .find(|s| s.tag == "UNB")
         .and_then(|unb| unb.component_str(0, 1))
-        .and_then(|version| version.parse().ok())
+        .and_then(supported_syntax_version)
+}
+
+/// DE 0002 as a supported syntax version: `1`–`4` (ISO 9735-1:2002 §2).
+///
+/// Anything else — syntax `X` included — is `None`, which selects the union of
+/// both representation forms. The envelope reports such a value as `E059`.
+pub(crate) fn supported_syntax_version(value: &str) -> Option<u8> {
+    match value {
+        "1" => Some(1),
+        "2" => Some(2),
+        "3" => Some(3),
+        "4" => Some(4),
+        _ => None,
+    }
+}
+
+/// Presence (`E008`/`E021`), class (`E048`) and length (`E049`/`E050`) of
+/// every position of a service segment, for `syntax_version` (`None`: either
+/// form). Never a warning: `E053` is left to [`DirectoryValidator`].
+///
+/// The one implementation the envelope and `DirectoryValidator(service::lookup)`
+/// share, so the two cannot disagree on a service value. A tag
+/// [`service::lookup`](crate::service::lookup) does not know yields nothing.
+pub(crate) fn check_service_segment(
+    seg: &Segment<'_>,
+    syntax_version: Option<u8>,
+    out: &mut Vec<EdifactError>,
+) {
+    let Some(def) = crate::service::lookup(seg.tag()) else {
+        return;
+    };
+    let def = SegmentDefRef::Static(def);
+    collect_presence_issues(seg, &def, out);
+    collect_representation_issues(seg, &def, syntax_version, false, out);
+}
+
+/// `E008` for every absent mandatory element, `E021` for every absent
+/// mandatory component of a present one.
+fn collect_presence_issues(
+    seg: &Segment<'_>,
+    def: &SegmentDefRef<'_>,
+    out: &mut Vec<EdifactError>,
+) {
+    def.for_each_mandatory_position::<std::convert::Infallible, _>(|idx, _de| {
+        let is_present = seg
+            .elements
+            .get(idx)
+            .is_some_and(|elem| elem.components.iter().any(|(c, _)| !c.as_ref().is_empty()));
+        if !is_present {
+            out.push(EdifactError::MissingRequiredElement {
+                tag: seg.tag().to_owned(),
+                element_index: idx,
+            });
+        }
+        Ok(())
+    })
+    .unwrap_or_else(|never| match never {});
+
+    // An element that is absent entirely is already reported above as a
+    // missing element, so only present elements are checked here.
+    def.for_each_mandatory_component::<std::convert::Infallible, _>(|elem_idx, comp_idx, _de| {
+        let Some(elem) = seg.elements.get(elem_idx) else {
+            return Ok(());
+        };
+        if !elem.components.iter().any(|(c, _)| !c.as_ref().is_empty()) {
+            return Ok(());
+        }
+        let present = elem
+            .get_component(comp_idx)
+            .is_some_and(|value| !value.is_empty());
+        if !present {
+            out.push(EdifactError::MissingRequiredComponent {
+                tag: seg.tag().to_owned(),
+                element_index: elem_idx,
+                component_index: comp_idx,
+            });
+        }
+        Ok(())
+    })
+    .unwrap_or_else(|never| match never {});
+}
+
+/// Check every populated value against its declared representation.
+///
+/// Only positions the definition actually states a representation for are
+/// checked, so a partial table stays useful rather than becoming a source of
+/// false findings. `insignificant` adds the `E053` warning.
+fn collect_representation_issues(
+    seg: &Segment<'_>,
+    def: &SegmentDefRef<'_>,
+    syntax_version: Option<u8>,
+    insignificant: bool,
+    out: &mut Vec<EdifactError>,
+) {
+    for (element_index, element) in seg.elements.iter().enumerate() {
+        for occurrence in element.repetitions() {
+            for (component_index, (value, span)) in occurrence.iter().enumerate() {
+                // An empty value is an absent one (§8.1); its presence is
+                // the mandatory check's business, not the representation's.
+                if value.is_empty() {
+                    continue;
+                }
+                let Some(repr) = def.repr_at(element_index, component_index, syntax_version) else {
+                    continue;
+                };
+                if !repr.permits_characters(value) {
+                    out.push(EdifactError::InvalidCharacterType {
+                        tag: seg.tag().to_owned(),
+                        element_index,
+                        component_index,
+                        repr: repr.to_string(),
+                        value: value.to_string(),
+                        span: *span,
+                    });
+                    // The length of a value that is not of the declared
+                    // class is not meaningful — §10's numeric count in
+                    // particular assumes a numeric value.
+                    continue;
+                }
+                if insignificant {
+                    collect_insignificant_characters(
+                        seg,
+                        element_index,
+                        component_index,
+                        value,
+                        *span,
+                        repr.primary,
+                        out,
+                    );
+                }
+                if repr.permits_length(value) {
+                    continue;
+                }
+                let actual = repr.measure(value);
+                out.push(if repr.is_too_short(value) {
+                    EdifactError::DataElementTooShort {
+                        tag: seg.tag().to_owned(),
+                        element_index,
+                        component_index,
+                        repr: repr.to_string(),
+                        actual,
+                        span: *span,
+                    }
+                } else {
+                    EdifactError::DataElementTooLong {
+                        tag: seg.tag().to_owned(),
+                        element_index,
+                        component_index,
+                        repr: repr.to_string(),
+                        actual,
+                        span: *span,
+                    }
+                });
+            }
+        }
+    }
+}
+
+/// Report characters ISO 9735-1 §9.1 requires the sender to suppress.
+///
+/// Only **variable length** elements are covered, which is what §9.1 says:
+/// a fixed-length numeric field is padded with leading zeroes by design, and
+/// a fixed-length text one with trailing spaces.
+fn collect_insignificant_characters(
+    seg: &Segment<'_>,
+    element_index: usize,
+    component_index: usize,
+    value: &str,
+    span: crate::Span,
+    repr: Repr,
+    out: &mut Vec<EdifactError>,
+) {
+    if repr.is_fixed() {
+        return;
+    }
+    let kind = match repr.kind() {
+        ReprKind::Numeric => {
+            let digits = value.strip_prefix('-').unwrap_or(value);
+            // "Nevertheless, a single zero before a decimal mark is
+            // allowed", so `0.5` is correct and only `00…` is not.
+            let leading_zeroes = digits.starts_with('0')
+                && digits.len() > 1
+                && !digits.starts_with("0.")
+                && !digits.starts_with("0,");
+            if !leading_zeroes {
+                return;
+            }
+            Insignificant::LeadingZeroes
+        }
+        ReprKind::Alphabetic | ReprKind::Alphanumeric => {
+            if !value.ends_with(' ') {
+                return;
+            }
+            Insignificant::TrailingSpaces
+        }
+    };
+    out.push(EdifactError::InsignificantCharacters {
+        tag: seg.tag().to_owned(),
+        element_index,
+        component_index,
+        kind,
+        span,
+    });
 }
 
 /// Pick the representation that applies to `syntax_version`.
@@ -2585,16 +2788,16 @@ impl DirectoryValidator {
             // Otherwise a composite that declares its components caps them:
             // more components than the directory defines is a structural error,
             // while fewer is normal (conditional components may be omitted).
-            if let Some(declared) = def.declared_component_count(idx) {
-                if actual > declared {
-                    out.push(EdifactError::InvalidComponentCount {
-                        tag: seg.tag().to_owned(),
-                        element_index: idx,
-                        expected: declared,
-                        actual,
-                        span: seg.element_span(idx).unwrap_or(seg.span),
-                    });
-                }
+            if let Some(declared) = def.declared_component_count(idx)
+                && actual > declared
+            {
+                out.push(EdifactError::InvalidComponentCount {
+                    tag: seg.tag().to_owned(),
+                    element_index: idx,
+                    expected: declared,
+                    actual,
+                    span: seg.element_span(idx).unwrap_or(seg.span),
+                });
             }
         }
     }
@@ -2631,130 +2834,6 @@ impl DirectoryValidator {
                 });
             }
         }
-    }
-
-    /// Check every populated value against its declared representation.
-    ///
-    /// Only positions the definition actually states a representation for are
-    /// checked, so a partial table stays useful rather than becoming a source of
-    /// false findings.
-    fn collect_representation_issues(
-        &self,
-        seg: &Segment<'_>,
-        def: &SegmentDefRef<'_>,
-        syntax_version: Option<u8>,
-        out: &mut Vec<EdifactError>,
-    ) {
-        for (element_index, element) in seg.elements.iter().enumerate() {
-            for occurrence in element.repetitions() {
-                for (component_index, (value, span)) in occurrence.iter().enumerate() {
-                    // An empty value is an absent one (§8.1); its presence is
-                    // the mandatory check's business, not the representation's.
-                    if value.is_empty() {
-                        continue;
-                    }
-                    let Some(repr) = def.repr_at(element_index, component_index, syntax_version)
-                    else {
-                        continue;
-                    };
-                    if !repr.permits_characters(value) {
-                        out.push(EdifactError::InvalidCharacterType {
-                            tag: seg.tag().to_owned(),
-                            element_index,
-                            component_index,
-                            repr: repr.to_string(),
-                            value: value.to_string(),
-                            span: *span,
-                        });
-                        // The length of a value that is not of the declared
-                        // class is not meaningful — §10's numeric count in
-                        // particular assumes a numeric value.
-                        continue;
-                    }
-                    self.collect_insignificant_characters(
-                        seg,
-                        element_index,
-                        component_index,
-                        value,
-                        *span,
-                        repr.primary,
-                        out,
-                    );
-                    if repr.permits_length(value) {
-                        continue;
-                    }
-                    let actual = repr.measure(value);
-                    out.push(if repr.is_too_short(value) {
-                        EdifactError::DataElementTooShort {
-                            tag: seg.tag().to_owned(),
-                            element_index,
-                            component_index,
-                            repr: repr.to_string(),
-                            actual,
-                            span: *span,
-                        }
-                    } else {
-                        EdifactError::DataElementTooLong {
-                            tag: seg.tag().to_owned(),
-                            element_index,
-                            component_index,
-                            repr: repr.to_string(),
-                            actual,
-                            span: *span,
-                        }
-                    });
-                }
-            }
-        }
-    }
-
-    /// Report characters ISO 9735-1 §9.1 requires the sender to suppress.
-    ///
-    /// Only **variable length** elements are covered, which is what §9.1 says:
-    /// a fixed-length numeric field is padded with leading zeroes by design, and
-    /// a fixed-length text one with trailing spaces.
-    #[allow(clippy::too_many_arguments)]
-    fn collect_insignificant_characters(
-        &self,
-        seg: &Segment<'_>,
-        element_index: usize,
-        component_index: usize,
-        value: &str,
-        span: crate::Span,
-        repr: Repr,
-        out: &mut Vec<EdifactError>,
-    ) {
-        if repr.is_fixed() {
-            return;
-        }
-        let kind = match repr.kind() {
-            ReprKind::Numeric => {
-                let digits = value.strip_prefix('-').unwrap_or(value);
-                // "Nevertheless, a single zero before a decimal mark is
-                // allowed", so `0.5` is correct and only `00…` is not.
-                let leading_zeroes = digits.starts_with('0')
-                    && digits.len() > 1
-                    && !digits.starts_with("0.")
-                    && !digits.starts_with("0,");
-                if !leading_zeroes {
-                    return;
-                }
-                Insignificant::LeadingZeroes
-            }
-            ReprKind::Alphabetic | ReprKind::Alphanumeric => {
-                if !value.ends_with(' ') {
-                    return;
-                }
-                Insignificant::TrailingSpaces
-            }
-        };
-        out.push(EdifactError::InsignificantCharacters {
-            tag: seg.tag().to_owned(),
-            element_index,
-            component_index,
-            kind,
-            span,
-        });
     }
 
     fn collect_code_list_issues(&self, seg: &Segment<'_>, out: &mut Vec<EdifactError>) {
@@ -2840,52 +2919,15 @@ impl DirectoryValidator {
                 });
             }
 
-            def.for_each_mandatory_position::<std::convert::Infallible, _>(|idx, _de| {
-                let is_present = seg.elements.get(idx).is_some_and(|elem| {
-                    elem.components.iter().any(|(c, _)| !c.as_ref().is_empty())
-                });
-                if !is_present {
-                    out.push(EdifactError::MissingRequiredElement {
-                        tag: seg.tag().to_owned(),
-                        element_index: idx,
-                    });
-                }
-                Ok(())
-            })
-            .unwrap_or_else(|never| match never {});
-
-            // Mandatory *components* inside declared composites.  Only fires for
-            // definitions built with `ElementRef::composite` / `with_components`;
-            // an element that is absent entirely is already reported above as a
-            // missing element, so only present elements are checked here.
-            def.for_each_mandatory_component::<std::convert::Infallible, _>(
-                |elem_idx, comp_idx, _de| {
-                    let Some(elem) = seg.elements.get(elem_idx) else {
-                        return Ok(());
-                    };
-                    let present = elem
-                        .get_component(comp_idx)
-                        .is_some_and(|value| !value.is_empty());
-                    if !present {
-                        out.push(EdifactError::MissingRequiredComponent {
-                            tag: seg.tag().to_owned(),
-                            element_index: elem_idx,
-                            component_index: comp_idx,
-                        });
-                    }
-                    Ok(())
-                },
-            )
-            .unwrap_or_else(|never| match never {});
-
+            collect_presence_issues(seg, &def, out);
             self.collect_component_count_issues(seg, &def, out);
             self.collect_repetition_issues(seg, &def, out);
-            self.collect_representation_issues(seg, &def, syntax_version, out);
+            collect_representation_issues(seg, &def, syntax_version, true, out);
 
-            if let Some(rule) = &self.additional_structure_rule {
-                if let Err(error) = rule(seg) {
-                    out.push(error);
-                }
+            if let Some(rule) = &self.additional_structure_rule
+                && let Err(error) = rule(seg)
+            {
+                out.push(error);
             }
         }
 
@@ -2910,9 +2952,10 @@ impl Validator for DirectoryValidator {
         // representation applies; `UNB` S001 DE 0002 is where it is stated.
         let syntax_version = detect_syntax_version(segments);
         let mut issues = Vec::new();
+        let positions = MessagePositions::new(segments);
         for (index, seg) in segments.iter().enumerate() {
             self.collect_segment_issues(seg, syntax_version, &mut issues);
-            let position = message_position(segments, index);
+            let position = positions.position(index);
             for err in issues.drain(..) {
                 // Code-list findings belong to the code-list stage; everything
                 // else this validator finds is directory structure.
@@ -2925,45 +2968,48 @@ impl Validator for DirectoryValidator {
             }
         }
 
-        if self.structure_checks {
-            if let Some(message_type) = self.detect_message_type(segments) {
-                // One pass recording each tag's first index answers both the
-                // presence and the ordering question.  The previous shape ran two
-                // full scans *per required tag* and invoked `required_segments`
-                // twice, which is O(|required| x n) on every batch.
-                let mut first_index: std::collections::HashMap<&str, usize> =
-                    std::collections::HashMap::with_capacity(segments.len());
-                for (i, seg) in segments.iter().enumerate() {
-                    first_index.entry(seg.tag()).or_insert(i);
-                }
+        if self.structure_checks
+            && let Some(message_type) = self.detect_message_type(segments)
+        {
+            // One pass recording each tag's first index answers both the
+            // presence and the ordering question.  The previous shape ran two
+            // full scans *per required tag* and invoked `required_segments`
+            // twice, which is O(|required| x n) on every batch.
+            let mut first_index: std::collections::HashMap<&str, usize> =
+                std::collections::HashMap::with_capacity(segments.len());
+            for (i, seg) in segments.iter().enumerate() {
+                first_index.entry(seg.tag()).or_insert(i);
+            }
 
-                let required = (self.required_segments)(&message_type);
-                for required_tag in required {
-                    if !first_index.contains_key(*required_tag) {
-                        report.add_error(
-                            ValidationIssue::new(
-                                ValidationSeverity::Error,
-                                format!(
-                                    "required segment {} missing for message type {}",
-                                    required_tag, message_type
-                                ),
-                            )
-                            .with_segment(*required_tag)
-                            .with_layer(ValidationLayer::Structure)
-                            // Kind only: an error code here would change the
-                            // DE 0085 a CONTRL reports for it.
-                            .with_kind(FindingKind::Missing)
-                            .with_suggestion("Add the mandatory segment at the correct position"),
-                        );
-                    }
+            let required = (self.required_segments)(&message_type);
+            for required_tag in required {
+                if !first_index.contains_key(*required_tag) {
+                    report.add_error(
+                        ValidationIssue::new(
+                            ValidationSeverity::Error,
+                            format!(
+                                "required segment {} missing for message type {}",
+                                required_tag, message_type
+                            ),
+                        )
+                        .with_segment(*required_tag)
+                        .with_layer(ValidationLayer::Structure)
+                        // Kind only: an error code here would change the
+                        // DE 0085 a CONTRL reports for it.
+                        .with_kind(FindingKind::Missing)
+                        .with_suggestion("Add the mandatory segment at the correct position"),
+                    );
                 }
+            }
 
-                let mut last_idx = None;
-                for tag in required {
-                    if let Some(&idx) = first_index.get(*tag) {
-                        if let Some(prev) = last_idx {
-                            if idx < prev {
-                                let mut issue = ValidationIssue::new(
+            let positions = MessagePositions::new(segments);
+            let mut last_idx = None;
+            for tag in required {
+                if let Some(&idx) = first_index.get(*tag) {
+                    if let Some(prev) = last_idx
+                        && idx < prev
+                    {
+                        let mut issue = ValidationIssue::new(
                                     ValidationSeverity::Error,
                                     format!(
                                         "segment sequence violation for message type {}: '{}' appears out of order",
@@ -2976,15 +3022,13 @@ impl Validator for DirectoryValidator {
                                 .with_suggestion(
                                     "Ensure required segments follow UN/EDIFACT canonical order",
                                 );
-                                // The first occurrence is the one out of order.
-                                if let Some(position) = message_position(segments, idx) {
-                                    issue = issue.with_segment_position(position);
-                                }
-                                report.add_error(issue);
-                            }
+                        // The first occurrence is the one out of order.
+                        if let Some(position) = positions.position(idx) {
+                            issue = issue.with_segment_position(position);
                         }
-                        last_idx = Some(idx);
+                        report.add_error(issue);
                     }
+                    last_idx = Some(idx);
                 }
             }
         }
@@ -3206,5 +3250,40 @@ mod tests {
             report.has_warnings(),
             "INVALID is not in the custom code list so validation must warn"
         );
+    }
+
+    #[test]
+    fn check_service_segment_applies_the_version_and_never_warns() {
+        let check = |input: &[u8], version| {
+            let mut out = Vec::new();
+            check_service_segment(&parse_single(input), version, &mut out);
+            out.iter()
+                .map(EdifactError::stable_code)
+                .collect::<Vec<_>>()
+        };
+        let unb = b"UNB+UNOC:3+S::ABCDEFGHIJKLMNO+R+260101:0900+1'";
+        assert_eq!(check(unb, Some(3)), ["E049"]);
+        assert_eq!(check(unb, Some(4)), ["E050"]);
+        assert!(check(unb, None).is_empty());
+        // Leading zeroes are E053 only in the DirectoryValidator.
+        assert!(check(b"UNT+0003+1'", Some(3)).is_empty());
+        // Missing mandatory element and component.
+        assert_eq!(check(b"UNH+1+ORDERS:D'", Some(3)), ["E021", "E021"]);
+        assert_eq!(check(b"UNZ++1'", Some(3)), ["E008"]);
+        // Not a service segment: nothing.
+        assert!(check(b"BGM+220'", Some(3)).is_empty());
+    }
+
+    #[test]
+    fn only_versions_one_to_four_are_supported() {
+        for (value, expected) in [
+            ("1", Some(1)),
+            ("4", Some(4)),
+            ("X", None),
+            ("9", None),
+            ("", None),
+        ] {
+            assert_eq!(supported_syntax_version(value), expected, "{value}");
+        }
     }
 }

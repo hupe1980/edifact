@@ -1,28 +1,23 @@
 +++
 title = "Error Reference"
-description = "Every EdifactError variant with its stable code E001-E053 and E066-E071, the fields it carries, when it fires, and how to fix it."
+description = "Every EdifactError variant with its stable code E001-E061 and E066-E072, the fields it carries, when it fires, and how to fix it."
 weight = 110
 +++
 
-All errors returned by `edifact` are variants of `EdifactError`. Every variant
-carries a stable, semver-protected code (`E001`–`E053`, `E066`–`E071`) accessible via
-`err.stable_code()`. The enum is `#[non_exhaustive]`, so variants can be added without a breaking
-change.
+Every error is an `EdifactError` variant with a stable, semver-protected code
+(`E001`–`E061`, `E066`–`E072`) from `err.stable_code()`. The enum is
+`#[non_exhaustive]`.
 
 ## Where an error points
 
-Two kinds of positional data appear, and the distinction is deliberate:
+- **`offset: usize`** — one byte position, on the lexical variants: the fault
+  is a point in the stream.
+- **`span: Span`** — a half-open byte range, on variants raised while
+  validating a parsed segment. A `ValidationIssue` built from one keeps the
+  range, so `miette` and editors underline the whole value.
 
-- **`offset: usize`** — a single byte position, carried by the *lexical* variants
-  where the fault is a point in the stream and no end position exists.
-- **`span: Span`** — a half-open byte range, carried by every variant raised
-  while validating an already-parsed segment. A `ValidationIssue` built from one
-  of these keeps the full range, so `miette` and LSP tooling underline the
-  offending region instead of placing a zero-width caret.
-
-`ValidationIssue` itself has a single positional field, `span`; read
-`issue.span.map(|s| s.start)` (or `issue.start_offset()`) when only the start is
-needed.
+`ValidationIssue` has one positional field, `span`; `issue.start_offset()` gives
+its start.
 
 ---
 
@@ -33,11 +28,11 @@ needed.
 | E001 | `UnexpectedEof` | Parser | `offset` |
 | E002 | `InvalidDelimiter` | Parser | `offset` |
 | E003 | `InvalidText` | Parser | `offset` |
-| E004 | `MessageCountMismatch` | Envelope validator | — |
-| E005 | `SegmentCountMismatch` | Envelope validator | — |
+| E004 | `MessageCountMismatch` | Envelope validator | `span` |
+| E005 | `SegmentCountMismatch` | Envelope validator | `span` |
 | E006 | `InvalidSegmentTag` | Parser | — |
 | E007 | `InvalidUna` | Parser | — |
-| E008 | `MissingRequiredElement` | Deserializer | — |
+| E008 | `MissingRequiredElement` | Deserializer, `required_element`, envelope validator, `InterchangeHeader` | — |
 | E009 | `InvalidUtf8` | Writer | — |
 | E010 | `Io` | Reader / Writer | — |
 | E011 | `InvalidSegmentForMessage` | Directory validator | `span` |
@@ -49,12 +44,12 @@ needed.
 | E017 | `ConditionalRequirementNotMet` | Profile validator | `span` |
 | E019 | `InvalidReleaseSequence` | Parser | `offset` |
 | E020 | `SegmentTooLong` | Reader parser | `offset` |
-| E021 | `MissingRequiredComponent` | Deserializer | — |
+| E021 | `MissingRequiredComponent` | Deserializer, `required_component`, envelope validator, `InterchangeHeader` | — |
 | E023 | `InterchangeTooLarge` | Envelope builder | — |
-| E024 | `InvalidEventSequence` | Event emitter | — |
+| E024 | `InvalidEventSequence` | Event emitter, `Writer` interchange envelope | — |
 | E025 | `InvalidElementPosition` | Directory builder | — |
 | E026 | `IncompatibleReleaseScopes` | Profile pack composer | — |
-| E027 | `InvalidFieldValue` | Typed deserializer | — |
+| E027 | `InvalidFieldValue` | Typed deserializer, `DtmValidator` | — |
 | E028 | `UnexpectedDataToken` | Parser | `offset` |
 | E030 | `ValidationErrors` | Profile / directory validator | — |
 | E031 | `UnrecognisedSyntaxIdentifier` | Envelope validator | — |
@@ -62,30 +57,39 @@ needed.
 | E033 | `UnknownDataElement` | Code-addressed access | — |
 | E034 | `AmbiguousDataElement` | Code-addressed access | — |
 | E035 | `SegmentLayoutMismatch` | Code-addressed access | — |
-| E036 | `LimitExceeded` | Parser (`ReaderConfig` budgets) | `offset` |
+| E036 | `LimitExceeded` | Parser (`ReaderConfig` budgets), repertoire sniff, header read | `offset` |
 | E037 | `RepetitionSeparatorNotDeclared` | Writer | — |
 | E038 | `CharacterNotInRepertoire` | Writer / `Charset::encode` | — |
 | E039 | `UnsupportedCharset` | `Charset::from_syntax_identifier` | — |
 | E040 | `NonFiniteNumber` | `DecimalFloat` serialization | — |
 | E041 | `CharacterRepertoireMismatch` | `Writer::begin_interchange` | — |
-| E042 | `EmptyInterchange` | Envelope validator | — |
-| E043 | `EmptyMessage` | Envelope validator | `span` |
+| E042 | `EmptyInterchange` | Envelope validator, `Writer::end_interchange`, `InterchangeBuilder` | — |
+| E043 | `EmptyMessage` | Envelope validator, `MessageBuilder`, `InterchangeBuilder` | `span` |
 | E044 | `PackageNotSupported` | Envelope validator | `span` |
 | E045 | `BlankDataElementValue` | Syntax validator | `span` |
 | E046 | `SegmentWithoutDataElements` | Syntax validator | `span` |
 | E047 | `TooManyRepetitions` | Directory validator | `span` |
-| E048 | `InvalidCharacterType` | Directory validator | `span` |
-| E049 | `DataElementTooLong` | Directory validator | `span` |
-| E050 | `DataElementTooShort` | Directory validator | `span` |
+| E048 | `InvalidCharacterType` | Envelope / directory validator | `span` |
+| E049 | `DataElementTooLong` | Envelope / directory validator | `span` |
+| E050 | `DataElementTooShort` | Envelope / directory validator | `span` |
 | E051 | `TrailingSeparator` | Syntax validator | `span` |
-| E052 | `GroupsAndMessagesMixed` | Envelope validator | `span` |
+| E052 | `GroupsAndMessagesMixed` | Envelope validator, `Writer::end_interchange` | `span` |
 | E053 | `InsignificantCharacters` | Directory validator | `span` |
+| E054 | `GroupCountMismatch` | Envelope validator | `span` |
+| E055 | `InteractiveSegmentNotSupported` | Envelope validator | `span` |
+| E056 | `SecuritySegmentNotSupported` | Envelope validator | `span` |
+| E057 | `ReservedServiceSegmentTag` | Envelope validator | `span` |
+| E058 | `DataAfterInterchangeTrailer` | Parser, envelope validator | `span` |
+| E059 | `UnsupportedSyntaxVersion` | Envelope validator | `span` |
+| E060 | `InvalidDateTime` | Envelope validator | `span` |
+| E061 | `EmptyGroup` | Envelope validator | `span` |
 | E066 | `ActionNotPermitted` | `Contrl` constructors with `ContrlOptions` | — |
 | E067 | `InvalidContrlIdentifier` | `ContrlIdentifier` | — |
 | E068 | `SegmentNotPlaced` | `GroupResolution::findings`, `PlacementValidator` | `span` |
 | E069 | `TooManySegmentOccurrences` | `GroupResolution::findings`, `PlacementValidator` | `span` |
 | E070 | `TooManyGroupOccurrences` | `GroupResolution::findings`, `PlacementValidator` | `span` |
 | E071 | `InvalidGroupSchema` | `GroupDefBuilder::build`, `GroupSchema::{new, ordered}` | — |
+| E072 | `WriterPoisoned` | `Writer`, `MessageWriter`, `WriterEmitter` | — |
 
 ---
 
@@ -97,13 +101,15 @@ needed.
 unexpected end of input at byte offset {offset}
 ```
 
-**When**: Parser exhausted input before finding a mandatory delimiter (segment
-terminator, element separator, etc.).
+**When**: The input ended inside a segment (no segment terminator) or inside a
+leading `UNA`, which ISO 9735-1 Annex A has followed by six service characters.
+Reported only when nothing earlier among the bytes present is a fault: `BGM+220`,
+`UNT+3+1'U` (a tag prefix of one or two uppercase letters is not a fault yet) and
+`UNA'` are `E001`, while `UNH+\xFC` is `E003`.
 
-**Fields**: `offset: usize` — byte position where input ended.
+**Fields**: `offset: usize` — the input length.
 
-**Fix**: Ensure every segment ends with the configured segment terminator. Check that
-the payload was not truncated.
+**Fix**: Terminate every segment; check the payload was not truncated.
 
 ---
 
@@ -113,12 +119,16 @@ the payload was not truncated.
 invalid delimiter byte 0x{byte:02X} at offset {offset}
 ```
 
-**When**: A byte in a delimiter position (e.g. after parsing the UNA) is not a valid
-ASCII delimiter.
+**When**: A byte stands where it cannot: a separator or terminator where a segment
+tag is required, or a non-delimiter byte inside a segment. A segment terminator
+directly after another one (`''`), after only whitespace, or at the head of the
+input is an empty segment — ISO 9735-1 §7.6 starts every segment with its tag —
+and reported here with the offset of that terminator.
 
-**Fields**: `byte: u8`, `offset: usize`.
+**Fields**: `byte: u8`, `offset: usize` — absolute input offset.
 
-**Fix**: Check the UNA service string advice and the delimiter bytes in the payload.
+**Fix**: Check the UNA service string advice and the delimiter bytes in the payload;
+remove doubled segment terminators.
 
 ---
 
@@ -137,24 +147,27 @@ repertoires whose high bytes are not valid UTF-8; `decode_interchange` reads the
 repertoire from `UNB` S001 and converts, copying nothing when the payload is
 already ASCII or `UNOY`. See [Character Sets](@/docs/character-sets.md).
 
-Also raised by `Charset::decode` for a byte that falls in a slot the repertoire
-leaves undefined.
+Also raised by every decoding entry point (`Charset::decode`,
+`decoding_reader`, `decode_reader`, `from_bytes_decoded`,
+`from_reader_decoded`) for a byte in a slot the repertoire leaves undefined;
+`offset` is the byte's offset in the raw input.
 
 ---
 
 ### E004 — `MessageCountMismatch`
 
 ```text
-interchange message count mismatch: UNZ declared {expected}, found {actual}
+UNZ DE 0036 declares 5 unit(s), the interchange holds 1
 ```
 
-**When**: The `UNZ` segment declares a message count that does not match the number
-of `UNH`/`UNT` pairs observed.
+**When**: `UNZ` DE 0036 does not match the number of messages — or of groups,
+when the interchange uses them. A group's own count is `E054`. A count that is
+not a number is `E048` and is not compared.
 
-**Fields**: `expected: u32`, `actual: u32`.
+**Fields**: `expected: u32`, `actual: u32`, `span: Span` (the `UNZ`).
 
 **Fix**: Regenerate the `UNZ` segment with the correct count, or check for missing /
-extra `UNH..UNT` pairs.
+extra `UNH..UNT` pairs. Reported by `CONTRL` as code 29 on `UCI`.
 
 ---
 
@@ -167,7 +180,8 @@ segment count mismatch in message {message_ref}: UNT declared {expected}, found 
 **When**: The `UNT` segment's element 1 (segment count, inclusive of `UNH`/`UNT`)
 does not match the actual count.
 
-**Fields**: `expected: u32`, `actual: u32`, `message_ref: String`.
+**Fields**: `expected: u64`, `actual: u64`, `message_ref: String`, `span: Span`
+(the `UNT`). A count of up to 10 digits (syntax version 4) is reported exactly.
 
 **Fix**: Recount segments and update `UNT` element 1.
 
@@ -191,13 +205,16 @@ lowercase letters.
 ### E007 — `InvalidUna`
 
 ```text
-invalid UNA service string advice: must be exactly 9 bytes
+invalid UNA service string advice
 ```
 
-**When**: A `UNA` segment is present but is not exactly 9 bytes (`UNA` + 6 service
-characters).
+**When**: The six service characters after `UNA` are not usable: the active ones
+(component and element separator, release character, segment terminator, and a
+repetition separator other than space) must be mutually distinct, printable,
+non-alphanumeric ASCII. The decimal mark is not checked. Fewer than six
+characters is `E001`.
 
-**Fix**: The UNA must be exactly: `UNA:+.? '` (9 bytes with the default delimiters).
+**Fix**: Correct the `UNA`; the default is `UNA:+.? '`.
 
 ---
 
@@ -207,8 +224,10 @@ characters).
 missing required element {element_index} in segment {tag}
 ```
 
-**When**: The typed deserializer (`#[derive(EdifactDeserialize)]`) expected a
-mandatory element that was absent.
+**When**: A mandatory element is absent or empty: in the typed deserializer
+(`#[derive(EdifactDeserialize)]`), `Segment::required_element`, a service
+segment checked by envelope validation (`UNB+UNOA:3++R…`), or
+`InterchangeHeader::parse`.
 
 **Fields**: `tag: String`, `element_index: usize`.
 
@@ -223,8 +242,8 @@ is truly optional.
 serialized output contains invalid UTF-8
 ```
 
-**When**: An internal consistency check in the serializer detected non-UTF-8 output.
-This should never occur in correct usage — file a bug if you see it.
+**When**: The serializer's internal check found non-UTF-8 output. This is a bug;
+please report it.
 
 ---
 
@@ -238,8 +257,7 @@ This should never occur in correct usage — file a bug if you see it.
 
 **Fields**: wraps `IoError(std::io::Error)`.
 
-**Fix**: Check file permissions, disk space, or network connectivity depending on
-the underlying I/O source.
+**Fix**: Check the underlying source or sink.
 
 ---
 
@@ -378,11 +396,13 @@ escaped.
 segment starting at byte offset {offset} exceeded maximum length of {limit} bytes
 ```
 
-**When**: A reader-based parser accumulated more bytes than the `max_segment_bytes`
-limit in `ReaderConfig` without encountering a segment terminator. This is a DOS
-guard against adversarially crafted or truncated input.
+**When**: A segment is longer than `ReaderConfig::max_segment_bytes`, measured from
+the first byte of its tag to the byte before its terminator (whitespace between
+segments does not count). Detected once `max_segment_bytes + 1` bytes have been
+read, unless an earlier byte of the segment is already a fault. A guard against
+adversarially crafted or truncated input.
 
-**Fields**: `offset: usize`, `limit: usize`.
+**Fields**: `offset: usize` — the tag's absolute start, `limit: usize`.
 
 **Fix**: Increase `ReaderConfig::max_segment_bytes` if the segment is legitimately
 large, or investigate why the terminator is missing.
@@ -395,8 +415,9 @@ large, or investigate why the terminator is missing.
 missing required component {component_index} in element {element_index} of segment {tag}
 ```
 
-**When**: The typed deserializer expected a mandatory component within a composite
-element that was present but did not contain the required component.
+**When**: A composite is present but lacks a mandatory component: in the typed
+deserializer, `Segment::required_component`, a service segment checked by
+envelope validation (`UNB` without DE 0002), or `InterchangeHeader::parse`.
 
 **Fields**: `tag: String`, `element_index: usize`, `component_index: usize`.
 
@@ -411,14 +432,12 @@ field `Option<T>` if it is truly optional.
 interchange too large: count {count} exceeds u32::MAX
 ```
 
-**When**: An interchange being built has accumulated more than 4 294 967 295 items.
-This is effectively unreachable on real-world data; it usually indicates corrupted
-or synthetic input.
+**When**: An interchange being built has more than 4 294 967 295 items —
+corrupted or synthetic input.
 
 **Fields**: `count: u64`.
 
-**Fix**: Verify the input is not corrupted. If genuinely processing very large
-interchanges, partition the input into smaller batches.
+**Fix**: Check the input; split very large interchanges.
 
 ---
 
@@ -430,13 +449,19 @@ invalid event sequence: {message}
 
 **When**: An `EventEmitter` received events in an invalid order — for example an
 `Element` event before `StartSegment`, or a `ComponentElement` event before
-`Element`.
+`Element` — or `WriterEmitter::finish` was called with a segment still open.
+The refused event writes nothing.
+
+The `Writer` raises it for its interchange envelope too: `begin_interchange`
+while an interchange is open, `end_interchange` with none open or inside a
+message, and a raw `UNB` or `UNZ` written while an interchange opened by
+`begin_interchange` is open — the writer owns that `UNZ` count.
 
 **Fields**: `message: &'static str` describing the violation.
 
 **Fix**: Emit `StartSegment` before `Element`, and `Element` before
-`ComponentElement`. This error always indicates a programming mistake in the
-caller's serialization code.
+`ComponentElement`; open and close an interchange with `begin_interchange` and
+`end_interchange()` only. Always a bug in the calling code.
 
 ---
 
@@ -446,14 +471,11 @@ caller's serialization code.
 element definition contains invalid position 0; positions must be >= 1 (one-based)
 ```
 
-**When**: An `OwnedElementRef` was constructed with `position = 0`. Element
-positions are one-based — position 1 is the first element slot. Position 0 is
-never valid.
+**When**: `OwnedElementRef::try_new` received `position = 0`. Positions are
+one-based.
 
-**Fix**: Use `OwnedElementRef::try_new(position, ...)` which returns
-`Err(EdifactError::InvalidElementPosition)` instead of panicking. For trusted
-literal position values use `OwnedElementRef::new_unchecked`, which panics
-immediately rather than returning this error.
+**Fix**: Pass a position ≥ 1. `OwnedElementRef::new_unchecked` panics on 0
+instead of returning this error.
 
 ---
 
@@ -464,8 +486,8 @@ incompatible release scopes: cannot compose {current:?} with {incoming:?}
 ```
 
 **When**: Two `ProfileRulePack` values with different release scopes were
-composed via `merge`, `extend_from`, or `merge_with_override`. Both packs must
-either share the same release scope or at most one may carry a scope.
+composed with `extend_from` or `merge_with_override`. Both must share the
+release scope, or at most one may carry one.
 
 **Fields**: `current: String` (scope on the receiving pack), `incoming: String`
 (scope on the pack being merged in).
@@ -483,7 +505,9 @@ segment {tag} element {element_index}: invalid field value "{value}"
 ```
 
 **When**: The typed deserializer found a qualifier element that was present but
-held an empty or otherwise invalid value.
+held an empty or otherwise invalid value. `DtmValidator` reports a `DTM` value
+that contradicts its format code under this code (see
+[Dates and times](@/docs/dates-and-times.md#validating)).
 
 **Fields**: `tag: String`, `element_index: usize`, `value: String`.
 
@@ -498,9 +522,8 @@ held an empty or otherwise invalid value.
 unexpected data token at byte offset {offset}: data element before segment tag
 ```
 
-**When**: The parser encountered a data-element or component-element token
-before reading the first segment tag.  This usually indicates a partial write,
-a missing segment tag, or encoding corruption.
+**When**: A data or component separator came before the first segment tag — a
+partial write, a missing tag, or corruption.
 
 **Fields**: `offset: usize`.
 
@@ -515,78 +538,13 @@ ASCII letters) and that no data or component separators appear before it.
 validation failed with {error_count} error(s)
 ```
 
-**When**: Constructed explicitly to promote a `ValidationReport` that contains at
-least one error-severity issue into an `EdifactError` — typically inside application
-code or library helpers that need to return `Result<_, EdifactError>` rather than a
-bare report.  Note that `ValidationReport::result` itself returns
-`Result<ValidationReport, ValidationReport>` (the `Err` arm carries the full report)
-and does **not** produce this variant automatically; callers must wrap it themselves
-when needed.
+**When**: Built by the caller to carry a `ValidationReport` with errors as an
+`EdifactError`. `ValidationReport::result` returns
+`Result<ValidationReport, ValidationReport>` and does not produce it.
 
 **Fields**: `error_count: usize`, `report: Box<ValidationReport>`.
 
-**Fix**: Inspect `report` for the full list of issues with locations, rule IDs, and
-suggested fixes. Call `ValidationContext::validate` if you want validation to always return a
-report rather than an error.
-
----
-
-## Matching errors
-
-Because `EdifactError` is `#[non_exhaustive]`, always include a wildcard arm:
-
-```rust
-use edifact::EdifactError;
-
-fn handle(err: EdifactError) {
-    match err {
-        EdifactError::UnexpectedEof { offset } => {
-            eprintln!("E001 truncated input at byte {offset}");
-        }
-        EdifactError::InvalidCodeValue { value, code_list, .. } => {
-            eprintln!("E014 bad code '{value}' in list {code_list}");
-        }
-        EdifactError::Io(e) => {
-            eprintln!("E010 I/O: {e}");
-        }
-        other => {
-            eprintln!("{} {other}", other.stable_code());
-        }
-    }
-}
-```
-
----
-
-## Stable codes in logs
-
-Use `err.stable_code()` to emit a stable, searchable error code in structured logs:
-
-```rust,ignore
-use edifact::from_bytes;
-
-match from_bytes(b"BAD").collect::<Result<Vec<_>, _>>() {
-    Ok(_) => {}
-    Err(e) => {
-        tracing::error!(code = e.stable_code(), error = %e, "EDIFACT parse error");
-    }
-}
-```
-
----
-
-## Diagnostics (rich error output)
-
-Enable the `diagnostics` feature to get `miette::Diagnostic` on all variants with
-`offset` / `span` fields. See [Diagnostics](@/docs/diagnostics.md) for details.
-
----
-
-## Next steps
-
-- [Diagnostics](@/docs/diagnostics.md) — miette span-annotated rendering
-- [Validation](@/docs/validation.md) — `ValidationReport` vs `EdifactError`
-- [Performance](@/docs/performance.md) — error-free fast paths
+**Fix**: Inspect `report` for the issues, their locations and rule IDs.
 
 ---
 
@@ -613,10 +571,8 @@ duplicate {tag} reference '{reference}' at bytes {span}
 ```
 
 **When**: Two messages in one interchange share a `UNH` reference (DE 0062), or
-two functional groups share a `UNG` reference (DE 0048).  ISO 9735-1 requires
-both to be unique within the interchange; duplicates make a message
-unaddressable, because a receiver keying on the reference processes one
-occurrence and silently drops the rest.
+two groups a `UNG` reference (DE 0048). ISO 9735-1 requires both to be unique:
+a receiver keying on the reference would process one and drop the rest.
 
 **Fields**: `tag: String` (`UNH` or `UNG`), `reference: String`, `span: Span`.
 
@@ -635,11 +591,9 @@ segment {tag} has no data element {data_element} in its definition
 UN/EDIFACT data element identifier that the supplied `SegmentDefinition` /
 `OwnedSegmentDef` does not declare.
 
-This is the variant that makes code-addressed access safer than positional
-access: a stale or mistyped reference fails here instead of reading whichever
-element happens to sit at the wrong index. The derive form
-(`#[edifact(element = "3055")]` under `#[edifact(layout = ...)]`) catches the
-same mistake at compile time, during const evaluation.
+A stale or mistyped identifier fails here instead of reading whatever sits at
+the wrong index. The derive form (`#[edifact(element = "3055")]` under
+`#[edifact(layout = ...)]`) catches it at compile time.
 
 **Fields**: `tag: String`, `data_element: String`.
 
@@ -670,9 +624,7 @@ segment layout is for {expected}, but the segment is {actual}
 ```
 
 **When**: A `SegmentLayout` was applied to a segment with a different tag — for
-example passing the `NAD` definition to a `DTM` segment. Resolving against the
-wrong table is exactly the class of mistake code-addressed access exists to
-prevent, so it is rejected before any lookup.
+example the `NAD` definition on a `DTM` segment. Rejected before any lookup.
 
 **Fields**: `expected: String` (the layout's tag), `actual: String`.
 
@@ -683,18 +635,25 @@ prevent, so it is rejected before any lookup.
 ### E036 — `LimitExceeded`
 
 ```text
-input exceeded the configured {limit} limit of {max} at byte offset {offset}
+input exceeded the {limit} limit of {max} at byte offset {offset}
 ```
 
 **When**: The input carries more than a `ReaderConfig` budget allows —
-`max_segments` or `max_messages` for the whole input, `max_segments_per_message`
+`max_segments` or `max_messages` for the whole input, `max_message_bytes`
 for any one `UNH`…`UNT` message, or `max_input_bytes` — or the recovering scan
-recorded more faults than `RecoveryConfig::max_faults` allows. The per-segment
-size guard has its own code (`E020 SegmentTooLong`).
+recorded more faults than `RecoveryConfig::max_faults` allows, or — on the
+decoding entry points — the `UNB` syntax identifier lies outside the 4 KiB sniff
+window ([Character Sets](@/docs/character-sets.md#byte-order-mark-and-leading-whitespace);
+when `max_input_bytes` ends before the identifier, that limit is reported),
+or `InterchangeHeader::read`/`read_from` found no `UNB` terminator within
+4 096 + 9 + `max_segment_bytes` bytes (`limit: "header_read"`).
+The per-segment size guard has its own code (`E020 SegmentTooLong`).
+Without any configuration it fires at `max_input_bytes` = 268 435 456 (256 MiB)
+and `max_message_bytes` = 16 777 216 (16 MiB).
 
 `max_input_bytes` counts **every consumed byte**: a byte order mark, the `UNA`,
-whitespace and stray segment terminators as well as segments. Input is consumed
-in units (the prologue, a run of whitespace or stray terminators, one segment
+whitespace as well as segments. Input is consumed
+in units (the prologue, a run of whitespace, one segment
 with its terminator), and a unit that ends past the budget is refused before it
 is parsed — so trailing whitespace beyond the budget is an `E036` too, and a
 syntax error that lies beyond the budget is reported as `E036`, not as the
@@ -703,12 +662,13 @@ one detected first in the byte stream wins. The slice and reader paths report
 the same `E036` at the same offset for the same input.
 
 Input that ends *exactly* at a limit is not a violation. Why a limit is an error
-rather than a quiet stop: [Parsing](@/docs/parsing.md#why-the-limits-are-errors-and-not-a-quiet-stop).
+rather than a quiet stop: [Parsing](@/docs/parsing.md#limits-are-errors).
 
 **Fields** (the variant is `#[non_exhaustive]`; match it with `..`):
 `limit: &'static str` (`"max_segments"`, `"max_messages"`,
-`"max_segments_per_message"`, `"max_input_bytes"`, or `"max_faults"`),
-`max: u64`, and `offset: usize` — for a count budget the start of the segment
+`"max_message_bytes"`, `"max_input_bytes"`, `"max_faults"`, `"sniff_window"`
+or `"header_read"`),
+`max: u64`, and `offset: usize` — for a count or per-message budget the start of the segment
 that would have exceeded it, for `max_input_bytes` the budget itself (the first
 byte outside it).
 
@@ -726,10 +686,11 @@ assert!(matches!(
 ```
 
 **Fix**: Raise the corresponding `ReaderConfig` budget if the input is legitimate,
-or reject it as oversized. Segments parsed before the violation are still
-delivered, so a manual iteration can keep the partial result. On a long-lived
-stream bound each message with `max_segments_per_message` rather than the whole
-stream with `max_segments`.
+or reject it as oversized; `ReaderConfig::unbounded()` lifts every limit for
+trusted input. Segments parsed before the violation are still delivered, so a
+manual iteration can keep the partial result. On a long-lived stream use
+`ReaderConfig::unbounded().max_message_bytes(n)`: each message stays capped,
+the stream does not.
 
 ---
 
@@ -744,15 +705,15 @@ declares no repetition separator
 handed to a `Writer` whose `ServiceStringAdvice` holds the space "not used"
 sentinel at UNA position 7.
 
-**Why**: There is no byte to write between the occurrences. Emitting the space
-anyway produces output that reads back as a *single* occurrence whose value
-contains a space — silent data corruption from a call that reported success.
+**Why**: There is no byte to put between the occurrences; a space would read
+back as one occurrence containing a space.
 
 **Fix**: Build the writer with `Writer::with_una` and a `ServiceStringAdvice`
-whose `repetition_sep` is set, or flatten the repetitions before writing.
+whose `repetition_sep` is set, or flatten the repetitions.
 
-**Recovery**: The check runs before any byte is written, so the sink is untouched
-and the writer can be reused for the next segment.
+**Recovery**: A refusal: nothing is written and the writer stays usable.
+
+---
 
 ### E038 — `CharacterNotInRepertoire`
 
@@ -762,20 +723,15 @@ character 'ü' at offset 1 is not in the UNOA character repertoire
 
 **When**: A writer bound with [`Writer::with_charset`](@/docs/writing.md#character-repertoires)
 was handed a value containing a character the declared repertoire cannot carry —
-or [`Charset::encode`] was called directly with one.
-
-**Why**: `UNB` S001 DE 0001 tells the receiver which table to decode the payload
-with. A character outside that table has no byte to be written as; emitting one
-anyway produces a value the receiver reads as a different character, or as an
-undefined slot.
+or `Charset::encode` was called with one. Such a character has no byte in the
+table the receiver decodes with.
 
 **Fix**: Transliterate the value (`ü` → `ue`), or declare a wider repertoire —
 `UNOC` for Latin-1, `UNOY` for full UTF-8.
 
-**Recovery**: The check happens during value encoding, so a partially written
-segment is possible. Prefer validating with
-[`Charset::first_violation`] before writing when you need to skip bad records
-and continue.
+**Recovery**: The check runs while encoding, so part of the segment may already
+be written and the writer is poisoned (`E072`). To skip bad records and
+continue, check values with `Charset::first_violation` before writing.
 
 ---
 
@@ -788,11 +744,9 @@ character repertoire 'UNOX' is not supported
 **When**: An interchange declares `UNOX` (ISO/IEC 2022 code extension) or `KECA`
 (a Korean identifier outside ISO 9735) in `UNB` S001 DE 0001.
 
-**Why**: Every repertoire this crate supports is single-byte and
-ASCII-transparent, which is what makes byte-level delimiter scanning sound.
-`UNOX` is stateful and `KECA` is multi-byte, so a `+` byte inside a multi-byte
-sequence would be mistaken for an element separator. Mis-decoding silently is
-worse than refusing.
+**Why**: Delimiter scanning is sound only for ASCII-transparent repertoires.
+`UNOX` is stateful and `KECA` multi-byte: a `+` byte inside a multi-byte
+sequence would be read as an element separator.
 
 **Fix**: Ask the partner for `UNOC` or `UNOY`, or transcode the interchange with
 a dedicated codec before handing it to `edifact`.
@@ -808,11 +762,8 @@ non-finite number NaN has no EDIFACT representation
 **When**: `DecimalFloat(f64::NAN)` or `DecimalFloat(f32::INFINITY)` was
 serialized.
 
-**Why**: An EDIFACT numeric data element is digits with an optional sign and
-decimal mark (ISO 9735-1 §10). Rust's `Display` renders these values as `NaN`,
-`inf`, and `-inf` — text no receiver can parse, and which this crate's own reader
-returns as an ordinary string rather than a number. Writing it turns an
-arithmetic bug into a wire-format bug found days later.
+**Why**: An EDIFACT number is digits with an optional sign and decimal mark
+(ISO 9735-1 §10); `NaN` and `inf` are not numbers to any receiver.
 
 **Fix**: Check the calculation, or omit the element rather than emitting a
 placeholder.
@@ -825,15 +776,13 @@ placeholder.
 UNB declares repertoire UNOA, but the writer encodes UNOC
 ```
 
-**When**: `Writer::begin_interchange` was called with a syntax identifier that
-differs from the repertoire the writer was bound to with `Writer::with_charset`.
+**When**: `Writer::begin_interchange` was called with a header whose repertoire
+differs from the one the writer was bound to with `Writer::with_charset`.
 
-**Why**: The header would tell the receiver to decode the body with the wrong
-table. Every non-ASCII value then arrives as mojibake, and nothing in the
-interchange reveals why.
+**Why**: The receiver would decode the body with the wrong table.
 
-**Fix**: Pass the writer's own identifier — `writer.charset().unwrap().syntax_identifier()`
-— or bind the writer to the repertoire the header declares.
+**Fix**: Declare the writer's own repertoire in the header, or leave the writer
+unbound: `begin_interchange` binds it to the header's.
 
 ---
 
@@ -846,12 +795,11 @@ interchange IC4711 contains no message or group
 **When**: A `UNB`/`UNZ` pair encloses nothing. ISO 9735-1 §7.2 requires an
 interchange to "contain at least one group, or one message or one package".
 
-**Why**: `UNZ+0` makes the control count agree with the (absent) content, so no
-count check can see this. An empty interchange is usually a producer that
-serialised an empty result set instead of skipping the send — the receiver files
-a delivery, acknowledges it, and nothing arrives.
+**Why**: `UNZ+0` agrees with the absent content, so no count check sees it.
 
 **Fields**: `control_ref: String` — `UNB` DE 0020.
+
+`Writer::end_interchange` and `InterchangeBuilder::build` refuse to write one.
 
 **Fix**: Send nothing rather than an empty envelope.
 
@@ -866,8 +814,8 @@ message MSG1 has no segments between UNH and UNT
 **When**: A `UNH`/`UNT` pair encloses nothing. ISO 9735-1 §7.4 requires a message
 to "contain at least one additional segment".
 
-**Why**: As with E042, `UNT+2` is internally consistent, so the segment-count
-check confirms the message rather than rejecting it.
+**Why**: `UNT+2` is consistent, so the segment count does not catch it.
+`MessageBuilder::finish` and `InterchangeBuilder::build` refuse to produce one.
 
 **Fields**: `message_ref: String` (`UNH` DE 0062), `span: Span` of the `UNH`.
 
@@ -888,11 +836,8 @@ segment UNO opens or closes a package, which this crate does not parse
 **When**: The interchange carries a package — `UNO`…`UNP` (ISO 9735-1 §7.10,
 elaborated by ISO 9735-8).
 
-**Why**: The object inside a package is arbitrary binary data whose length is
-declared in `UNO` S022 DE 0810. It is not EDIFACT-encoded, and feeding it to a
-tokenizer that scans for delimiters produces nonsense. A package is a *legal*
-member of an interchange, so reporting it as a stray segment would send you
-looking for a corruption that is not there.
+**Why**: A package holds binary data of the length declared in `UNO` S022
+DE 0810; it is not EDIFACT-encoded and cannot be tokenized.
 
 **Fields**: `tag: String` (`UNO` or `UNP`), `span: Span`.
 
@@ -911,13 +856,8 @@ segment FTX element 1 component 0: value is only spaces
 **When**: A data element value consists of nothing but spaces. ISO 9735-1 §9.4:
 "A data element value containing only space(s) shall not be allowed."
 
-**Why**: Trailing spaces are insignificant and must be suppressed (§9.2), so a
-value made only of spaces is an element that should have been omitted. It is a
-classic artefact of a fixed-width source record copied into a variable-length
-field — and a receiver comparing it against a code list will not treat it as
-absent.
-
-Raised as a **warning**, not an error: the value is still readable.
+**Why**: Trailing spaces must be suppressed (§9.2), so an all-space value is an
+element that should have been omitted. A **warning**: the value is readable.
 
 **Fields**: `tag: String`, `element_index: usize`, `component_index: usize`,
 `span: Span`.
@@ -938,8 +878,8 @@ shall contain at least one data element in addition to the segment tag."
 
 **Why**: §8.6 adds that a conditional segment whose only content is the tag
 "shall be omitted in its entirety" — so `DTM'` is either a mandatory segment that
-lost its data or a conditional one that should not have been sent. Note that
-`DTM+'` is *not* this error: an empty data element is present, which is how
+lost its data or a conditional one that should not have been sent. `DTM+'` is
+*not* this error: an empty data element is present, which is how
 EDIFACT spells a mandatory segment with no data to carry (§8.5).
 
 **Fields**: `tag: String`, `span: Span`.
@@ -958,10 +898,6 @@ segment RFF element 0 occurs 3 times, at most 1 allowed
 **When**: A data element occurred more times than its definition's `max_repeat`
 allows. ISO 9735-1 §7.6 requires a segment specification to state each element's
 maximum number of occurrences.
-
-**Why**: `max_repeat` had been carried on every `ElementRef` and read by nothing,
-so a definition that said "this element occurs once" constrained nothing — and a
-caller who wrote it believed otherwise. It is enforced now.
 
 **Fields**: `tag`, `element_index`, `max: u8`, `actual: usize`, `span: Span`.
 
@@ -1047,8 +983,7 @@ or stand-alone data elements at the end of a segment are omitted, the data
 element separators which would normally follow them shall also be omitted."
 §8.8.3 says the same for components at the end of a composite.
 
-Note the contrast with an **interior** omission, which must keep its separator
-(§8.8.2): `BGM+220++9'` is correct and is not reported. So is `BGM+'` —
+An **interior** omission keeps its separator (§8.8.2): `BGM+220++9'` is correct and is not reported. So is `BGM+'` —
 §8.5 spells a mandatory segment with no data to carry exactly that way.
 
 Raised as a **warning**: a correct parser reads the value anyway.
@@ -1069,7 +1004,7 @@ interchange mixes groups with ungrouped messages
 ```
 
 **When**: A `UNH` appears outside every `UNG`…`UNE` in an interchange that uses
-groups.
+groups, or `Writer::end_interchange` would close such an interchange.
 
 **Why**: ISO 9735-1 §7.2 lists what an interchange may contain, and the entries
 are exclusive — groups containing messages, *or* bare messages, never both. A
@@ -1079,8 +1014,7 @@ cannot describe the interchange at all.
 **Fields**: `span: Span`.
 
 **Fix**: Put every message inside a group, or none of them. Reported by `CONTRL`
-as code 30 — the code that exists for precisely this, rather than the general
-"not supported in this position".
+as code 30.
 
 ---
 
@@ -1094,12 +1028,10 @@ segment ZZZ element 0 component 0: leading zeroes are not suppressed
 the sender to suppress: leading zeroes in a numeric value, trailing spaces in an
 alphabetic or alphanumeric one.
 
-**Why**: These are the fingerprints of a fixed-width source record copied into a
-variable-length field. The value is readable, so this is a warning — but a
-receiver comparing `007` against the code `7`, or `"ACME "` against `"ACME"`,
-will not match them.
+**Why**: A receiver comparing `007` with the code `7`, or `"ACME "` with
+`"ACME"`, does not match them. A **warning**: the value is readable.
 
-Two deliberate exemptions. §9.2 allows "a single zero before a decimal mark", so
+Two exemptions. §9.2 allows "a single zero before a decimal mark", so
 `0.5` is correct while `00.5` is not. And it governs *variable* length elements
 only: a **fixed**-length numeric field is zero-padded by design and a fixed text
 one space-padded, so neither is reported.
@@ -1111,6 +1043,142 @@ Requires a declared [representation](@/docs/validation.md#data-element-represent
 `span: Span`.
 
 **Fix**: Suppress the characters before sending. Reported by `CONTRL` as code 12.
+
+---
+
+### E054 — `GroupCountMismatch`
+
+```text
+UNE DE 0060 of group G1 declares 5 message(s), the group holds 1
+```
+
+**When**: `UNE` DE 0060 does not match the number of messages between its `UNG`
+and `UNE`.
+
+**Fields**: `group_ref: String`, `expected: u32`, `actual: u32`, `span: Span`
+(the `UNE`).
+
+**Fix**: Correct DE 0060. Reported by `CONTRL` as code 29 on the group's `UCF`.
+
+---
+
+### E055 — `InteractiveSegmentNotSupported`
+
+```text
+segment UIH belongs to interactive EDI (ISO 9735-3), which is not supported
+```
+
+**When**: `UIB`, `UIH`, `UIR`, `UIT` or `UIZ` appears anywhere — as the first
+segment (instead of `E015`), between `UNB` and `UNH`, or in a message body.
+
+**Fields**: `tag: String`, `span: Span`.
+
+**Fix**: Exchange the data as a batch interchange. Reported by `CONTRL` as code
+47.
+
+---
+
+### E056 — `SecuritySegmentNotSupported`
+
+```text
+segment USH is a security segment (ISO 9735-5/-7/-9), which is not supported
+```
+
+**When**: `USA`, `USB`, `USC`, `USD`, `USE`, `USF`, `USH`, `USL`, `USR`, `UST`,
+`USU`, `USX` or `USY` appears anywhere, message bodies included. The crate does
+not verify security headers, so a secured message is refused, never passed as if
+it were plain.
+
+**Fields**: `tag: String`, `span: Span`.
+
+**Fix**: Verify and remove the security segments before parsing, or agree on
+unsecured exchange. Reported by `CONTRL` as code 47.
+
+---
+
+### E057 — `ReservedServiceSegmentTag`
+
+```text
+segment tag UXX is reserved for service segments (ISO 9735-1 §7.7) and defines none
+```
+
+**When**: A tag starting with `U` is neither a batch service segment (`UNB`
+`UNZ` `UNG` `UNE` `UNH` `UNT` `UNS` `UNO` `UNP` `UGH` `UGT` `UCI` `UCF` `UCM`
+`UCS` `UCD`) nor `E055`/`E056`.
+
+**Fields**: `tag: String`, `span: Span`.
+
+**Fix**: Rename or remove the segment. Reported by `CONTRL` as code 15.
+
+---
+
+### E058 — `DataAfterInterchangeTrailer`
+
+```text
+segment UNB follows the interchange trailer UNZ; one input holds one interchange
+```
+
+**When**: Anything but whitespace follows the first `UNZ` outside a message: a
+second interchange, a stray segment. Reported once, at the first such segment;
+the first interchange is validated as if it were the whole input. A `UNA` after
+the first segment is `E058` from the parser (span: the three bytes `UNA`), on
+the slice, the reader and the recovering path alike.
+
+**Fields**: `tag: String`, `span: Span`.
+
+**Fix**: Split the input after each `UNZ` and parse every interchange on its
+own. Reported by `CONTRL` as code 33 on `UCI`.
+
+---
+
+### E059 — `UnsupportedSyntaxVersion`
+
+```text
+UNB S001 DE 0002 syntax version "9" is not supported; expected 1, 2, 3 or 4
+```
+
+**When**: DE 0002 is anything but `1`, `2`, `3` or `4` — syntax `X` included.
+Reported once; representations that differ between versions then accept either
+form.
+
+**Fields**: `value: String`, `span: Span` (DE 0002).
+
+**Fix**: Declare a supported version. Reported by `CONTRL` as code 2 on `UCI`.
+
+---
+
+### E060 — `InvalidDateTime`
+
+```text
+segment UNB element 3 component 0: "261399" is not a valid date
+```
+
+**When**: `UNB` or `UNG` S004 has the right digit count but is no calendar date
+or 24-hour time: month 01–12, day valid for the month, hour 00–23, minute
+00–59. `YYMMDD` (syntax 1–3) admits 29 February in every year divisible by 4,
+because the century is not transferred; `CCYYMMDD` (syntax 4) follows the
+Gregorian rule. A value of the wrong length is `E049`/`E050`, never also
+`E060`.
+
+**Fields**: `tag`, `element_index`, `component_index` (`0` date, `1` time),
+`value`, `span: Span`.
+
+**Fix**: Send a real date and time. Reported by `CONTRL` as code 12.
+
+---
+
+### E061 — `EmptyGroup`
+
+```text
+group G1 contains no message
+```
+
+**When**: A `UNG`…`UNE` holds no message (ISO 9735-1:2002 §7.3).
+
+**Fields**: `group_ref: String`, `span: Span` (the `UNG`).
+
+**Fix**: Put at least one message in the group, or omit it. Reported by
+`CONTRL` as code 32 on the group's `UCF`.
 
 ---
 
@@ -1126,10 +1194,8 @@ DE 0083 action code on `UCI`, `UCF` or `UCM` that the configured `ActionPolicy`
 does not admit — a receipt (`8`) under a policy admitting only `7` and `4`, or a
 warning-only `UCM` (`7`) under one admitting only `4`.
 
-**Why**: A `CONTRL` the partner's guide does not admit is one it rejects, and
-rewriting the verdict into a permitted code would say something that is not
-true. The first violation (`UCI`, then each `UCF` and `UCM` in document order)
-is returned.
+The verdict is never rewritten into a permitted code. The first violation
+(`UCI`, then each `UCF` and `UCM` in document order) is returned.
 
 **Fields**: `segment_tag: &'static str` (`UCI`, `UCF`, `UCM`),
 `action: &'static str` (`4`, `7`, `8`).
@@ -1174,8 +1240,8 @@ instance it was skipped in (`SegmentGroupIndexed::unplaced`).
 **Fields**: `tag: String`, `reason: UnplacedReason` (`OutOfOrder` — it fits a
 place already passed; `NotHere` — it fits a place elsewhere in the schema;
 `Unknown` — it fits no place), `span: Span`. The issue carries kind
-`placement`, layer `structure`, the `group_path` of the instance and, when the
-slice starts at `UNH`, the `segment_position`.
+`placement`, layer `structure`, the `group_path` of the instance and, inside a
+message, the `segment_position`.
 
 **Fix**: Move the segment to the place the implementation guide gives it, or
 remove it. An ordered root that does not declare `UNT` reports the trailer this
@@ -1242,13 +1308,98 @@ instance's `group_path` and the group's trigger tag.
 
 ---
 
+### E072 — `WriterPoisoned`
+
+```text
+writer is poisoned: a message was dropped without finish(); no further output was written
+```
+
+**When**: A write or completion method of `Writer`, `MessageWriter` or
+`WriterEmitter` was called after an earlier failure poisoned the writer:
+
+- a write to the sink failed (`E010`);
+- a call failed after it had written bytes, such as `E038` in the middle of a
+  value;
+- a `MessageWriter` was dropped without a successful `finish()` — an early `?`
+  or a panic;
+- `MessageWriter::finish` failed to write `UNT`.
+
+Refusals — `E006`, `E024`, `E037`, `E041` and every `begin_interchange`/`end_interchange` refusal — write nothing and do not poison.
+
+**Fields**: `reason: &'static str`, the cause.
+
+**Fix**: The output is incomplete; do not send it. Start a new `Writer`.
+`Writer::into_inner` (or `WriterEmitter::into_inner`) returns the sink with the
+partial bytes for inspection. Close every message with `MessageWriter::finish()`.
+
+---
+
 ## Retired codes
 
-Retired codes are never reissued, so a stored code always identifies the same
-condition:
+A code is never reissued, so a stored code always means the same condition:
 
 | Code | Former variant | Retired because |
 |---|---|---|
 | E018 | `ValidationFailed` | Superseded by `ValidationErrors` (E030). |
 | E022 | `UnexpectedMessageType` | Message dispatch is a `match` on `MessageWindow::message_type`, not a registry. |
 | E029 | `FunctionalGroupNotSupported` | Functional groups (`UNG`/`UNE`) are parsed and validated natively. |
+| E062–E065 | — | Reserved; never assigned. |
+
+---
+
+## Matching errors
+
+`EdifactError` is `#[non_exhaustive]`: include a wildcard arm.
+
+```rust
+use edifact::EdifactError;
+
+fn handle(err: EdifactError) {
+    match err {
+        EdifactError::UnexpectedEof { offset } => {
+            eprintln!("E001 truncated input at byte {offset}");
+        }
+        EdifactError::InvalidCodeValue { value, code_list, .. } => {
+            eprintln!("E014 bad code '{value}' in list {code_list}");
+        }
+        EdifactError::Io(e) => {
+            eprintln!("E010 I/O: {e}");
+        }
+        other => {
+            eprintln!("{} {other}", other.stable_code());
+        }
+    }
+}
+```
+
+---
+
+## Stable codes in logs
+
+Log `err.stable_code()` as a searchable field:
+
+```rust,ignore
+use edifact::from_bytes;
+
+match from_bytes(b"BAD").collect::<Result<Vec<_>, _>>() {
+    Ok(_) => {}
+    Err(e) => {
+        tracing::error!(code = e.stable_code(), error = %e, "EDIFACT parse error");
+    }
+}
+```
+
+---
+
+## Diagnostics
+
+The `diagnostics` feature implements `miette::Diagnostic` for `EdifactError`:
+the stable code, severity and a help text. See [Diagnostics](@/docs/diagnostics.md).
+
+---
+
+## Next steps
+
+- [Diagnostics](@/docs/diagnostics.md) — miette span-annotated rendering
+- [Validation](@/docs/validation.md) — `ValidationReport` vs `EdifactError`
+- [Performance](@/docs/performance.md) — error-free fast paths

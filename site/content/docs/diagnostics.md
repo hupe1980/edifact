@@ -1,235 +1,134 @@
 +++
 title = "Diagnostics"
-description = "Human-readable, span-annotated EDIFACT error output powered by miette."
+description = "Render EDIFACT errors and validation findings with miette: stable codes, help text, and source spans underlined."
 weight = 90
 +++
 
-The `diagnostics` feature adds rich, span-annotated error output to `EdifactError`
-via the [`miette`](https://docs.rs/miette) crate. It is **opt-in** — enabling it has
-no effect on parsing performance and adds no overhead when errors are handled
-programmatically.
-
----
-
-## Enabling the feature
+The opt-in `diagnostics` feature implements
+[`miette::Diagnostic`](https://docs.rs/miette) for the error and validation
+types. Parsing is unchanged.
 
 ```bash
 cargo add edifact --features diagnostics
+cargo add miette --features fancy   # to render; edifact does not re-export it
 ```
 
-You also need `miette` to render the errors:
+## What each type provides
 
-```bash
-cargo add miette --features fancy
-```
+| Type | `code` | `help` | Labels / related |
+|---|---|---|---|
+| `EdifactError` | stable code (`E001`…) | remediation hint, where one exists | none: the offset or span is in the message and the fields |
+| `ValidationIssue` | error code, else rule id | the issue's suggestion | one label at its `span`: kind and group path (`missing at SG4[0]/SG8[1]/RFF`) |
+| `ValidationReport` | `VALIDATION` | error, warning and info counts | every issue via `related()`: errors, then warnings, then infos |
 
----
+Severity follows the validation pipeline: Error and Critical render as errors,
+Warning as warnings, Info as advice.
 
-## What it does
+## Errors from `main`
 
-When `diagnostics` is enabled:
-
-- `EdifactError` implements `miette::Diagnostic`
-- `ValidationIssue` implements `miette::Diagnostic`: its code is the error code
-  (else the rule id), its help the suggestion, and it carries one label at its span
-  naming its kind and group path (e.g. `missing at SG4[0]/SG8[1]/RFF`)
-- `ValidationReport` implements `miette::Diagnostic` and yields every issue through
-  `related()`, errors first, then warnings, then infos
-- Every error carries a **byte-level source span** pointing into the input
-- `miette::Report` renders errors with annotated source context:
-
-```text
-Error: invalid code value "999" at offset 42
-  ╭─ input.edi:2:5
-  │
-2 │ BGM+999+PO-4711+9'
-  │     ^^^ code "999" is not in code list 1001
-  ╰──
-Error Code: E007
-Help: Use a valid document name code from UNTDID 1001
-```
-
----
-
-## Rendering errors
-
-### In a binary / CLI
+`EdifactError` converts into `miette::Report` with `?`:
 
 ```rust
 fn main() -> miette::Result<()> {
-    let input = b"UNH+1+ORDERS:D:11A:UN'BGM+999+PO-4711+9'UNT+3+1'";
-    let segs: Vec<_> = edifact::from_bytes(input)
-        .collect::<Result<_, _>>()?;  // EdifactError auto-converts to miette::Report
+    let input = b"UNH+1+ORDERS:D:11A:UN'BGM+220+PO-4711+9'UNT+3+1'";
+    let _segs: Vec<_> = edifact::from_bytes(input).collect::<Result<_, _>>()?;
     Ok(())
 }
 ```
 
-When you use `miette::Result` as the return type of `main`, `miette` automatically
-renders any `EdifactError` with full source context.
-
-### Explicit rendering
+Or wrap an error explicitly:
 
 ```rust
-fn validate(input: &[u8]) {
-    use edifact::{from_bytes, EdifactError, ValidationContext};
-
-    match from_bytes(input).collect::<Result<Vec<_>, _>>() {
-        Ok(segs) => {
-            let ctx = ValidationContext::builder().build();
-            let report = ctx.validate(&segs);
-            println!("{}", report.render_deterministic());
-        }
-        Err(err) => {
-            // miette::Report wraps the error and renders with full context
-            let report = miette::Report::new(err);
-            eprintln!("{report:?}");
-        }
+fn report(input: &[u8]) {
+    if let Err(err) = edifact::from_bytes(input).collect::<Result<Vec<_>, _>>() {
+        eprintln!("{:?}", miette::Report::new(err));
     }
 }
 ```
 
-### Propagating through anyhow
+## Underlining findings in the input
 
-```rust,ignore
-use anyhow::Context;
-
-fn parse_edi(input: &[u8]) -> anyhow::Result<Vec<edifact::OwnedSegment>> {
-    edifact::from_reader(std::io::Cursor::new(input))
-        .context("failed to parse EDIFACT interchange")
-}
-```
-
----
-
-## Validation report rendering
-
-`ValidationReport::render_deterministic()` always produces the same output for the
-same input, making it suitable for snapshot tests:
+Attach the source to a `ValidationReport`; each issue with a span is
+underlined:
 
 ```rust
-use edifact::{from_bytes, ValidationContext, ValidationLayer, Validator, ValidationReport, Segment};
-# use edifact::ValidationRuleContext;
-
-# struct DemoValidator;
-# impl Validator for DemoValidator {
-#     fn validate_batch(&self, _: &[Segment<'_>], _: &mut ValidationReport, _: &ValidationRuleContext<'_>) {}
-#     fn set_message_type(&mut self, _: Option<&str>) {}
-# }
-let segs: Vec<_> = from_bytes(b"BGM+220+PO-4711+9'").collect::<Result<_, _>>()?;
-let ctx = ValidationContext::builder()
-    .with_validator(ValidationLayer::Structure, DemoValidator)
-    .build();
-
-let report = ctx.validate(&segs);
-let rendered = report.render_deterministic();
-
-// Use in snapshot tests (insta, expect-test, etc.)
-println!("{rendered}");
-# Ok::<(), edifact::EdifactError>(())
-```
-
-Each line is the message followed by the tokens that are set, in a fixed order:
-`[CODE]`, `[segment=…]`, `[rule=…]`, `[element=…]`, `[component=…]`,
-`[occurrence=…]`, `[position=…]`, `[path=SG4[0]/SG8[1]/RFF]`, `[layer=…]`,
-`[kind=…]`, `[pack=…]`, `[span=…]`, `[hint=…]`. Within a severity bucket lines sort
-by span start, tag, rule id, element and component index, code and message, then
-segment position, occurrence, layer, kind, pack and group path.
-
-### Rendering every finding with `miette`
-
-With `diagnostics` enabled, attach the source to the report and each issue that
-has a span is underlined where it occurred:
-
-```rust
-# #[cfg(feature = "diagnostics")]
-# {
 use edifact::{ProfileRulePack, ValidationContext, from_bytes};
 
 let input = "UNH+1+ORDERS:D:96A:UN'BGM+220'DTM+137:20240101:102'UNT+4+1'";
-let segs: Vec<_> = from_bytes(input.as_bytes()).collect::<Result<_, _>>().unwrap();
+let segs: Vec<_> = from_bytes(input.as_bytes()).collect::<Result<_, _>>()?;
 let report = ValidationContext::builder()
     .with_profile_pack(ProfileRulePack::new("AHB").forbid_segment("DTM", "AHB-DTM-X"))
     .build()
     .validate(&segs);
 
-// One related diagnostic per issue, labelled "not_permitted at DTM".
 eprintln!("{:?}", miette::Report::new(report).with_source_code(input));
-# }
+# Ok::<(), edifact::EdifactError>(())
 ```
 
----
+```text
+Error: AHB-DTM-X
 
-## Error structure (with `diagnostics`)
+  × [ERROR] segment DTM must not appear
+   ╭────
+ 1 │ UNH+1+ORDERS:D:96A:UN'BGM+220'DTM+137:20240101:102'UNT+4+1'
+   ·                               ──────────┬──────────
+   ·                                         ╰── not_permitted at DTM
+   ╰────
+```
 
-Variants carry either a single `offset: usize` (lexical faults, where there is no
-meaningful end position) or a `span: Span` (validation faults, where the exact
-source range is known):
+## Deterministic text for snapshots
 
-| Variant | Span source |
-|---|---|
-| `UnexpectedEof { offset }` | Single byte at `offset` |
-| `InvalidDelimiter { byte, offset }` | Single byte at `offset` |
-| `InvalidText { offset }` | Start of invalid byte sequence |
-| `InvalidReleaseSequence { offset }` | The dangling `?` character |
-| `InvalidCodeValue { span, … }` | The offending value's byte range |
-| `SegmentTooLong { offset, … }` | Start of the oversized segment |
-
----
-
-## Checking at runtime whether diagnostics are enabled
-
-The feature is a compile-time gate. If you need to branch on it at runtime (e.g. in
-tests), use `cfg`:
+`ValidationReport::render_deterministic()` (also its `Display`) needs no
+feature and gives the same text for the same report:
 
 ```rust
-fn setup_error_handler() {
-    #[cfg(feature = "diagnostics")]
-    {
-        // install miette's panic hook for better output in tests
-        miette::set_panic_hook();
-    }
-}
+use edifact::{ProfileRulePack, ValidationContext, from_bytes};
+
+let segs: Vec<_> = from_bytes(b"BGM+220+PO-4711+9'DTM+137:20240101:102'").collect::<Result<_, _>>()?;
+let report = ValidationContext::builder()
+    .with_profile_pack(ProfileRulePack::new("AHB").forbid_segment("DTM", "AHB-DTM-X"))
+    .build()
+    .validate(&segs);
+assert!(report.render_deterministic().contains("[rule=AHB-DTM-X]"));
+# Ok::<(), edifact::EdifactError>(())
 ```
 
----
+Each line is the message followed by the tokens that are set, in this order:
+`[CODE]`, `[segment=…]`, `[rule=…]`, `[element=…]`, `[component=…]`,
+`[occurrence=…]`, `[position=…]`, `[path=…]`, `[layer=…]`, `[kind=…]`,
+`[pack=…]`, `[span=…]`, `[hint=…]`. Within a severity bucket, lines sort by
+span start, tag, rule id, element and component index, code and message, then
+segment position, occurrence, layer, kind, pack and group path.
+
+## Text from the input is escaped
+
+Input-derived values — a reference, a qualifier, a tag — appear in error text,
+issue text, `render_deterministic()` and the `miette` help and labels with
+control characters escaped (`\r`, `\n`, `\t`, `\0`, otherwise `\u{1b}` style),
+as are U+2028/U+2029 and the bidirectional formatting characters (U+061C,
+U+200E/F, U+202A–E, U+2066–9). One diagnostic is one line: a sender cannot
+forge log lines, reorder text or drive a terminal. The fields keep the raw
+values.
+
+```rust
+use edifact::{EdifactError, Span};
+
+let err = EdifactError::EmptyMessage { message_ref: "1\r\nFAKE".into(), span: Span::new(0, 9) };
+assert_eq!(err.to_string(), r"message 1\r\nFAKE has no segments between UNH and UNT");
+```
 
 ## Example
-
-See [`cookbook_diagnostics.rs`](https://github.com/hupe1980/edifact/tree/main/crates/edifact/examples/cookbook_diagnostics.rs)
-for a full example that triggers a code-value validation error and renders it with
-`miette::Report`:
 
 ```bash
 cargo run -p edifact --example cookbook_diagnostics --features diagnostics
 ```
 
-Sample output (with `miette`'s `fancy` feature):
-
-```text
-  × invalid code value "999" in BGM element 0
-   ╭─[<anonymous>:1:5]
- 1 │ BGM+999+PO-4711+9'
-   ·     ─┬─
-   ·      ╰── value "999" is not valid for code list 1001
-   ╰────
-  help: Use a valid document name code from UNTDID 1001
-```
-
----
-
-## Feature interaction
-
-| Scenario | Result |
-|---|---|
-| `diagnostics` disabled (default) | `EdifactError` implements `std::error::Error` + `Display` + `Debug` |
-| `diagnostics` enabled | Also implements `miette::Diagnostic`; adds no runtime overhead when errors don't occur |
-| `diagnostics` + `miette` fancy | Full ANSI-colored, span-annotated terminal output |
-| `diagnostics` + no `miette` in deps | You can still construct `miette::Report::new(err)` because `edifact` re-exports the `miette` dependency |
-
----
+[`cookbook_diagnostics.rs`](https://github.com/hupe1980/edifact/tree/main/crates/edifact/examples/cookbook_diagnostics.rs)
+raises a code-value error from a custom validator and renders it with
+`miette::Report`.
 
 ## Next steps
 
-- [Error Reference](@/docs/error-reference.md) — all error codes and their span fields
-- [Validation](@/docs/validation.md) — `ValidationReport::render_deterministic()`
-- [Getting Started](@/docs/getting-started.md) — feature flag installation
+- [Error Reference](@/docs/error-reference.md) — every error code
+- [Validation](@/docs/validation.md) — `ValidationReport`
+- [Getting Started](@/docs/getting-started.md) — feature flags

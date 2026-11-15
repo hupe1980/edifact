@@ -246,18 +246,20 @@ pub mod edifact {
         None
     }
 
-    pub fn find_segment<'s, 'd>(segments: &'s [Segment<'d>], tag: &str) -> Option<&'s Segment<'d>> {
-        segments.iter().find(|segment| segment.tag == tag)
+    pub trait SegmentSliceExt<'a> {
+        fn first_tag(&self, tag: &str) -> Option<&Segment<'a>>;
+        fn qualified(&self, tag: &str, qualifier: &str) -> Option<&Segment<'a>>;
     }
 
-    pub fn find_qualified_segment<'s, 'd>(
-        segments: &'s [Segment<'d>],
-        tag: &str,
-        qualifier: &str,
-    ) -> Option<&'s Segment<'d>> {
-        segments
-            .iter()
-            .find(|segment| segment.tag == tag && segment.element_str(0).unwrap_or("") == qualifier)
+    impl<'a> SegmentSliceExt<'a> for [Segment<'a>] {
+        fn first_tag(&self, tag: &str) -> Option<&Segment<'a>> {
+            self.iter().find(|segment| segment.tag == tag)
+        }
+
+        fn qualified(&self, tag: &str, qualifier: &str) -> Option<&Segment<'a>> {
+            self.iter()
+                .find(|segment| segment.tag == tag && segment.element_str(0).unwrap_or("") == qualifier)
+        }
     }
 
     pub fn find_segments_typed<'s, 'd: 's, T>(
@@ -279,7 +281,7 @@ pub mod edifact {
         // derive's own diagnostics, which are stable across toolchains.
         #[allow(unused_imports)]
         pub use super::{
-            composite_element, find_qualified_segment, find_segment, find_segments_typed,
+            SegmentSliceExt, composite_element, find_segments_typed,
         };
     }
 }

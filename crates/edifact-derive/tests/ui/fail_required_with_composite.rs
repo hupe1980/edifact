@@ -9,8 +9,8 @@ mod support;
 pub use support::edifact::{
     CompositeElement, EdifactCompositeDeserialize, EdifactCompositeSerialize, EdifactDeserialize,
     EdifactError, EdifactEvent, EdifactSegmentTag, EdifactSerialize, EventEmitter,
-    Segment, composite_element, find_qualified_segment,
-    find_segment};
+    Segment, composite_element,
+    SegmentSliceExt};
 
 extern crate self as edifact;
 pub use support::edifact::helpers;

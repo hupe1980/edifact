@@ -1,6 +1,5 @@
 [workspace]
-# MSRV-aware resolution; must be explicit because a [workspace] resolver key
-# overrides the edition default.
+# MSRV-aware resolution; a virtual workspace does not inherit the edition default.
 resolver = "3"
 members = [
     "crates/edifact",
@@ -8,16 +7,15 @@ members = [
 ]
 
 [workspace.package]
-version = "0.19.0"
+version = "0.20.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 authors = ["hupe1980"]
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 bolero = { version = "0.13", features = ["arbitrary"] }
-# Capped at 0.7: criterion 0.8 requires rustc 1.86, above our MSRV.
-criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 divan = "0.1"
 memchr = "2"
 miette = { version = "7", features = ["fancy"] }
@@ -26,7 +24,7 @@ quote = "1"
 # `rc` is required: `ValidationIssue::segment_group` is an `Option<Arc<str>>`,
 # and serde does not serialize `Rc`/`Arc` without it.
 serde = { version = "1", features = ["derive", "rc"] }
-# dev-only: serde round-trip tests of the report types.
+# dev-only: serde round-trip tests.
 serde_json = "1"
 # `union` drops the per-SmallVec bool tag, shrinking `Element::components`.
 smallvec = { version = "1", features = ["union"] }
@@ -34,6 +32,8 @@ smallvec = { version = "1", features = ["union"] }
 # No `full`: the derive only inspects a `DeriveInput`, never whole items.
 syn = "3"
 thiserror = "2"
+# Optional (`dtm-time`). 0.3.47 fixes RUSTSEC-2026-0009.
+time = { version = "0.3.47", default-features = false }
 # dev-only. `fs` and `io-util` back the async-integration guide's snippets,
 # which are compiled as doctests.
 tokio = { version = "1", features = [

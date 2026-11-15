@@ -320,7 +320,21 @@ pub(crate) fn detail_of(error: &EdifactError) -> Option<Detail<'_>> {
             offset: *offset,
             element: false,
         }),
-        E::MessageCountMismatch { .. } => Detail::new(Anchor::Service("UNZ")),
+        E::MessageCountMismatch { span, .. } => Detail::new(Anchor::Span(*span)),
+        E::UnsupportedSyntaxVersion { span, .. } => {
+            // UNB S001 DE 0002: element 2, component 2.
+            Detail::new(Anchor::Span(*span)).element(0).component(1)
+        }
+        E::InvalidDateTime {
+            element_index,
+            component_index,
+            span,
+            ..
+        } => Detail::new(Anchor::Span(*span))
+            .element(*element_index)
+            .component(*component_index),
+        // About the interchange as a whole: the trailing segment is no part of it.
+        E::DataAfterInterchangeTrailer { .. } => Detail::new(Anchor::Interchange),
         E::UnrecognisedSyntaxIdentifier(_) | E::UnsupportedCharset { .. } => {
             // UNB S001 DE 0001: element 2, component 1.
             Detail::new(Anchor::Service("UNB")).element(0).component(0)
@@ -355,7 +369,12 @@ pub(crate) fn detail_of(error: &EdifactError) -> Option<Detail<'_>> {
         | E::SegmentNotPlaced { span, .. }
         | E::TooManySegmentOccurrences { span, .. }
         | E::TooManyGroupOccurrences { span, .. }
-        | E::GroupsAndMessagesMixed { span } => Detail::new(Anchor::Span(*span)),
+        | E::GroupsAndMessagesMixed { span }
+        | E::GroupCountMismatch { span, .. }
+        | E::EmptyGroup { span, .. }
+        | E::InteractiveSegmentNotSupported { span, .. }
+        | E::SecuritySegmentNotSupported { span, .. }
+        | E::ReservedServiceSegmentTag { span, .. } => Detail::new(Anchor::Span(*span)),
         E::InvalidComponentCount {
             element_index,
             span,
@@ -436,7 +455,9 @@ pub(crate) fn detail_of(error: &EdifactError) -> Option<Detail<'_>> {
         | E::ActionNotPermitted { .. }
         | E::InvalidContrlIdentifier { .. }
         // A malformed group schema is caller configuration as well.
-        | E::InvalidGroupSchema { .. } => return None,
+        | E::InvalidGroupSchema { .. }
+        // A writer-side failure of the caller's own output.
+        | E::WriterPoisoned { .. } => return None,
     })
 }
 
@@ -515,6 +536,7 @@ impl<'t> Target<'t> {
 /// | `E006`, `E028` | inside a message body | `12` at DE 0098 = 1 (the tag is the invalid value) |
 /// | `E007` | `UCI`, service segment `UNA` | `20` |
 /// | `E043` | `UCM`, service segment `UNH` | `13` (the body segments are missing) |
+/// | `E058` | `UCI`, no service segment | `33` (the trailing data is no part of the interchange) |
 pub(crate) fn place(target: Target<'_>, code: SyntaxError, stable: Option<&str>) -> ContrlLocation {
     let exact = target.exact;
     let base = move || ContrlLocation {
@@ -537,6 +559,12 @@ pub(crate) fn place(target: Target<'_>, code: SyntaxError, stable: Option<&str>)
             error: SyntaxError::InvalidAsServiceCharacter,
             ..base()
         };
+    }
+
+    // The segment after `UNZ` belongs to no interchange, so it names none of
+    // the subject's service segments.
+    if stable == Some("E058") {
+        return interchange(base(), None, None, None, code);
     }
 
     let climb = |code: SyntaxError| -> ContrlLocation {
@@ -598,15 +626,15 @@ pub(crate) fn place(target: Target<'_>, code: SyntaxError, stable: Option<&str>)
             error: code,
             ..base()
         };
-        if let Some(element) = element {
-            if code.permitted_at(ReportingLevel::DataElement) {
-                return ContrlLocation {
-                    level: ReportingLevel::DataElement,
-                    element_position: Some(element),
-                    component_position: component,
-                    ..in_segment
-                };
-            }
+        if let Some(element) = element
+            && code.permitted_at(ReportingLevel::DataElement)
+        {
+            return ContrlLocation {
+                level: ReportingLevel::DataElement,
+                element_position: Some(element),
+                component_position: component,
+                ..in_segment
+            };
         }
         if code.permitted_at(ReportingLevel::Segment) {
             return in_segment;
